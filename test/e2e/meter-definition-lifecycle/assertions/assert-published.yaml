@@ -1,0 +1,6 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MeterDefinition
+metadata:
+  name: e2e-compute-instance-cpu-seconds
+spec:
+  phase: Published

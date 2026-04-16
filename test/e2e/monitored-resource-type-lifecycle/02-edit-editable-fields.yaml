@@ -1,0 +1,27 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MonitoredResourceType
+metadata:
+  name: e2e-compute-instance
+spec:
+  resourceTypeName: compute.miloapis.com/Instance
+  phase: Published
+  displayName: Compute Instance (Updated)
+  description: Display name and description are editable over the type's lifetime.
+  owner:
+    service: compute.miloapis.com
+  gvk:
+    group: compute.miloapis.com
+    kind: Instance
+  labels:
+    - name: region
+      required: true
+      description: Cloud region the instance runs in.
+    - name: tier
+      required: false
+      description: Billing tier for the instance.
+      allowedValues:
+        - standard
+        - premium
+    - name: zone
+      required: false
+      description: Availability zone within the region (additive label).

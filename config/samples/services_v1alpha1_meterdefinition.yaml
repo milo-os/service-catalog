@@ -1,0 +1,28 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MeterDefinition
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-instance-cpu-seconds
+spec:
+  meterName: compute.miloapis.com/instance/cpu-seconds
+  phase: Published
+  displayName: Compute Instance CPU Time
+  description: CPU time consumed by running compute instances, measured at 1-minute resolution.
+  owner:
+    service: compute.miloapis.com
+
+  # Measurement describes the signal. `aggregation` controls how values roll
+  # up over a billing period; `unit` uses the UCUM vocabulary; `dimensions`
+  # declares the attributes pricing or the portal can group by.
+  measurement:
+    aggregation: Sum
+    unit: s
+    dimensions: [region, instance.type, resource.tier]
+
+  # Billing framing: `consumedUnit` is what's measured, `pricingUnit` is what
+  # pricing quotes against — the engine handles conversion between the two.
+  billing:
+    consumedUnit: s
+    pricingUnit: h

@@ -1,0 +1,31 @@
+name: Publish Docker Image
+
+on:
+  push:
+  release:
+    types: ['published']
+
+jobs:
+  publish-container-image:
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.13.1
+    with:
+      image-name: services
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit
+
+  publish-kustomize-bundles:
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.13.1
+    with:
+      bundle-name: ghcr.io/datum-cloud/services-kustomize
+      bundle-path: config
+      image-overlays: config/base/manager
+      image-name: ghcr.io/datum-cloud/services
+    secrets: inherit

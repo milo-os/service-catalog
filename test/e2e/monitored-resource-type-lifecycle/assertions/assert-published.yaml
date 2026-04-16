@@ -1,0 +1,6 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MonitoredResourceType
+metadata:
+  name: e2e-compute-instance
+spec:
+  phase: Published

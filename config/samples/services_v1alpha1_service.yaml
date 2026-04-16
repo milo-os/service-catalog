@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-miloapis-com
+spec:
+  serviceName: compute.miloapis.com
+  phase: Published
+  displayName: Compute
+  description: Scalable compute workloads and instance management.
+  owner:
+    producerProjectRef:
+      name: compute-platform

@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-viewer
+  annotations:
+    kubernetes.io/display-name: Services Viewer
+    kubernetes.io/description: "View access to all services resources"
+spec:
+  launchStage: Alpha
+  includedPermissions:
+    - services.miloapis.com/services.list
+    - services.miloapis.com/services.get
+    - services.miloapis.com/services.watch
+    - services.miloapis.com/meterdefinitions.list
+    - services.miloapis.com/meterdefinitions.get
+    - services.miloapis.com/meterdefinitions.watch
+    - services.miloapis.com/monitoredresourcetypes.list
+    - services.miloapis.com/monitoredresourcetypes.get
+    - services.miloapis.com/monitoredresourcetypes.watch

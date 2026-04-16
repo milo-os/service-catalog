@@ -1,0 +1,12 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MonitoredResourceType
+metadata:
+  name: e2e-compute-instance
+spec:
+  resourceTypeName: compute.miloapis.com/Instance
+  displayName: Compute Instance
+  owner:
+    service: compute.miloapis.com
+  gvk:
+    group: compute.miloapis.com
+    kind: Instance

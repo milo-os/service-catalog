@@ -1,0 +1,12 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-compute-miloapis-com
+spec:
+  serviceName: compute.miloapis.com
+  phase: Deprecated
+  displayName: Compute (Updated)
+  description: Display name and description are editable over a service's lifetime.
+  owner:
+    producerProjectRef:
+      name: e2e-producer-project

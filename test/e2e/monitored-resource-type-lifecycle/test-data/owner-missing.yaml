@@ -1,0 +1,13 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MonitoredResourceType
+metadata:
+  name: e2e-orphan-resource-type
+spec:
+  resourceTypeName: nonexistent.miloapis.com/Thing
+  displayName: Orphan Resource Type
+  description: Owner Service does not exist; expect webhook rejection.
+  owner:
+    service: nonexistent.miloapis.com
+  gvk:
+    group: nonexistent.miloapis.com
+    kind: Thing

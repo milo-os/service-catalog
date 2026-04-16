@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-admin
+  annotations:
+    kubernetes.io/display-name: Services Admin
+    kubernetes.io/description: "Full access to all services resources"
+spec:
+  launchStage: Alpha
+  inheritedRoles:
+    - name: services.miloapis.com-viewer
+  includedPermissions:
+    - services.miloapis.com/services.create
+    - services.miloapis.com/services.update
+    - services.miloapis.com/services.delete
+    - services.miloapis.com/meterdefinitions.create
+    - services.miloapis.com/meterdefinitions.update
+    - services.miloapis.com/meterdefinitions.delete
+    - services.miloapis.com/monitoredresourcetypes.create
+    - services.miloapis.com/monitoredresourcetypes.update
+    - services.miloapis.com/monitoredresourcetypes.delete

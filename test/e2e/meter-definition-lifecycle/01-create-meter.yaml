@@ -1,0 +1,20 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MeterDefinition
+metadata:
+  name: e2e-compute-instance-cpu-seconds
+spec:
+  meterName: compute.miloapis.com/instance/cpu-seconds
+  phase: Published
+  displayName: Compute Instance CPU Time
+  description: E2E fixture for MeterDefinition lifecycle.
+  owner:
+    service: compute.miloapis.com
+  measurement:
+    aggregation: Sum
+    unit: s
+    dimensions:
+      - region
+      - instance.type
+  billing:
+    consumedUnit: s
+    pricingUnit: h

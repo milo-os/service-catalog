@@ -1,0 +1,16 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: MeterDefinition
+metadata:
+  name: e2e-orphan-meter
+spec:
+  meterName: nonexistent.miloapis.com/thing/events
+  displayName: Orphan Meter
+  description: Owner Service does not exist; expect webhook rejection.
+  owner:
+    service: nonexistent.miloapis.com
+  measurement:
+    aggregation: Sum
+    unit: "{event}"
+  billing:
+    consumedUnit: "{event}"
+    pricingUnit: "{event}"
