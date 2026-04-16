@@ -78,9 +78,8 @@ var _ = AfterSuite(func() {
 
 // Reconciler-level envtest specs are deliberately deferred. The
 // validation package carries the unit-level coverage; the envtest
-// harness is scaffolded here so that service_controller,
-// meterdefinition_controller, and monitoredresourcetype_controller
-// specs can be filled in without re-plumbing the test environment.
+// harness is scaffolded here so that service_controller and
+// serviceconfiguration_controller specs can be filled in without
+// re-plumbing the test environment.
 var _ = Describe("ServiceReconciler", func() {})
-var _ = Describe("MeterDefinitionReconciler", func() {})
-var _ = Describe("MonitoredResourceTypeReconciler", func() {})
+var _ = Describe("ServiceConfigurationReconciler", func() {})

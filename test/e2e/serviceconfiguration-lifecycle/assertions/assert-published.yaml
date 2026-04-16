@@ -1,0 +1,17 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute-miloapis-com
+spec:
+  phase: Published
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ServiceConfigurationReady
+    - type: BillingFanOutHealthy
+      status: "True"
+      reason: BillingFanOutHealthy
+    - type: Published
+      status: "True"
+  (publishedAt != null): true

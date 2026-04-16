@@ -5,23 +5,9 @@ metadata:
   name: services
 rules:
 - apiGroups:
-  - billing.miloapis.com
-  resources:
-  - meterdefinitions
-  - monitoredresourcetypes
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - services.miloapis.com
   resources:
-  - meterdefinitions
-  - monitoredresourcetypes
+  - serviceconfigurations
   - services
   verbs:
   - create
@@ -34,16 +20,14 @@ rules:
 - apiGroups:
   - services.miloapis.com
   resources:
-  - meterdefinitions/finalizers
-  - monitoredresourcetypes/finalizers
+  - serviceconfigurations/finalizers
   - services/finalizers
   verbs:
   - update
 - apiGroups:
   - services.miloapis.com
   resources:
-  - meterdefinitions/status
-  - monitoredresourcetypes/status
+  - serviceconfigurations/status
   - services/status
   verbs:
   - get

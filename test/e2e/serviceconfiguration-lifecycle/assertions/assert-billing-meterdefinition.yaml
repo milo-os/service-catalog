@@ -1,0 +1,22 @@
+apiVersion: billing.miloapis.com/v1alpha1
+kind: MeterDefinition
+metadata:
+  name: compute-miloapis-com-instance-cpu-seconds
+  labels:
+    services.miloapis.com/service: compute.miloapis.com
+    app.kubernetes.io/managed-by: services-operator
+  ownerReferences:
+    - apiVersion: services.miloapis.com/v1alpha1
+      kind: ServiceConfiguration
+      name: compute-miloapis-com
+      controller: true
+spec:
+  meterName: compute.miloapis.com/instance/cpu-seconds
+  phase: Published
+  displayName: CPU Seconds
+  measurement:
+    aggregation: Sum
+    unit: s
+  billing:
+    consumedUnit: s
+    pricingUnit: h

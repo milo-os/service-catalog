@@ -148,25 +148,8 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Service")
 		os.Exit(1)
 	}
-	if err = (&controller.MeterDefinitionReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MeterDefinition")
-		os.Exit(1)
-	}
-	if err = (&controller.MonitoredResourceTypeReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MonitoredResourceType")
-		os.Exit(1)
-	}
-	if err = (&controller.BillingMeterDefinitionReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "BillingMeterDefinition")
-		os.Exit(1)
-	}
-	if err = (&controller.BillingMonitoredResourceTypeReconciler{}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "BillingMonitoredResourceType")
-		os.Exit(1)
-	}
-
-	if err = controller.AddIndexers(ctx, mgr); err != nil {
-		setupLog.Error(err, "unable to add indexers")
+	if err = (&controller.ServiceConfigurationReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceConfiguration")
 		os.Exit(1)
 	}
 
@@ -175,12 +158,8 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Service")
 			os.Exit(1)
 		}
-		if err = serviceswebhooks.SetupMeterDefinitionWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "MeterDefinition")
-			os.Exit(1)
-		}
-		if err = serviceswebhooks.SetupMonitoredResourceTypeWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "MonitoredResourceType")
+		if err = serviceswebhooks.SetupServiceConfigurationWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConfiguration")
 			os.Exit(1)
 		}
 	}

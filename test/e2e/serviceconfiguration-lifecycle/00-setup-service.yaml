@@ -1,12 +1,11 @@
 apiVersion: services.miloapis.com/v1alpha1
 kind: Service
 metadata:
-  name: e2e-mrt-compute-miloapis-com
+  name: compute-miloapis-com
 spec:
   serviceName: compute.miloapis.com
+  displayName: Compute Service
   phase: Published
-  displayName: Compute
-  description: Owning Service fixture for MonitoredResourceType lifecycle e2e.
   owner:
     producerProjectRef:
       name: e2e-producer-project

@@ -3,8 +3,7 @@
 # It should be run by an overlay under config/overlays/
 resources:
 - bases/services.miloapis.com_services.yaml
-- bases/services.miloapis.com_meterdefinitions.yaml
-- bases/services.miloapis.com_monitoredresourcetypes.yaml
+- bases/services.miloapis.com_serviceconfigurations.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

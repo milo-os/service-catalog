@@ -1,0 +1,418 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: serviceconfigurations.services.miloapis.com
+spec:
+  group: services.miloapis.com
+  names:
+    kind: ServiceConfiguration
+    listKind: ServiceConfigurationList
+    plural: serviceconfigurations
+    singular: serviceconfiguration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.serviceRef.name
+      name: Service
+      type: string
+    - jsonPath: .spec.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ServiceConfiguration is the Schema for the serviceconfigurations API.
+          It is the single provider-facing document that declares everything a
+          service contributes to Milo beyond its identity record. metadata.name
+          is conventionally the service's reverse-DNS slug (e.g.
+          "compute-miloapis-com") to make the 1:1 relationship between Service
+          and ServiceConfiguration obvious at a glance.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ServiceConfigurationSpec defines the desired state of a
+              ServiceConfiguration.
+
+              A ServiceConfiguration is the single provider-facing document that
+              describes everything a service contributes to Milo beyond its identity
+              record: its monitored resource types (the Kubernetes Kinds billing and
+              dashboards know about) and its meters (the billable dimensions those
+              Kinds emit). The services operator fans this document out into the
+              downstream CRDs consumed by billing; providers never author those
+              directly.
+
+              Canonical names on meters and monitored resource types must still be
+              prefixed by the referenced service's spec.serviceName. The webhook
+              resolves spec.serviceRef and enforces the prefix; the API type only
+              constrains the shape.
+
+              spec.phase is the provider-declared lifecycle intent:
+              Draft -> Published -> Deprecated -> Retired. Draft documents are not
+              fanned out. The controller mirrors that intent via conditions; it does
+              not transition the phase itself.
+            properties:
+              meters:
+                description: |-
+                  Meters declares the billable dimensions this service emits, each
+                  bound to one or more of the monitored resource types declared
+                  above. Entries are keyed by .name, which must be unique within
+                  the document.
+                items:
+                  description: |-
+                    MeterSpec is a single billable dimension declared by a
+                    ServiceConfiguration. It carries the same measurement/billing shape
+                    that billing's MeterDefinition consumes; the fan-out maps it across
+                    verbatim.
+                  properties:
+                    billing:
+                      description: |-
+                        Billing describes how the meter crosses into commerce. Carries
+                        no rates, currencies, or tiers -- those live in the pricing
+                        engine.
+                      properties:
+                        consumedUnit:
+                          description: |-
+                            ConsumedUnit is the UCUM unit in which usage is measured (e.g.
+                            "s"). Typically matches measurement.unit; may diverge when the
+                            emitted telemetry is pre-rolled (e.g. measured in "s" but
+                            emitted pre-rolled in "min").
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                        pricingUnit:
+                          description: |-
+                            PricingUnit is the UCUM unit pricing quotes against (e.g. "h").
+                            May differ from ConsumedUnit; the pricing engine handles the
+                            conversion.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - consumedUnit
+                      - pricingUnit
+                      type: object
+                    description:
+                      description: |-
+                        Description is a plain-English explanation of what the meter
+                        measures.
+                      maxLength: 1024
+                      type: string
+                    displayName:
+                      description: |-
+                        DisplayName is a human-readable name surfaced in portals and on
+                        invoices alongside the canonical name.
+                      maxLength: 128
+                      type: string
+                    measurement:
+                      description: Measurement describes how the signal is captured
+                        and aggregated.
+                      properties:
+                        aggregation:
+                          description: |-
+                            Aggregation is the function applied to samples over a billing
+                            period. Immutable once the ServiceConfiguration is Published.
+                          enum:
+                          - Sum
+                          - Max
+                          - Min
+                          - Count
+                          - UniqueCount
+                          - Latest
+                          - Average
+                          type: string
+                        unit:
+                          description: |-
+                            Unit is a UCUM (https://ucum.org/ucum) string describing what
+                            the meter measures (e.g. "s", "By", "{request}"). Immutable once
+                            the ServiceConfiguration is Published.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - aggregation
+                      - unit
+                      type: object
+                    monitoredResourceTypes:
+                      description: |-
+                        MonitoredResourceTypes binds this meter to the monitored
+                        resource types that emit it. Each entry must match a
+                        spec.monitoredResourceTypes[].type in the same document. At
+                        least one entry is required.
+                      items:
+                        type: string
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    name:
+                      description: |-
+                        Name is the canonical, user-facing identifier for this meter
+                        (e.g. "compute.miloapis.com/instance/cpu-seconds"). Must be
+                        prefixed by the referenced Service's spec.serviceName and unique
+                        within spec.meters. Immutable once the ServiceConfiguration is
+                        Published.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - billing
+                  - measurement
+                  - monitoredResourceTypes
+                  - name
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              monitoredResourceTypes:
+                description: |-
+                  MonitoredResourceTypes declares the Kubernetes Kinds this service
+                  emits usage for, together with the closed set of labels each
+                  Kind's usage events may carry. Entries are keyed by .type, which
+                  must be unique within the document.
+                items:
+                  description: |-
+                    MonitoredResourceTypeSpec is a monitored resource type declared by
+                    a ServiceConfiguration. The fan-out produces one
+                    billing.miloapis.com/MonitoredResourceType per entry.
+                  properties:
+                    description:
+                      description: |-
+                        Description is a plain-English explanation of what the resource
+                        type represents.
+                      maxLength: 1024
+                      type: string
+                    displayName:
+                      description: |-
+                        DisplayName is a human-readable name surfaced in portals and
+                        dashboards alongside the canonical type.
+                      maxLength: 128
+                      type: string
+                    gvk:
+                      description: |-
+                        GVK pins the resource type to a Kubernetes Kind. Version is
+                        deliberately omitted: billability is a property of the Kind, not
+                        of a specific API version. Immutable once the
+                        ServiceConfiguration is Published.
+                      properties:
+                        group:
+                          description: |-
+                            Group is the Kubernetes API group of the Kind (e.g.
+                            "compute.miloapis.com").
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        kind:
+                          description: Kind is the Kubernetes Kind (e.g. "Instance").
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      type: object
+                    labels:
+                      description: |-
+                        Labels is the closed set of descriptive labels that usage events
+                        against this resource type are permitted to carry. Events whose
+                        labels are not in this set are rejected at the edge.
+                      items:
+                        description: |-
+                          MonitoredResourceLabel declares a single descriptive label that
+                          usage events against the resource type may carry.
+                        properties:
+                          description:
+                            description: |-
+                              Description is a plain-English explanation of what the label
+                              conveys.
+                            maxLength: 512
+                            type: string
+                          name:
+                            description: |-
+                              Name is the label key as it will appear on usage events (e.g.
+                              "region", "zone", "tier"). It is the map key for the enclosing
+                              list.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      maxItems: 64
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
+                    type:
+                      description: |-
+                        Type is the canonical, user-facing identifier for this resource
+                        type (e.g. "compute.miloapis.com/Instance"). Must be prefixed by
+                        the referenced Service's spec.serviceName and unique within
+                        spec.monitoredResourceTypes. Immutable once the
+                        ServiceConfiguration is Published.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - gvk
+                  - type
+                  type: object
+                maxItems: 128
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              phase:
+                allOf:
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                default: Draft
+                description: |-
+                  Phase is the provider-declared lifecycle state of this
+                  configuration. Allowed transitions are forward-only:
+                  Draft -> Published -> Deprecated -> Retired.
+                type: string
+              serviceRef:
+                description: |-
+                  ServiceRef points at the Service this document configures. The
+                  reference is by metadata.name of the cluster-scoped Service
+                  resource; the webhook resolves it to the Service's canonical
+                  spec.serviceName for prefix enforcement.
+                properties:
+                  name:
+                    description: |-
+                      Name is the metadata.name of the cluster-scoped Service resource
+                      this ServiceConfiguration configures.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - phase
+            - serviceRef
+            type: object
+          status:
+            description: |-
+              ServiceConfigurationStatus defines the observed state of a
+              ServiceConfiguration. The controller records compact top-level
+              conditions here; per-item status lives on the downstream billing
+              objects themselves.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the
+                  resource's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed by the
+                  controller.
+                format: int64
+                type: integer
+              publishedAt:
+                description: |-
+                  PublishedAt is the time at which the controller first observed
+                  the resource in the Published phase. It is preserved across
+                  later transitions to Deprecated and Retired so downstream systems
+                  can reason about how long the resource has been part of the
+                  catalog.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

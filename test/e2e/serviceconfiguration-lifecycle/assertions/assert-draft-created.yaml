@@ -1,0 +1,17 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute-miloapis-com
+  finalizers:
+    - services.miloapis.com/serviceconfiguration-protection
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  phase: Draft
+status:
+  conditions:
+    - type: BillingFanOutHealthy
+      status: "True"
+      reason: BillingFanOutSkipped
+    - type: Published
+      status: "False"

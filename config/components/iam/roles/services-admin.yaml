@@ -13,9 +13,6 @@ spec:
     - services.miloapis.com/services.create
     - services.miloapis.com/services.update
     - services.miloapis.com/services.delete
-    - services.miloapis.com/meterdefinitions.create
-    - services.miloapis.com/meterdefinitions.update
-    - services.miloapis.com/meterdefinitions.delete
-    - services.miloapis.com/monitoredresourcetypes.create
-    - services.miloapis.com/monitoredresourcetypes.update
-    - services.miloapis.com/monitoredresourcetypes.delete
+    - services.miloapis.com/serviceconfigurations.create
+    - services.miloapis.com/serviceconfigurations.update
+    - services.miloapis.com/serviceconfigurations.delete

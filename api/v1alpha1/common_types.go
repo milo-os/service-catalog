@@ -43,6 +43,21 @@ const (
 	PhaseRetired Phase = "Retired"
 )
 
+// MeterAggregation describes how usage samples for a meter roll up over
+// a billing period.
+// +kubebuilder:validation:Enum=Sum;Max;Min;Count;UniqueCount;Latest;Average
+type MeterAggregation string
+
+const (
+	MeterAggregationSum         MeterAggregation = "Sum"
+	MeterAggregationMax         MeterAggregation = "Max"
+	MeterAggregationMin         MeterAggregation = "Min"
+	MeterAggregationCount       MeterAggregation = "Count"
+	MeterAggregationUniqueCount MeterAggregation = "UniqueCount"
+	MeterAggregationLatest      MeterAggregation = "Latest"
+	MeterAggregationAverage     MeterAggregation = "Average"
+)
+
 // ProducerProjectReference is a typed reference to the producer project
 // that owns a service. Using a typed reference rather than a free-text
 // team string is deliberate: it prevents the drift (typos, forks,

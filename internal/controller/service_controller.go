@@ -49,8 +49,6 @@ type ServiceReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services/finalizers,verbs=update
-// +kubebuilder:rbac:groups=services.miloapis.com,resources=meterdefinitions,verbs=get;list;watch
-// +kubebuilder:rbac:groups=services.miloapis.com,resources=monitoredresourcetypes,verbs=get;list;watch
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
