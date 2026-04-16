@@ -7,7 +7,7 @@ toolchain go1.24.2
 require (
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
-	go.miloapis.com/billing v0.0.0
+	go.miloapis.com/billing v0.0.0-20260416165354-38b1260505f9
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.2
 	k8s.io/client-go v0.33.1
@@ -15,7 +15,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-replace go.miloapis.com/billing => ../billing
+replace go.miloapis.com/billing => github.com/datum-cloud/billing v0.0.0-20260416165354-38b1260505f9
 
 require (
 	cel.dev/expr v0.19.1 // indirect
