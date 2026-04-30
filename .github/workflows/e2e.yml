@@ -34,6 +34,13 @@ jobs:
       - name: Load image into kind
         run: task dev:load
 
+      - name: Install billing CRDs
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          BILLING_DIR=$(go list -m -json go.miloapis.com/billing | jq -r .Dir)
+          task --yes test-infra:kubectl -- apply -k "${BILLING_DIR}/config/base/crd"
+
       - name: Deploy services (e2e overlay)
         env:
           KUBECONFIG: .test-infra/kubeconfig
