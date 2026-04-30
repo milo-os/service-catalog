@@ -44,6 +44,7 @@ jobs:
         env:
           KUBECONFIG: .test-infra/kubeconfig
         run: |
+          mkdir -p /tmp/billing-bundle
           flux pull artifact oci://ghcr.io/milo-os/billing-kustomize:v0.0.0-main \
             --output /tmp/billing-bundle \
             --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}"
