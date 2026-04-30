@@ -1,0 +1,55 @@
+name: E2E Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    name: Chainsaw E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.24.0'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Spin up kind cluster
+        env:
+          TASK_X_REMOTE_TASKFILES: "1"
+        run: task test-infra:cluster-up
+
+      - name: Build container image
+        run: task dev:build
+
+      - name: Load image into kind
+        env:
+          TASK_X_REMOTE_TASKFILES: "1"
+        run: task dev:load
+
+      - name: Deploy services (e2e overlay)
+        env:
+          TASK_X_REMOTE_TASKFILES: "1"
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task test-infra:kubectl -- apply -k config/overlays/e2e
+          task test-infra:kubectl -- wait --for=condition=available \
+            deployment/services-controller-manager \
+            -n services-system --timeout=120s
+
+      - name: Install Chainsaw
+        uses: kyverno/action-install-chainsaw@v0.2.14
+
+      - name: Run E2E tests
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: task e2e
