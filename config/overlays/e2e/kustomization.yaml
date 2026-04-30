@@ -5,6 +5,8 @@ resources:
   - ../../base/crd
   - ../../base/manager
   - ../../base/certmanager
+  - billing-crds/billing.miloapis.com_meterdefinitions.yaml
+  - billing-crds/billing.miloapis.com_monitoredresourcetypes.yaml
 
 components:
   - ../../base/webhook
