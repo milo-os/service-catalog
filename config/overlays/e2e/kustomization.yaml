@@ -8,6 +8,7 @@ resources:
 
 components:
   - ../../base/webhook
+  - ../../components/controller_rbac
 
 images:
   - name: ghcr.io/milo-os/services

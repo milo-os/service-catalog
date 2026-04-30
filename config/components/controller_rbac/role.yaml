@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: services
+  name: services-controller-manager
 rules:
 - apiGroups:
   - services.miloapis.com
