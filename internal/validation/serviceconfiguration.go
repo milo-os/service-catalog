@@ -20,7 +20,7 @@ import (
 // lookup for name-prefix enforcement.
 func ValidateServiceConfigurationCreate(
 	ctx context.Context,
-	c client.Client,
+	c client.Reader,
 	sc *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {
 	var allErrs field.ErrorList
@@ -39,7 +39,7 @@ func ValidateServiceConfigurationCreate(
 // transition and Published-phase immutability of core identity fields.
 func ValidateServiceConfigurationUpdate(
 	ctx context.Context,
-	c client.Client,
+	c client.Reader,
 	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {
 	var allErrs field.ErrorList
@@ -145,7 +145,7 @@ func validateMeterMonitoredResourceTypeRefs(
 // spec.serviceName.
 func validateServiceConfigurationNamePrefixes(
 	ctx context.Context,
-	c client.Client,
+	c client.Reader,
 	sc *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {
 	var allErrs field.ErrorList

@@ -23,7 +23,10 @@ var serviceConfigurationLog = logf.Log.WithName("serviceconfiguration-webhook")
 // ServiceConfiguration webhook with the manager.
 func SetupServiceConfigurationWebhookWithManager(mgr ctrl.Manager) error {
 	webhook := &serviceConfigurationWebhook{
-		client: mgr.GetClient(),
+		// Use the API reader (uncached) so Service lookups during admission
+		// don't block on informer sync — the cache for Service may not be
+		// ready when the first ServiceConfiguration admission arrives.
+		reader: mgr.GetAPIReader(),
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -35,7 +38,7 @@ func SetupServiceConfigurationWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:webhook:path=/validate-services-miloapis-com-v1alpha1-serviceconfiguration,mutating=false,failurePolicy=fail,sideEffects=None,groups=services.miloapis.com,resources=serviceconfigurations,verbs=create;update;delete,versions=v1alpha1,name=vserviceconfiguration.kb.io,admissionReviewVersions=v1
 
 type serviceConfigurationWebhook struct {
-	client client.Client
+	reader client.Reader
 }
 
 var _ admission.CustomValidator = &serviceConfigurationWebhook{}
@@ -51,7 +54,7 @@ func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, obj ru
 		"serviceRef", sc.Spec.ServiceRef.Name,
 	)
 
-	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.client, sc); len(errs) > 0 {
+	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			obj.GetObjectKind().GroupVersionKind().GroupKind(),
 			sc.Name,
@@ -73,7 +76,7 @@ func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldObj
 	}
 	serviceConfigurationLog.Info("validating update", "name", newSC.GetName())
 
-	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.client, oldSC, newSC); len(errs) > 0 {
+	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
