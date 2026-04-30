@@ -8,9 +8,6 @@ jobs:
   e2e:
     name: Chainsaw E2E
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
     env:
       TASK_X_REMOTE_TASKFILES: "1"
     steps:
@@ -37,20 +34,13 @@ jobs:
       - name: Load image into kind
         run: task dev:load
 
-      - name: Setup Flux CLI
-        uses: fluxcd/flux2/action@v2.7.5
-
       - name: Install billing CRDs
         env:
           KUBECONFIG: .test-infra/kubeconfig
         run: |
-          mkdir -p /tmp/billing-bundle
-          flux pull artifact oci://ghcr.io/milo-os/billing-kustomize:v0.0.0-main \
-            --output /tmp/billing-bundle \
-            --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}"
-          task --yes test-infra:kubectl -- apply \
-            -f /tmp/billing-bundle/base/crd/bases/billing.miloapis.com_meterdefinitions.yaml \
-            -f /tmp/billing-bundle/base/crd/bases/billing.miloapis.com_monitoredresourcetypes.yaml
+          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
+          task --yes test-infra:kubectl -- wait kustomization/billing-crds \
+            -n flux-system --for=condition=ready --timeout=120s
 
       - name: Deploy services (e2e overlay)
         env:
