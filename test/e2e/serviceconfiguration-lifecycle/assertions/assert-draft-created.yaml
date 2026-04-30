@@ -10,6 +10,9 @@ spec:
   phase: Draft
 status:
   conditions:
+    - type: Ready
+      status: "True"
+      reason: ServiceConfigurationReady
     - type: BillingFanOutHealthy
       status: "True"
       reason: BillingFanOutSkipped
