@@ -26,14 +26,12 @@ jobs:
       - name: Spin up kind cluster
         env:
           TASK_X_REMOTE_TASKFILES: "1"
-        run: task test-infra:cluster-up
+        run: task --yes test-infra:cluster-up
 
       - name: Build container image
         run: task dev:build
 
       - name: Load image into kind
-        env:
-          TASK_X_REMOTE_TASKFILES: "1"
         run: task dev:load
 
       - name: Deploy services (e2e overlay)
@@ -41,8 +39,8 @@ jobs:
           TASK_X_REMOTE_TASKFILES: "1"
           KUBECONFIG: .test-infra/kubeconfig
         run: |
-          task test-infra:kubectl -- apply -k config/overlays/e2e
-          task test-infra:kubectl -- wait --for=condition=available \
+          task --yes test-infra:kubectl -- apply -k config/overlays/e2e
+          task --yes test-infra:kubectl -- wait --for=condition=available \
             deployment/services-controller-manager \
             -n services-system --timeout=120s
 
