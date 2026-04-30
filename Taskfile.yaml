@@ -213,5 +213,5 @@ tasks:
   e2e:
     desc: Run chainsaw e2e tests
     cmds:
-      - chainsaw test test/e2e/
+      - chainsaw test --config test/e2e/.chainsaw.yaml test/e2e/
     silent: false

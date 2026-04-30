@@ -43,6 +43,14 @@ jobs:
             deployment/services-controller-manager \
             -n services-system --timeout=120s
 
+      - name: Wait for webhook certificate to be ready
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- wait --for=condition=ready \
+            certificate/services-serving-cert \
+            -n services-system --timeout=120s
+
       - name: Install Chainsaw
         uses: kyverno/action-install-chainsaw@v0.2.14
 
