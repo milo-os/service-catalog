@@ -39,7 +39,9 @@ jobs:
           KUBECONFIG: .test-infra/kubeconfig
         run: |
           BILLING_DIR=$(go list -m -json go.miloapis.com/billing | jq -r .Dir)
-          task --yes test-infra:kubectl -- apply -k "${BILLING_DIR}/config/base/crd"
+          task --yes test-infra:kubectl -- apply \
+            -f "${BILLING_DIR}/config/base/crd/bases/billing.miloapis.com_meterdefinitions.yaml" \
+            -f "${BILLING_DIR}/config/base/crd/bases/billing.miloapis.com_monitoredresourcetypes.yaml"
 
       - name: Deploy services (e2e overlay)
         env:
