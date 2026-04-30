@@ -36,6 +36,12 @@ patches:
     - op: replace
       path: /webhooks/0/clientConfig/service/namespace
       value: services-system
+    - op: replace
+      path: /webhooks/1/clientConfig/service/name
+      value: services-webhook
+    - op: replace
+      path: /webhooks/1/clientConfig/service/namespace
+      value: services-system
   target:
     kind: ValidatingWebhookConfiguration
     name: validating-webhook-configuration
