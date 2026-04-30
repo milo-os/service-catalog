@@ -1,6 +1,7 @@
 namespace: services-system
 
 resources:
+  - namespace.yaml
   - ../../base/crd
   - ../../base/manager
   - ../../base/certmanager
