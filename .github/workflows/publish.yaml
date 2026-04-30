@@ -11,9 +11,10 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.13.1
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
     with:
       image-name: services
+      registry-organization: milo-os
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
@@ -22,10 +23,10 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.13.1
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
     with:
-      bundle-name: ghcr.io/datum-cloud/services-kustomize
+      bundle-name: ghcr.io/milo-os/services-kustomize
       bundle-path: config
       image-overlays: config/base/manager
-      image-name: ghcr.io/datum-cloud/services
+      image-name: ghcr.io/milo-os/services
     secrets: inherit

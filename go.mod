@@ -15,7 +15,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.21.0
 )
 
-replace go.miloapis.com/billing => github.com/datum-cloud/billing v0.0.0-20260416220423-385a1b369d72
+replace go.miloapis.com/billing => github.com/milo-os/billing v0.0.0-20260416220423-385a1b369d72
 
 require (
 	cel.dev/expr v0.19.1 // indirect

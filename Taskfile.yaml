@@ -2,7 +2,7 @@ version: '3'
 
 vars:
   TOOL_DIR: "{{.USER_WORKING_DIR}}/bin"
-  SERVICES_IMAGE_NAME: "ghcr.io/datum-cloud/services"
+  SERVICES_IMAGE_NAME: "ghcr.io/milo-os/services"
   SERVICES_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
   TEST_INFRA_REPO_REF: 'v0.6.0'
