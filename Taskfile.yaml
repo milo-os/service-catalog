@@ -44,7 +44,7 @@ tasks:
       - |
         set -e
         echo "Generating manifests..."
-        {{.TOOL_DIR}}/controller-gen rbac:roleName=services \
+        {{.TOOL_DIR}}/controller-gen rbac:roleName=services-controller-manager \
           crd:generateEmbeddedObjectMeta=true \
           webhook \
           paths="./..." \
