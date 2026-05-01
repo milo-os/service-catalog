@@ -5,6 +5,19 @@ metadata:
   name: services-controller-manager
 rules:
 - apiGroups:
+  - billing.miloapis.com
+  resources:
+  - meterdefinitions
+  - monitoredresourcetypes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - services.miloapis.com
   resources:
   - serviceconfigurations
