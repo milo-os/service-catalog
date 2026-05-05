@@ -1,0 +1,18 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-serviceconfiguration
+spec:
+  serviceRef:
+    name: "services.miloapis.com"
+  kind: ServiceConfiguration
+  plural: serviceconfigurations
+  singular: serviceconfiguration
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
