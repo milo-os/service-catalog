@@ -77,7 +77,7 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			msg := fmt.Sprintf("referenced Service %q not found", sc.Spec.ServiceRef.Name)
-			return ctrl.Result{}, r.writeStatusConditions(ctx, &sc,
+			return ctrl.Result{}, r.writeStatusConditions(ctx, &sc, "",
 				metav1.Condition{
 					Type:               ConditionTypeReady,
 					Status:             metav1.ConditionFalse,
@@ -134,7 +134,7 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 		readyCondition.Message = "ServiceConfiguration is reconciled."
 	}
 
-	if err := r.writeStatusConditions(ctx, &sc, readyCondition, fanOutCondition); err != nil {
+	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName, readyCondition, fanOutCondition); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -172,10 +172,14 @@ func (r *ServiceConfigurationReconciler) reconcileDelete(
 func (r *ServiceConfigurationReconciler) writeStatusConditions(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
+	serviceName string,
 	conds ...metav1.Condition,
 ) error {
 	newStatus := sc.Status.DeepCopy()
 	newStatus.ObservedGeneration = sc.Generation
+	if serviceName != "" {
+		newStatus.ServiceName = serviceName
+	}
 	for _, c := range conds {
 		apimeta.SetStatusCondition(&newStatus.Conditions, c)
 	}
@@ -197,6 +201,9 @@ func (r *ServiceConfigurationReconciler) writeStatusConditions(
 
 func serviceConfigurationStatusNeedsUpdate(current, desired *servicesv1alpha1.ServiceConfigurationStatus) bool {
 	if current.ObservedGeneration != desired.ObservedGeneration {
+		return true
+	}
+	if current.ServiceName != desired.ServiceName {
 		return true
 	}
 	if (current.PublishedAt == nil) != (desired.PublishedAt == nil) {

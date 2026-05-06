@@ -44,6 +44,15 @@ type ServiceConfigurationSpec struct {
 	// +kubebuilder:default=Draft
 	Phase Phase `json:"phase"`
 
+	// Version is an optional human-readable version string for this
+	// configuration document (e.g. "v1", "2024-01-15"). It has no
+	// semantic meaning to the controller and is surfaced as a table
+	// column for operator convenience.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=64
+	Version string `json:"version,omitempty"`
+
 	// MonitoredResourceTypes declares the Kubernetes Kinds this service
 	// emits usage for, together with the closed set of labels each
 	// Kind's usage events may carry. Entries are keyed by .type, which
@@ -271,6 +280,13 @@ type ServiceConfigurationStatus struct {
 	// CatalogStatus embeds the shared catalog lifecycle fields
 	// (publishedAt, conditions, observedGeneration).
 	CatalogStatus `json:",inline"`
+
+	// ServiceName is the resolved canonical reverse-DNS name of the
+	// referenced Service (e.g. "compute.datumapis.com"). Populated by
+	// the controller after the serviceRef is successfully resolved.
+	//
+	// +kubebuilder:validation:Optional
+	ServiceName string `json:"serviceName,omitempty"`
 }
 
 // ServiceConfiguration is the Schema for the serviceconfigurations API.
@@ -283,7 +299,8 @@ type ServiceConfigurationStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.spec.serviceRef.name`
+// +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.status.serviceName`
+// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.spec.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Platform"
