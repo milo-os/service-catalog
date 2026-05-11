@@ -1,0 +1,5 @@
+name: compare
+match:
+  - 'ui/app/routes/services.$name_.configurations.compare.tsx'
+description: 'configuration compare — side-by-side diff between two published configs'
+spec: 'e2e/scenes/compare.spec.ts'

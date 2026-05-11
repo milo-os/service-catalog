@@ -17,6 +17,10 @@ includes:
     vars:
       REPO_REF: "{{.TEST_INFRA_REPO_REF}}"
 
+  ui:
+    taskfile: ./ui/Taskfile.yaml
+    dir: ./ui
+
 tasks:
   default:
     desc: List all available tasks
@@ -215,3 +219,69 @@ tasks:
     cmds:
       - chainsaw test --config test/e2e/.chainsaw.yaml test/e2e/
     silent: false
+
+  ui:docker-build:
+    desc: Build the services UI Docker image
+    silent: true
+    cmds:
+      - |
+        echo "Building services UI image: ghcr.io/milo-os/services-ui:dev"
+        docker build -t ghcr.io/milo-os/services-ui:dev ./ui
+        echo "Successfully built services UI image"
+
+  ui:kind-load:
+    desc: Load the services UI image into kind cluster
+    silent: true
+    cmds:
+      - |
+        echo "Loading ghcr.io/milo-os/services-ui:dev into kind cluster '{{.TEST_INFRA_CLUSTER_NAME}}'..."
+        kind load docker-image ghcr.io/milo-os/services-ui:dev --name "{{.TEST_INFRA_CLUSTER_NAME}}"
+        echo "Successfully loaded UI image"
+
+  ui:deploy:
+    desc: Build UI image, load into kind, and deploy via kustomize
+    deps:
+      - ui:docker-build
+      - ui:kind-load
+    cmds:
+      - |
+        echo "Deploying services with UI overlay..."
+        task test-infra:kubectl -- apply -k config/overlays/dev
+        echo "Deployment applied!"
+
+  ui:redeploy:
+    desc: Quick rebuild and redeploy for the services-ui dev environment
+    deps:
+      - ui:docker-build
+      - ui:kind-load
+    cmds:
+      - |
+        set -e
+        echo "Redeploying services-ui (dev)..."
+
+        # Ensure imagePullPolicy is IfNotPresent so the freshly kind-loaded
+        # image is used instead of pulling from ghcr.io.
+        task test-infra:kubectl -- patch deployment services-ui -n services-system \
+          --type=strategic \
+          -p '{"spec":{"template":{"spec":{"containers":[{"name":"ui","imagePullPolicy":"IfNotPresent"}]}}}}' \
+          || echo "Deployment not found, run 'task ui:deploy' first"
+
+        # Restart pods so they pick up the freshly loaded image.
+        task test-infra:kubectl -- rollout restart -n services-system deployment/services-ui \
+          || echo "Deployment not found, run 'task ui:deploy' first"
+
+        echo "Waiting for rollout..."
+        task test-infra:kubectl -- rollout status -n services-system deployment/services-ui --timeout=120s || true
+
+        # Restart the port-forward on 3001:3000. pkill is best-effort —
+        # missing matches return non-zero, which we ignore.
+        echo "Restarting port-forward 3001 -> services-ui:3000..."
+        pkill -f "kubectl.*port-forward.*services-ui.*3001:3000" 2>/dev/null || true
+        sleep 1
+        nohup task test-infra:kubectl -- port-forward -n services-system svc/services-ui 3001:3000 \
+          > /tmp/services-ui-port-forward.log 2>&1 &
+        disown || true
+        echo "Port-forward backgrounded (logs: /tmp/services-ui-port-forward.log)"
+
+        echo "Redeployment complete! UI available at http://localhost:3001"
+    silent: true

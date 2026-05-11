@@ -1,0 +1,9 @@
+name: wizard-service
+match:
+  - 'ui/app/routes/services.new.tsx'
+  - 'ui/app/components/wizard/MeterCardEditor.tsx'
+  - 'ui/app/components/wizard/MrtCardEditor.tsx'
+  - 'ui/app/components/wizard/wizard-validation.ts'
+  - 'ui/app/components/wizard/StepperItem.tsx'
+description: 'new service wizard — service identity, monitored resource types, and meters steps'
+spec: 'e2e/scenes/wizard-service.spec.ts'

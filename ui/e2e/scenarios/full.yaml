@@ -1,0 +1,4 @@
+name: full
+fallback: true
+description: 'full walkthrough — consumer catalog, services list, service detail, and new service wizard'
+spec: 'e2e/scenes/full.spec.ts'
