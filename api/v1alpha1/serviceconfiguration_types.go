@@ -159,6 +159,15 @@ type MeterMeasurement struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	Unit string `json:"unit"`
+
+	// UnitDisplayName is the human-readable label for the measurement
+	// unit surfaced in portals and on invoices (e.g. "Gigabyte",
+	// "Second", "Request"). When absent, consumers fall back to
+	// UCUM-based display logic. Editable at any time.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	UnitDisplayName string `json:"unitDisplayName,omitempty"`
 }
 
 // MeterBilling describes the commercial framing of a meter. Field
@@ -174,6 +183,14 @@ type MeterBilling struct {
 	// +kubebuilder:validation:MaxLength=64
 	ConsumedUnit string `json:"consumedUnit"`
 
+	// ConsumedUnitDisplayName is the human-readable label for the
+	// consumed unit (e.g. "Gigabyte"). When absent, consumers fall back
+	// to UCUM-based display logic. Editable at any time.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	ConsumedUnitDisplayName string `json:"consumedUnitDisplayName,omitempty"`
+
 	// PricingUnit is the UCUM unit pricing quotes against (e.g. "h").
 	// May differ from ConsumedUnit; the pricing engine handles the
 	// conversion.
@@ -182,6 +199,14 @@ type MeterBilling struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	PricingUnit string `json:"pricingUnit"`
+
+	// PricingUnitDisplayName is the human-readable label for the pricing
+	// unit (e.g. "Hour"). When absent, consumers fall back to UCUM-based
+	// display logic. Editable at any time.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	PricingUnitDisplayName string `json:"pricingUnitDisplayName,omitempty"`
 }
 
 // MonitoredResourceTypeSpec is a monitored resource type declared by

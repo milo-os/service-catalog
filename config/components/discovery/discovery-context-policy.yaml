@@ -1,0 +1,9 @@
+apiVersion: discovery.miloapis.com/v1alpha1
+kind: DiscoveryContextPolicy
+metadata:
+  name: services-resources
+spec:
+  rules:
+    - group: services.miloapis.com
+      resources: ["services", "serviceconfigurations"]
+      contexts: ["Platform"]

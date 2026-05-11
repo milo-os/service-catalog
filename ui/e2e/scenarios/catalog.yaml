@@ -1,0 +1,5 @@
+name: catalog
+match:
+  - 'ui/app/routes/catalog._index.tsx'
+description: 'consumer catalog — browse published services and search by name'
+spec: 'e2e/scenes/catalog.spec.ts'

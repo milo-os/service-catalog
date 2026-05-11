@@ -25,3 +25,21 @@ cover.out
 # Go workspace (local dev only; sibling modules not present in CI)
 go.work
 go.work.sum
+
+# Node / frontend
+node_modules/
+ui/node_modules/
+ui/.react-router/
+ui/build/
+ui/playwright-report/
+ui/playwright-report-demo/
+ui/test-results/
+
+# Task cache
+.task/
+
+# Claude local config
+.claude/
+
+# Pencil design files
+*.pen
