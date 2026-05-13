@@ -1,4 +1,4 @@
-module go.miloapis.com/services
+module go.miloapis.com/service-catalog
 
 go 1.24.0
 
