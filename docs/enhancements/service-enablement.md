@@ -1,4 +1,4 @@
-# Enhancement: Service Enablement
+# Service Enablement
 
 **Status:** Draft for stakeholder review
 **Scope:** Covers how consumers enable services within their projects, how the platform handles service dependencies, how providers control access to their services, and how providers gain visibility into their consumer base.
