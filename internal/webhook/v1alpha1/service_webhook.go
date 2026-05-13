@@ -13,8 +13,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	servicesv1alpha1 "go.miloapis.com/services/api/v1alpha1"
-	"go.miloapis.com/services/internal/validation"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/internal/validation"
 )
 
 var serviceLog = logf.Log.WithName("service-webhook")
