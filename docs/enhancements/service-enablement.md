@@ -21,12 +21,6 @@ This enhancement introduces service enablement as a first-class platform capabil
 
 ---
 
-## Resource scoping
-
-Both `ServiceEntitlement` and `ServiceConsumer` are **cluster-scoped**, consistent with the rest of the governance catalog (`Service`, `ServiceConfiguration`). Milo's multi-tenancy model does not use per-tenant namespaces — tenant identity is injected at the front door via request context and enforced by IAM, not by namespace boundaries. Project membership is carried via typed references in `spec`, following the same pattern as `Service.spec.owner.producerProjectRef`.
-
----
-
 ## Consumer experience
 
 ### Enabling a service
