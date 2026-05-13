@@ -140,6 +140,6 @@ If a gated service has dependencies that are also gated, the entire enablement w
 
 ## References
 
-- [`service-registry.md`](./service-registry.md) — `Service` identity that `ServiceEntitlement` references
-- [`metering-definitions.md`](./metering-definitions.md) — meters that become active per-project on entitlement
-- [`downstream-push-architecture.md`](./downstream-push-architecture.md) — how the services operator propagates configuration into billing and quota
+- [Service Registry](./service-registry.md) — `Service` identity that `ServiceEntitlement` references
+- [Metering Definitions](./metering-definitions.md) — meters that become active per-project on entitlement
+- [Downstream Push Architecture](./downstream-push-architecture.md) — how the services operator propagates configuration into billing and quota
