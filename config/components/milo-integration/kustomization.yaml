@@ -1,0 +1,88 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# milo-integration wires the services controller into a Milo control plane:
+#
+#   - Mounts the datum-control-plane-trust-bundle ConfigMap (populated by
+#     trust-manager) so the controller can verify Milo's server certificate.
+#   - Mounts a client certificate issued by the datum-control-plane
+#     ClusterIssuer for authenticating to Milo.
+#   - Replaces the base webhook-cert Secret volume with a cert-manager CSI
+#     volume, also issued by the datum-control-plane ClusterIssuer.
+#   - Mounts a discovery kubeconfig ConfigMap that tells the controller how
+#     to reach Milo. Consumers must provide this ConfigMap (named
+#     services-discovery-kubeconfig) in the services-system namespace.
+#
+# Consumers also need to ensure the services-system namespace has the label
+# `infra.datum.net/inject-datum-control-plane-trust-bundle: ""` so that
+# trust-manager populates the trust bundle ConfigMap.
+
+patches:
+  # Remove the base Secret-based webhook-cert volume and volumeMount so we
+  # can replace them cleanly with a cert-manager CSI volume below. A
+  # strategic merge of same-named volumes would produce an invalid spec
+  # with both secret and csi fields set.
+  - target:
+      kind: Deployment
+      name: services-controller-manager
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/containers/0/volumeMounts/1
+      - op: remove
+        path: /spec/template/spec/volumes/1
+  # Add the Milo-specific volumes, volumeMounts, and the CSI-based webhook
+  # cert that replaces the removed Secret-based one.
+  - target:
+      kind: Deployment
+      name: services-controller-manager
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: services-controller-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: manager
+                volumeMounts:
+                  - mountPath: /etc/kubernetes/pki/trust
+                    name: trust-bundle
+                    readOnly: true
+                  - mountPath: /etc/kubernetes/pki/webhook
+                    name: webhook-cert
+                    readOnly: true
+                  - mountPath: /etc/kubernetes/projects/pki/client
+                    name: client-cert
+                    readOnly: true
+                  - mountPath: /etc/kubernetes/project-discovery/auth
+                    name: discovery-kubeconfig
+                    readOnly: true
+            volumes:
+              - name: trust-bundle
+                configMap:
+                  name: datum-control-plane-trust-bundle
+              - name: discovery-kubeconfig
+                configMap:
+                  name: services-discovery-kubeconfig
+              - name: webhook-cert
+                csi:
+                  driver: csi.cert-manager.io
+                  readOnly: true
+                  volumeAttributes:
+                    csi.cert-manager.io/common-name: services-webhook
+                    csi.cert-manager.io/fs-group: "65532"
+                    csi.cert-manager.io/issuer-kind: ClusterIssuer
+                    csi.cert-manager.io/issuer-name: datum-control-plane
+                    csi.cert-manager.io/dns-names: services-webhook.services-system.svc,services-webhook.services-system.svc.cluster.local
+              - name: client-cert
+                csi:
+                  driver: csi.cert-manager.io
+                  readOnly: true
+                  volumeAttributes:
+                    csi.cert-manager.io/common-name: system:control@services.miloapis.com
+                    csi.cert-manager.io/fs-group: "65532"
+                    csi.cert-manager.io/issuer-kind: ClusterIssuer
+                    csi.cert-manager.io/issuer-name: datum-control-plane
+                    csi.cert-manager.io/key-usages: client auth
+                    csi.cert-manager.io/organizations: system:masters

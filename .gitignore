@@ -1,0 +1,27 @@
+# Binaries and tools
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+cover.out
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Test infrastructure
+.test-infra/
+
+# Go workspace (local dev only; sibling modules not present in CI)
+go.work
+go.work.sum

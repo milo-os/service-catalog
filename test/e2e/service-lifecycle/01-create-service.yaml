@@ -1,0 +1,11 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-compute-miloapis-com
+spec:
+  serviceName: compute.miloapis.com
+  displayName: Compute
+  description: E2E fixture for Service lifecycle.
+  owner:
+    producerProjectRef:
+      name: e2e-producer-project

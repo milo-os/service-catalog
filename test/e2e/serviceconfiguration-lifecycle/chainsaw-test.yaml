@@ -1,0 +1,114 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: serviceconfiguration-lifecycle
+spec:
+  description: |
+    Tests the ServiceConfiguration lifecycle including:
+    - Setting up a prerequisite Published Service the configuration references
+    - Creating a Draft ServiceConfiguration: status conditions surface but
+      billing fan-out is skipped (no MeterDefinition or
+      MonitoredResourceType is materialized)
+    - Publishing the configuration triggers the fan-out: a billing
+      MeterDefinition and MonitoredResourceType appear, owned by the
+      ServiceConfiguration and labeled with the service identifier
+    - Webhook rejects a meter whose name does not start with the
+      referenced Service's spec.serviceName
+
+  steps:
+    - name: setup-service
+      description: |
+        Create the prerequisite Service in Published phase so the
+        ServiceConfiguration's spec.serviceRef resolves and prefix
+        validation has a canonical name to enforce against.
+      try:
+        - apply:
+            file: 00-setup-service.yaml
+
+    - name: create-draft
+      description: |
+        Create a Draft ServiceConfiguration. The controller adds the
+        finalizer and records BillingFanOutHealthy=True with reason
+        BillingFanOutSkipped (Draft does not fan out).
+      try:
+        - create:
+            file: 01-create-draft.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-draft-created.yaml
+
+    - name: publish
+      description: |
+        Advance phase to Published. The controller fans out a billing
+        MeterDefinition and MonitoredResourceType.
+      try:
+        - apply:
+            file: 02-publish.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-published.yaml
+
+    - name: assert-billing-fanout
+      description: |
+        Confirm both fanned-out billing objects materialize with the
+        expected names, labels, owner references, and spec values.
+      try:
+        - assert:
+            timeout: 60s
+            file: 03-assert-billing-fanout.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-billing-meterdefinition.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-billing-monitoredresourcetype.yaml
+
+    - name: reject-invalid-name-prefix
+      description: |
+        Webhook rejects a ServiceConfiguration whose meter.name does not
+        start with the referenced Service's spec.serviceName.
+      try:
+        - apply:
+            file: test-data/invalid-name-prefix.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'must be prefixed with the referenced service')): true
+
+    - name: delete-serviceconfiguration
+      description: |
+        Delete the ServiceConfiguration and confirm finalization removes
+        the fanned-out billing objects.
+      try:
+        - delete:
+            ref:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceConfiguration
+              name: compute-miloapis-com
+        - error:
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceConfiguration
+              metadata:
+                name: compute-miloapis-com
+        - error:
+            resource:
+              apiVersion: billing.miloapis.com/v1alpha1
+              kind: MeterDefinition
+              metadata:
+                name: compute-miloapis-com-instance-cpu-seconds
+        - error:
+            resource:
+              apiVersion: billing.miloapis.com/v1alpha1
+              kind: MonitoredResourceType
+              metadata:
+                name: compute-miloapis-com-instance
+
+    - name: delete-service
+      description: Clean up the prerequisite Service.
+      try:
+        - delete:
+            ref:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              name: compute-miloapis-com

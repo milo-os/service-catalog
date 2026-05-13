@@ -1,0 +1,22 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-service
+spec:
+  serviceRef:
+    name: "services.miloapis.com"
+  kind: Service
+  plural: services
+  singular: service
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
+    - updateStatus
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Organization

@@ -1,0 +1,48 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: services-controller-manager
+rules:
+- apiGroups:
+  - billing.miloapis.com
+  resources:
+  - meterdefinitions
+  - monitoredresourcetypes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconfigurations
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconfigurations/finalizers
+  - services/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconfigurations/status
+  - services/status
+  verbs:
+  - get
+  - patch
+  - update

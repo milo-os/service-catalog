@@ -1,0 +1,35 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-miloapis-com
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  phase: Draft
+  monitoredResourceTypes:
+    - type: compute.miloapis.com/Instance
+      displayName: Instance
+      description: A virtual machine instance.
+      gvk:
+        group: compute.miloapis.com
+        kind: Instance
+      labels:
+        - name: region
+          description: The geographic region the instance runs in.
+        - name: zone
+          description: The availability zone within the region.
+  meters:
+    - name: compute.miloapis.com/instance/cpu-seconds
+      displayName: vCPU seconds
+      description: Total vCPU-seconds consumed by an instance.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - compute.miloapis.com/Instance

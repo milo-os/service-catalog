@@ -1,0 +1,68 @@
+name: E2E Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    name: Chainsaw E2E
+    runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.24.0'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Spin up kind cluster
+        run: task --yes test-infra:cluster-up
+
+      - name: Build container image
+        run: task dev:build
+
+      - name: Load image into kind
+        run: task dev:load
+
+      - name: Install billing CRDs
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
+          task --yes test-infra:kubectl -- wait kustomization/billing-crds \
+            -n flux-system --for=condition=ready --timeout=120s
+
+      - name: Deploy services (e2e overlay)
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -k config/overlays/e2e
+          task --yes test-infra:kubectl -- wait --for=condition=available \
+            deployment/services-controller-manager \
+            -n services-system --timeout=120s
+
+      - name: Wait for webhook certificate to be ready
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- wait --for=condition=ready \
+            certificate/services-serving-cert \
+            -n services-system --timeout=120s
+
+      - name: Install Chainsaw
+        uses: kyverno/action-install-chainsaw@v0.2.14
+
+      - name: Run E2E tests
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: task e2e

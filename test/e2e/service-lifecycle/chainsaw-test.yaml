@@ -1,0 +1,108 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-lifecycle
+spec:
+  description: |
+    Tests the Service lifecycle including:
+    - Creating a Service surfaces the expected spec (defaults to
+      spec.phase: Draft)
+    - The provider advances spec.phase forward through
+      Draft -> Published -> Deprecated -> Retired via plain applies
+    - Backwards phase transitions are rejected by the webhook
+    - displayName and description are editable
+    - serviceName is immutable after create
+    - Service can be deleted
+
+  steps:
+    - name: create-service
+      description: Create a Service. Spec should appear as written.
+      try:
+        - create:
+            file: 01-create-service.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-created.yaml
+
+    - name: publish-service
+      description: |
+        Advance spec.phase to Published. Phase is provider-declared on
+        spec, so this is a plain apply against the main resource.
+      try:
+        - apply:
+            file: test-data/publish-service.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-published.yaml
+
+    - name: edit-editable-fields
+      description: displayName and description are editable after create.
+      try:
+        - apply:
+            file: 02-edit-editable-fields.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-compute-miloapis-com
+              spec:
+                displayName: Compute (Updated)
+                description: Display name and description are editable over a service's lifetime.
+
+    - name: reject-change-service-name
+      description: Verify that serviceName cannot be changed after create (immutability).
+      try:
+        - apply:
+            file: test-data/change-service-name.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'serviceName')): true
+
+    - name: reject-backward-phase
+      description: |
+        Verify the webhook rejects a backwards phase transition. The
+        service is currently Published; attempting to set spec.phase
+        back to Draft must fail.
+      try:
+        - apply:
+            file: test-data/revert-to-draft.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'phase')): true
+
+    - name: deprecate-service
+      description: Advance spec.phase from Published to Deprecated.
+      try:
+        - apply:
+            file: test-data/deprecate-service.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-deprecated.yaml
+
+    - name: retire-service
+      description: Advance spec.phase from Deprecated to Retired.
+      try:
+        - apply:
+            file: test-data/retire-service.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-retired.yaml
+
+    - name: delete-service
+      description: Delete the Service and confirm it is gone.
+      try:
+        - delete:
+            ref:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              name: e2e-compute-miloapis-com
+        - error:
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-compute-miloapis-com

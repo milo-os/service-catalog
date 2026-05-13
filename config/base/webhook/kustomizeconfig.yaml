@@ -1,0 +1,16 @@
+# Teach kustomize about webhook clientConfig.service.name so Service
+# nameReferences are rewritten. We intentionally do NOT declare the
+# namespace path here: the bundle pins webhooks at `services-system` via
+# explicit patches so consumer overlays (e.g. Flux `targetNamespace`) can
+# relocate the CRDs/roles into a different namespace without dragging the
+# webhook clientConfig along with them.
+nameReference:
+- kind: Service
+  version: v1
+  fieldSpecs:
+  - kind: ValidatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    path: webhooks/clientConfig/service/name
+  - kind: MutatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    path: webhooks/clientConfig/service/name

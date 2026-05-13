@@ -1,0 +1,16 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: services-tests-config
+spec:
+  parallel: 1
+  timeouts:
+    apply: 120s
+    assert: 90s
+    cleanup: 90s
+    delete: 45s
+    error: 90s
+    exec: 45s
+  skipDelete: false
+  failFast: false
+  delayBeforeCleanup: 5s

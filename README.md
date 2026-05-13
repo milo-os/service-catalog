@@ -49,7 +49,7 @@ billing.MeterDefinition  (owned by services operator via label + owner ref)
 
 Known consumers:
 
-- **[billing](https://github.com/datum-cloud/billing)** — the services operator pushes
+- **[billing](https://github.com/milo-os/billing)** — the services operator pushes
   `MeterDefinition` and `MonitoredResourceType` into billing's representations of those
   types. Providers like `amberflo-provider` watch billing types only and have no
   compile-time dependency on this repo.
@@ -99,10 +99,10 @@ The repo uses a Go workspace (`go.work`) that includes the `billing` and `amberf
 
 ## Related repos
 
-- **[datum-cloud/billing](https://github.com/datum-cloud/billing)** — billing service; consumes `MeterDefinition` and `MonitoredResourceType` pushed by this operator.
-- **[datum-cloud/compute](https://github.com/datum-cloud/compute)** — compute service; one of the platform services registered here.
-- **[datum-cloud/galactic](https://github.com/datum-cloud/galactic)** — networking service; VPC, everywhere.
-- **[datum-cloud/activity](https://github.com/datum-cloud/activity)** — human-readable activity timelines from control plane audit events.
+- **[milo-os/billing](https://github.com/milo-os/billing)** — billing service; consumes `MeterDefinition` and `MonitoredResourceType` pushed by this operator.
+- **[milo-os/compute](https://github.com/milo-os/compute)** — compute service; one of the platform services registered here.
+- **[milo-os/galactic](https://github.com/milo-os/galactic)** — networking service; VPC, everywhere.
+- **[milo-os/activity](https://github.com/milo-os/activity)** — human-readable activity timelines from control plane audit events.
 
 ## Further reading
 

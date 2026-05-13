@@ -1,0 +1,6 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-compute-miloapis-com
+spec:
+  phase: Published

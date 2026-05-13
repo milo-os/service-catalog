@@ -1,0 +1,11 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: compute-miloapis-com
+spec:
+  serviceName: compute.miloapis.com
+  displayName: Compute Service
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: e2e-producer-project
