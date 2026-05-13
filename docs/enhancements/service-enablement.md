@@ -21,21 +21,26 @@ This enhancement introduces service enablement as a first-class platform capabil
 
 ---
 
+## Resource scoping
+
+Both `ServiceEntitlement` and `ServiceConsumer` are **cluster-scoped**, consistent with the rest of the governance catalog (`Service`, `ServiceConfiguration`). Milo's multi-tenancy model does not use per-tenant namespaces — tenant identity is injected at the front door via request context and enforced by IAM, not by namespace boundaries. Project membership is carried via typed references in `spec`, following the same pattern as `Service.spec.owner.producerProjectRef`.
+
+---
+
 ## Consumer experience
 
 ### Enabling a service
 
-A project admin or billing admin enables a service by creating a `ServiceEntitlement` in their project. From a product perspective, this is the moment a consumer project "opts in" to a service — it signals intent to use it and triggers the platform to make that service available in the project.
-
-Once enabled, the platform automatically provisions what the project needs: quota allocations, billing enrollment, and IAM roles that let project members interact with the service. The consumer doesn't have to wire any of that up manually.
+A project admin or billing admin enables a service by creating a `ServiceEntitlement`. This is the moment a consumer project "opts in" to a service — it signals intent to use it and triggers the platform to provision what the project needs: quota allocations, billing enrollment, and IAM roles. The consumer doesn't have to wire any of that up manually.
 
 ```yaml
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceEntitlement
 metadata:
-  name: compute
-  namespace: projects/my-project
+  name: my-project--compute-miloapis-com
 spec:
+  projectRef:
+    name: my-project
   serviceRef:
     name: compute.miloapis.com
 ```
@@ -64,16 +69,18 @@ A consumer disables a service by deleting their `ServiceEntitlement`. The platfo
 
 ### Seeing your consumers
 
-Every time a consumer enables a service, the platform creates a `ServiceConsumer` record in the provider's project. This gives providers a native view of their consumer base — something they can list, watch, and build tooling on top of — without needing special platform access or cross-tenant visibility.
+Every time a consumer enables a service, the platform creates a `ServiceConsumer` record scoped to the provider's project. This gives providers a native view of their consumer base — something they can list, watch, and build tooling on top of — without needing cross-tenant visibility or special platform access.
 
 ```yaml
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConsumer
 metadata:
-  name: my-project
-  namespace: projects/compute-platform
+  name: compute-miloapis-com--my-project
 spec:
-  service: compute.miloapis.com
+  serviceRef:
+    name: compute.miloapis.com
+  providerProjectRef:
+    name: compute-platform
   consumerProjectRef:
     name: my-project
 status:
@@ -97,12 +104,14 @@ When a consumer tries to enable a gated service, their `ServiceEntitlement` star
 
 ```yaml
 spec:
+  projectRef:
+    name: my-project
   serviceRef:
     name: ml-platform.acme.com
   requestMessage: "Building a recommendation engine for our e-commerce platform."
 ```
 
-The corresponding `ServiceConsumer` record in the provider's project is where the approval happens. The approval decision is the only field the provider manages on this record — the platform owns everything else. The provider approves or denies directly on that record:
+The corresponding `ServiceConsumer` record is where the approval happens. The approval decision is the only field the provider manages on this record — the platform owns everything else. The provider approves or denies directly on that record:
 
 ```yaml
 spec:
