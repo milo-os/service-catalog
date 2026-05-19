@@ -19,7 +19,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	servicesv1alpha1 "go.miloapis.com/services/api/v1alpha1"
 	"go.miloapis.com/services/internal/config"
 	"go.miloapis.com/services/internal/controller"
@@ -153,6 +157,39 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ServiceEntitlement and ServiceConsumer live in project virtual control
+	// planes. We need a multicluster manager backed by the Milo provider so
+	// reconcilers run inside every engaged project's cluster context.
+	provider, err := miloprovider.New(mgr, miloprovider.Options{
+		InternalServiceDiscovery: false,
+		ProjectRestConfig:        cfg,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create Milo multicluster provider")
+		os.Exit(1)
+	}
+
+	mcMgr, err := mcmanager.New(cfg, provider, mcmanager.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			// Avoid port conflict with the primary manager's metrics server.
+			BindAddress: "0",
+		},
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create multicluster manager")
+		os.Exit(1)
+	}
+
+	if err = (&controller.ServiceEntitlementReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceEntitlement")
+		os.Exit(1)
+	}
+	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
+		os.Exit(1)
+	}
+
 	if serverConfig.WebhookServer != nil {
 		if err = serviceswebhooks.SetupServiceWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Service")
@@ -160,6 +197,14 @@ func main() {
 		}
 		if err = serviceswebhooks.SetupServiceConfigurationWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConfiguration")
+			os.Exit(1)
+		}
+		if err = serviceswebhooks.SetupServiceEntitlementWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceEntitlement")
+			os.Exit(1)
+		}
+		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
 			os.Exit(1)
 		}
 	}
@@ -174,6 +219,30 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+
+	// Engage the local manager so the root cluster is reachable as cluster "".
+	// Provider and multicluster manager must run concurrently — each waits on
+	// the other to make progress, so neither can be Start()ed in the
+	// foreground. This mirrors the wiring used by the quota controllers in
+	// the Milo controller manager.
+	go func() {
+		if err := mcMgr.Engage(ctx, "", mcMgr.GetLocalManager()); err != nil {
+			setupLog.Error(err, "unable to engage local cluster on multicluster manager")
+			os.Exit(1)
+		}
+	}()
+	go func() {
+		if err := provider.Run(ctx, mcMgr); err != nil {
+			setupLog.Error(err, "Milo multicluster provider failed")
+			os.Exit(1)
+		}
+	}()
+	go func() {
+		if err := mcMgr.Start(ctx); err != nil {
+			setupLog.Error(err, "multicluster manager failed")
+			os.Exit(1)
+		}
+	}()
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctx); err != nil {

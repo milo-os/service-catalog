@@ -3,6 +3,8 @@
 package validation
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,6 +81,99 @@ func TestValidateServiceUpdate_ServiceNameImmutable(t *testing.T) {
 	unchanged := ValidateServiceUpdate(oldSvc, oldSvc.DeepCopy())
 	if len(unchanged) != 0 {
 		t.Fatalf("expected no errors for unchanged update, got %v", unchanged)
+	}
+}
+
+func TestValidateServiceDependencies_AcceptsAcyclic(t *testing.T) {
+	// a -> b -> c, no cycle.
+	b := newService("b", "b.miloapis.com")
+	b.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "c"}},
+	}
+	c := newService("c", "c.miloapis.com")
+	reader := newFakeReader(t, b, c)
+
+	a := newService("a", "a.miloapis.com")
+	a.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "b"}},
+	}
+	errs := ValidateServiceDependencies(context.Background(), reader, a)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors for acyclic deps: %v", errs)
+	}
+}
+
+func TestValidateServiceDependencies_RejectsCycle(t *testing.T) {
+	// b depends on a; admitting a -> b would close a cycle.
+	b := newService("b", "b.miloapis.com")
+	b.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "a"}},
+	}
+	reader := newFakeReader(t, b)
+
+	a := newService("a", "a.miloapis.com")
+	a.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "b"}},
+	}
+	errs := ValidateServiceDependencies(context.Background(), reader, a)
+	if len(errs) == 0 {
+		t.Fatal("expected cycle detection error")
+	}
+}
+
+func TestValidateServiceDependencies_RejectsIndirectCycle(t *testing.T) {
+	// a -> b -> c -> a: indirect 3-node cycle.
+	b := newService("b", "b.miloapis.com")
+	b.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "c"}},
+	}
+	c := newService("c", "c.miloapis.com")
+	c.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "a"}},
+	}
+	reader := newFakeReader(t, b, c)
+
+	a := newService("a", "a.miloapis.com")
+	a.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "b"}},
+	}
+	errs := ValidateServiceDependencies(context.Background(), reader, a)
+	if len(errs) == 0 {
+		t.Fatal("expected cycle detection error for indirect 3-node cycle")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "cycle") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error mentioning 'cycle', got: %v", errs)
+	}
+}
+
+func TestValidateServiceDependencies_RejectsSelfReference(t *testing.T) {
+	// a depends on itself.
+	reader := newFakeReader(t)
+
+	a := newService("a", "a.miloapis.com")
+	a.Spec.Dependencies = []servicesv1alpha1.ServiceDependency{
+		{ServiceRef: servicesv1alpha1.ServiceRef{Name: "a"}},
+	}
+	errs := ValidateServiceDependencies(context.Background(), reader, a)
+	if len(errs) == 0 {
+		t.Fatal("expected cycle detection error for self-referential dependency")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Error(), "cycle") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error mentioning 'cycle', got: %v", errs)
 	}
 }
 
