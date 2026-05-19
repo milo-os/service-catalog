@@ -72,3 +72,44 @@ webhooks:
     resources:
     - serviceconfigurations
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-services-miloapis-com-v1alpha1-serviceconsumer
+  failurePolicy: Fail
+  name: vserviceconsumer.kb.io
+  rules:
+  - apiGroups:
+    - services.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - serviceconsumers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-services-miloapis-com-v1alpha1-serviceentitlement
+  failurePolicy: Fail
+  name: vserviceentitlement.kb.io
+  rules:
+  - apiGroups:
+    - services.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - serviceentitlements
+  sideEffects: None

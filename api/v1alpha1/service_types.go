@@ -70,6 +70,53 @@ type ServiceSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Owner ServiceOwner `json:"owner"`
+
+	// Dependencies lists services that must be enabled alongside this service.
+	// When a consumer enables this service the platform automatically enables
+	// any listed dependency not already active in that project.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	Dependencies []ServiceDependency `json:"dependencies,omitempty"`
+
+	// EnablementPolicy controls whether consumers can self-service enable
+	// this service or must wait for provider approval.
+	//
+	// +kubebuilder:validation:Optional
+	EnablementPolicy *EnablementPolicy `json:"enablementPolicy,omitempty"`
+}
+
+// ServiceDependency declares a service that must be enabled alongside the
+// owning Service when a consumer project enables it.
+type ServiceDependency struct {
+	// ServiceRef identifies the dependent service by its metadata.name.
+	//
+	// +kubebuilder:validation:Required
+	ServiceRef ServiceRef `json:"serviceRef"`
+}
+
+// EnablementMode controls how consumers can enable a service.
+//
+// +kubebuilder:validation:Enum=SelfService;GatedByProvider
+type EnablementMode string
+
+const (
+	// EnablementModeSelfService allows any consumer to enable the service
+	// without provider approval.
+	EnablementModeSelfService EnablementMode = "SelfService"
+
+	// EnablementModeGatedByProvider requires a provider to explicitly approve
+	// each consumer's request before the entitlement becomes active.
+	EnablementModeGatedByProvider EnablementMode = "GatedByProvider"
+)
+
+// EnablementPolicy defines how consumers may enable a service.
+type EnablementPolicy struct {
+	// Mode selects the enablement flow for this service.
+	//
+	// +kubebuilder:validation:Enum=SelfService;GatedByProvider
+	// +kubebuilder:default=SelfService
+	Mode EnablementMode `json:"mode"`
 }
 
 // ServiceOwner identifies who is responsible for a Service on Milo.
