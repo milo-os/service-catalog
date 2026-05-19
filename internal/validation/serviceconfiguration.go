@@ -25,10 +25,8 @@ func ValidateServiceConfigurationCreate(
 ) field.ErrorList {
 	var allErrs field.ErrorList
 
-	mrtNames := collectMonitoredResourceTypeNames(sc)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(sc)...)
-	allErrs = append(allErrs, validateMeterUniqueness(sc)...)
-	allErrs = append(allErrs, validateMeterMonitoredResourceTypeRefs(sc, mrtNames)...)
+	allErrs = append(allErrs, validateMetricUniqueness(sc)...)
 	allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 
 	return allErrs
@@ -44,10 +42,8 @@ func ValidateServiceConfigurationUpdate(
 ) field.ErrorList {
 	var allErrs field.ErrorList
 
-	mrtNames := collectMonitoredResourceTypeNames(newSC)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(newSC)...)
-	allErrs = append(allErrs, validateMeterUniqueness(newSC)...)
-	allErrs = append(allErrs, validateMeterMonitoredResourceTypeRefs(newSC, mrtNames)...)
+	allErrs = append(allErrs, validateMetricUniqueness(newSC)...)
 	allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 
 	allErrs = append(allErrs, ValidatePhaseTransition(
@@ -60,16 +56,6 @@ func ValidateServiceConfigurationUpdate(
 	}
 
 	return allErrs
-}
-
-func collectMonitoredResourceTypeNames(sc *servicesv1alpha1.ServiceConfiguration) map[string]struct{} {
-	out := make(map[string]struct{}, len(sc.Spec.MonitoredResourceTypes))
-	for _, mrt := range sc.Spec.MonitoredResourceTypes {
-		if mrt.Type != "" {
-			out[mrt.Type] = struct{}{}
-		}
-	}
-	return out
 }
 
 func validateMonitoredResourceTypeUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
@@ -92,12 +78,12 @@ func validateMonitoredResourceTypeUniqueness(sc *servicesv1alpha1.ServiceConfigu
 	return allErrs
 }
 
-func validateMeterUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+func validateMetricUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
 	var allErrs field.ErrorList
-	fldPath := field.NewPath("spec", "meters")
+	fldPath := field.NewPath("spec", "metrics")
 
-	seen := make(map[string]int, len(sc.Spec.Meters))
-	for i, m := range sc.Spec.Meters {
+	seen := make(map[string]int, len(sc.Spec.Metrics))
+	for i, m := range sc.Spec.Metrics {
 		if m.Name == "" {
 			continue
 		}
@@ -108,33 +94,6 @@ func validateMeterUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.Er
 			continue
 		}
 		seen[m.Name] = i
-	}
-	return allErrs
-}
-
-func validateMeterMonitoredResourceTypeRefs(
-	sc *servicesv1alpha1.ServiceConfiguration,
-	mrtNames map[string]struct{},
-) field.ErrorList {
-	var allErrs field.ErrorList
-	metersPath := field.NewPath("spec", "meters")
-
-	for i, m := range sc.Spec.Meters {
-		refPath := metersPath.Index(i).Child("monitoredResourceTypes")
-		if len(m.MonitoredResourceTypes) == 0 {
-			allErrs = append(allErrs, field.Required(
-				refPath, "meter must reference at least one monitored resource type",
-			))
-			continue
-		}
-		for j, ref := range m.MonitoredResourceTypes {
-			if _, ok := mrtNames[ref]; !ok {
-				allErrs = append(allErrs, field.Invalid(
-					refPath.Index(j), ref,
-					"must match a spec.monitoredResourceTypes[].type in this ServiceConfiguration",
-				))
-			}
-		}
 	}
 	return allErrs
 }
@@ -189,16 +148,16 @@ func validateServiceConfigurationNamePrefixes(
 		}
 	}
 
-	metersPath := field.NewPath("spec", "meters")
-	for i, m := range sc.Spec.Meters {
+	metricsPath := field.NewPath("spec", "metrics")
+	for i, m := range sc.Spec.Metrics {
 		if m.Name == "" {
 			continue
 		}
 		if !strings.HasPrefix(m.Name, prefix) || strings.TrimPrefix(m.Name, prefix) == "" {
 			allErrs = append(allErrs, field.Invalid(
-				metersPath.Index(i).Child("name"), m.Name,
+				metricsPath.Index(i).Child("name"), m.Name,
 				fmt.Sprintf("must be prefixed with the referenced service %q (e.g. %q)",
-					prefix, prefix+"example-meter"),
+					prefix, prefix+"example-metric"),
 			))
 		}
 	}
@@ -246,39 +205,39 @@ func validateServiceConfigurationPublishedImmutability(
 		}
 	}
 
-	oldMetersByName := make(map[string]servicesv1alpha1.MeterSpec, len(oldSC.Spec.Meters))
-	for _, m := range oldSC.Spec.Meters {
-		oldMetersByName[m.Name] = m
+	oldMetricsByName := make(map[string]servicesv1alpha1.MetricSpec, len(oldSC.Spec.Metrics))
+	for _, m := range oldSC.Spec.Metrics {
+		oldMetricsByName[m.Name] = m
 	}
-	newMetersByName := make(map[string]struct{}, len(newSC.Spec.Meters))
-	for _, m := range newSC.Spec.Meters {
-		newMetersByName[m.Name] = struct{}{}
+	newMetricsByName := make(map[string]struct{}, len(newSC.Spec.Metrics))
+	for _, m := range newSC.Spec.Metrics {
+		newMetricsByName[m.Name] = struct{}{}
 	}
-	metersPath := field.NewPath("spec", "meters")
-	for oldName := range oldMetersByName {
-		if _, ok := newMetersByName[oldName]; !ok {
+	metricsPath := field.NewPath("spec", "metrics")
+	for oldName := range oldMetricsByName {
+		if _, ok := newMetricsByName[oldName]; !ok {
 			allErrs = append(allErrs, field.Forbidden(
-				metersPath,
-				fmt.Sprintf("meter %q cannot be removed or renamed once the ServiceConfiguration is Published", oldName),
+				metricsPath,
+				fmt.Sprintf("metric %q cannot be removed or renamed once the ServiceConfiguration is Published", oldName),
 			))
 		}
 	}
-	for i, newMeter := range newSC.Spec.Meters {
-		oldMeter, ok := oldMetersByName[newMeter.Name]
+	for i, newMetric := range newSC.Spec.Metrics {
+		oldMetric, ok := oldMetricsByName[newMetric.Name]
 		if !ok {
 			continue
 		}
-		itemPath := metersPath.Index(i)
-		if oldMeter.Measurement.Aggregation != newMeter.Measurement.Aggregation {
+		itemPath := metricsPath.Index(i)
+		if oldMetric.Kind != newMetric.Kind {
 			allErrs = append(allErrs, field.Forbidden(
-				itemPath.Child("measurement", "aggregation"),
-				"measurement.aggregation is immutable once the ServiceConfiguration is Published",
+				itemPath.Child("kind"),
+				"kind is immutable once the ServiceConfiguration is Published",
 			))
 		}
-		if oldMeter.Measurement.Unit != newMeter.Measurement.Unit {
+		if oldMetric.Unit != newMetric.Unit {
 			allErrs = append(allErrs, field.Forbidden(
-				itemPath.Child("measurement", "unit"),
-				"measurement.unit is immutable once the ServiceConfiguration is Published",
+				itemPath.Child("unit"),
+				"unit is immutable once the ServiceConfiguration is Published",
 			))
 		}
 	}
