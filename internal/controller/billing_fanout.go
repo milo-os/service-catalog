@@ -131,10 +131,27 @@ func (f *BillingFanOut) applyMeters(
 	sc *servicesv1alpha1.ServiceConfiguration,
 	serviceName string,
 ) (map[string]struct{}, error) {
-	desired := make(map[string]struct{}, len(sc.Spec.Meters))
-	for i := range sc.Spec.Meters {
-		meter := &sc.Spec.Meters[i]
-		name := encodeBillingName(meter.Name)
+	// Build a lookup from metric name -> MetricSpec for fan-out.
+	metricsByName := make(map[string]*servicesv1alpha1.MetricSpec, len(sc.Spec.Metrics))
+	for i := range sc.Spec.Metrics {
+		m := &sc.Spec.Metrics[i]
+		metricsByName[m.Name] = m
+	}
+
+	// Build a lookup from metric name -> monitored resource type(s) via billing destinations.
+	metricToMRTs := make(map[string][]string)
+	if sc.Spec.Billing != nil {
+		for _, dest := range sc.Spec.Billing.ConsumerDestinations {
+			for _, metricName := range dest.Metrics {
+				metricToMRTs[metricName] = append(metricToMRTs[metricName], dest.MonitoredResourceType)
+			}
+		}
+	}
+
+	desired := make(map[string]struct{}, len(sc.Spec.Metrics))
+	for i := range sc.Spec.Metrics {
+		metric := &sc.Spec.Metrics[i]
+		name := encodeBillingName(metric.Name)
 
 		obj := &billingv1alpha1.MeterDefinition{
 			TypeMeta: metav1.TypeMeta{
@@ -149,19 +166,18 @@ func (f *BillingFanOut) applyMeters(
 				},
 			},
 			Spec: billingv1alpha1.MeterDefinitionSpec{
-				MeterName:   meter.Name,
+				MeterName:   metric.Name,
 				Phase:       billingv1alpha1.Phase(sc.Spec.Phase),
-				DisplayName: meter.DisplayName,
-				Description: meter.Description,
+				DisplayName: metric.DisplayName,
+				Description: metric.Description,
 				Measurement: billingv1alpha1.MeterMeasurement{
-					Aggregation: billingv1alpha1.MeterAggregation(meter.Measurement.Aggregation),
-					Unit:        meter.Measurement.Unit,
+					Unit: metric.Unit,
 				},
 				Billing: billingv1alpha1.MeterBilling{
-					ConsumedUnit: meter.Billing.ConsumedUnit,
-					PricingUnit:  meter.Billing.PricingUnit,
+					ConsumedUnit: metric.Unit,
+					PricingUnit:  metric.Unit,
 				},
-				MonitoredResourceTypes: meter.MonitoredResourceTypes,
+				MonitoredResourceTypes: metricToMRTs[metric.Name],
 			},
 		}
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
