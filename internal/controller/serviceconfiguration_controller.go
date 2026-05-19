@@ -26,11 +26,18 @@ const (
 	// fan-out is up to date with the current ServiceConfiguration spec.
 	ConditionTypeBillingFanOutHealthy = "BillingFanOutHealthy"
 
+	// ConditionTypeQuotaFanOutHealthy surfaces whether the quota
+	// fan-out is up to date with the current ServiceConfiguration spec.
+	ConditionTypeQuotaFanOutHealthy = "QuotaFanOutHealthy"
+
 	reasonServiceConfigurationReady = "ServiceConfigurationReady"
 	reasonServiceRefNotFound        = "ServiceRefNotFound"
 	reasonBillingFanOutFailed       = "BillingFanOutFailed"
 	reasonBillingFanOutHealthy      = "BillingFanOutHealthy"
 	reasonBillingFanOutSkipped      = "BillingFanOutSkipped"
+	reasonQuotaFanOutFailed         = "QuotaFanOutFailed"
+	reasonQuotaFanOutHealthy        = "QuotaFanOutHealthy"
+	reasonQuotaFanOutSkipped        = "QuotaFanOutSkipped"
 )
 
 // ServiceConfigurationReconciler reconciles a ServiceConfiguration
@@ -43,12 +50,14 @@ type ServiceConfigurationReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	BillingFanOut *BillingFanOut
+	QuotaFanOut   *QuotaFanOut
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=meterdefinitions;monitoredresourcetypes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceregistrations;claimcreationpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -92,54 +101,58 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 					Reason:             reasonServiceRefNotFound,
 					Message:            msg + "; cannot fan out",
 				},
+				metav1.Condition{
+					Type:               ConditionTypeQuotaFanOutHealthy,
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: sc.Generation,
+					Reason:             reasonServiceRefNotFound,
+					Message:            msg + "; cannot fan out",
+				},
 			)
 		}
 		return ctrl.Result{}, fmt.Errorf("fetch referenced Service %q: %w", sc.Spec.ServiceRef.Name, err)
 	}
 
-	fanOutCondition := metav1.Condition{
-		Type:               ConditionTypeBillingFanOutHealthy,
-		ObservedGeneration: sc.Generation,
+	var billingFanOutErr error
+	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
+		billingFanOutErr = r.BillingFanOut.Reconcile(ctx, &sc)
 	}
+	billingFanOutCondition := desiredBillingFanOutCondition(&sc, billingFanOutErr)
+
+	var quotaFanOutErr error
+	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
+		quotaFanOutErr = r.QuotaFanOut.Reconcile(ctx, &sc)
+	}
+	quotaFanOutCondition := desiredQuotaFanOutCondition(&sc, quotaFanOutErr)
+
 	readyCondition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		ObservedGeneration: sc.Generation,
 	}
 
-	var fanOutErr error
-	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
-		fanOutCondition.Status = metav1.ConditionTrue
-		fanOutCondition.Reason = reasonBillingFanOutSkipped
-		fanOutCondition.Message = "ServiceConfiguration is Draft; fan-out skipped."
-	} else {
-		fanOutErr = r.BillingFanOut.Reconcile(ctx, &sc)
-		if fanOutErr != nil {
-			fanOutCondition.Status = metav1.ConditionFalse
-			fanOutCondition.Reason = reasonBillingFanOutFailed
-			fanOutCondition.Message = fmt.Sprintf("billing fan-out failed: %v", fanOutErr)
-		} else {
-			fanOutCondition.Status = metav1.ConditionTrue
-			fanOutCondition.Reason = reasonBillingFanOutHealthy
-			fanOutCondition.Message = "Billing fan-out reconciled successfully."
-		}
-	}
-
-	if fanOutErr != nil {
+	if billingFanOutErr != nil {
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonBillingFanOutFailed
-		readyCondition.Message = fanOutCondition.Message
+		readyCondition.Message = billingFanOutCondition.Message
+	} else if quotaFanOutErr != nil {
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = reasonQuotaFanOutFailed
+		readyCondition.Message = quotaFanOutCondition.Message
 	} else {
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
 		readyCondition.Message = "ServiceConfiguration is reconciled."
 	}
 
-	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName, readyCondition, fanOutCondition); err != nil {
+	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName, readyCondition, billingFanOutCondition, quotaFanOutCondition); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if fanOutErr != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", fanOutErr)
+	if billingFanOutErr != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", billingFanOutErr)
+	}
+	if quotaFanOutErr != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", quotaFanOutErr)
 	}
 
 	logger.Info("reconciled serviceconfiguration",
@@ -160,6 +173,9 @@ func (r *ServiceConfigurationReconciler) reconcileDelete(
 	}
 	if err := r.BillingFanOut.Cleanup(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cleanup billing objects: %w", err)
+	}
+	if err := r.QuotaFanOut.Cleanup(ctx, sc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cleanup quota objects: %w", err)
 	}
 	controllerutil.RemoveFinalizer(sc, serviceConfigurationFinalizer)
 	if err := r.Update(ctx, sc); err != nil {
@@ -209,12 +225,58 @@ func serviceConfigurationStatusNeedsUpdate(current, desired *servicesv1alpha1.Se
 	if (current.PublishedAt == nil) != (desired.PublishedAt == nil) {
 		return true
 	}
-	for _, t := range []string{ConditionTypeReady, ConditionTypeBillingFanOutHealthy, ConditionTypePublished} {
+	for _, t := range []string{ConditionTypeReady, ConditionTypeBillingFanOutHealthy, ConditionTypeQuotaFanOutHealthy, ConditionTypePublished} {
 		if !conditionsEqual(current.Conditions, desired.Conditions, t) {
 			return true
 		}
 	}
 	return false
+}
+
+func desiredBillingFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
+	c := metav1.Condition{
+		Type:               ConditionTypeBillingFanOutHealthy,
+		ObservedGeneration: sc.Generation,
+	}
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonBillingFanOutSkipped
+		c.Message = "ServiceConfiguration is Draft; fan-out skipped."
+		return c
+	}
+	if err != nil {
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonBillingFanOutFailed
+		c.Message = fmt.Sprintf("billing fan-out failed: %v", err)
+	} else {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonBillingFanOutHealthy
+		c.Message = "Billing fan-out reconciled successfully."
+	}
+	return c
+}
+
+func desiredQuotaFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
+	c := metav1.Condition{
+		Type:               ConditionTypeQuotaFanOutHealthy,
+		ObservedGeneration: sc.Generation,
+	}
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonQuotaFanOutSkipped
+		c.Message = "ServiceConfiguration is Draft; fan-out skipped."
+		return c
+	}
+	if err != nil {
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonQuotaFanOutFailed
+		c.Message = fmt.Sprintf("quota fan-out failed: %v", err)
+	} else {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonQuotaFanOutHealthy
+		c.Message = "Quota fan-out reconciled successfully."
+	}
+	return c
 }
 
 // SetupWithManager wires the reconciler into the manager. Client, Scheme,
@@ -231,6 +293,13 @@ func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		r.BillingFanOut = &BillingFanOut{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
+		}
+	}
+	if r.QuotaFanOut == nil {
+		r.QuotaFanOut = &QuotaFanOut{
+			Client:     mgr.GetClient(),
+			Scheme:     mgr.GetScheme(),
+			RESTMapper: mgr.GetRESTMapper(),
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).

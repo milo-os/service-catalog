@@ -19,4 +19,4 @@ spec:
     unit: s
   billing:
     consumedUnit: s
-    pricingUnit: h
+    pricingUnit: s
