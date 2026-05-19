@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,7 +51,7 @@ func (f *BillingFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha1.Serv
 	if err != nil {
 		return err
 	}
-	desiredMeters, err := f.applyMeters(ctx, sc, serviceName)
+	desiredMeters, err := f.applyMeterDefinitions(ctx, sc, serviceName)
 	if err != nil {
 		return err
 	}
@@ -89,7 +88,7 @@ func (f *BillingFanOut) applyMonitoredResourceTypes(
 	desired := make(map[string]struct{}, len(sc.Spec.MonitoredResourceTypes))
 	for i := range sc.Spec.MonitoredResourceTypes {
 		entry := &sc.Spec.MonitoredResourceTypes[i]
-		name := encodeBillingName(entry.Type)
+		name := encodeName(entry.Type)
 
 		obj := &billingv1alpha1.MonitoredResourceType{
 			TypeMeta: metav1.TypeMeta{
@@ -126,33 +125,48 @@ func (f *BillingFanOut) applyMonitoredResourceTypes(
 	return desired, nil
 }
 
-func (f *BillingFanOut) applyMeters(
+// buildMetricToMRTsIndex inverts spec.billing.consumerDestinations into a map
+// of metric name → slice of monitored resource type names.
+func buildMetricToMRTsIndex(sc *servicesv1alpha1.ServiceConfiguration) map[string][]string {
+	idx := make(map[string][]string)
+	if sc.Spec.Billing == nil {
+		return idx
+	}
+	for _, dest := range sc.Spec.Billing.ConsumerDestinations {
+		for _, metricName := range dest.Metrics {
+			idx[metricName] = append(idx[metricName], dest.MonitoredResourceType)
+		}
+	}
+	return idx
+}
+
+// metricKindToAggregation maps a MetricKind to its billing aggregation.
+// Delta and Cumulative both aggregate as Sum; Gauge aggregates as Latest.
+func metricKindToAggregation(kind servicesv1alpha1.MetricKind) billingv1alpha1.MeterAggregation {
+	if kind == servicesv1alpha1.MetricKindGauge {
+		return billingv1alpha1.MeterAggregationLatest
+	}
+	return billingv1alpha1.MeterAggregationSum
+}
+
+func (f *BillingFanOut) applyMeterDefinitions(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
 	serviceName string,
 ) (map[string]struct{}, error) {
-	// Build a lookup from metric name -> MetricSpec for fan-out.
-	metricsByName := make(map[string]*servicesv1alpha1.MetricSpec, len(sc.Spec.Metrics))
-	for i := range sc.Spec.Metrics {
-		m := &sc.Spec.Metrics[i]
-		metricsByName[m.Name] = m
-	}
-
-	// Build a lookup from metric name -> monitored resource type(s) via billing destinations.
-	metricToMRTs := make(map[string][]string)
-	if sc.Spec.Billing != nil {
-		for _, dest := range sc.Spec.Billing.ConsumerDestinations {
-			for _, metricName := range dest.Metrics {
-				metricToMRTs[metricName] = append(metricToMRTs[metricName], dest.MonitoredResourceType)
-			}
-		}
-	}
-
+	metricToMRTs := buildMetricToMRTsIndex(sc)
 	desired := make(map[string]struct{}, len(sc.Spec.Metrics))
+
 	for i := range sc.Spec.Metrics {
 		metric := &sc.Spec.Metrics[i]
-		name := encodeBillingName(metric.Name)
+		mrtTypes, hasDest := metricToMRTs[metric.Name]
+		if !hasDest || len(mrtTypes) == 0 {
+			// Quota-only metrics with no billing destination produce no
+			// MeterDefinition — MonitoredResourceTypes requires MinItems=1.
+			continue
+		}
 
+		name := encodeName(metric.Name)
 		obj := &billingv1alpha1.MeterDefinition{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: billingv1alpha1.GroupVersion.String(),
@@ -171,20 +185,26 @@ func (f *BillingFanOut) applyMeters(
 				DisplayName: metric.DisplayName,
 				Description: metric.Description,
 				Measurement: billingv1alpha1.MeterMeasurement{
-					Unit: metric.Unit,
+					Aggregation: metricKindToAggregation(metric.Kind),
+					Unit:        metric.Unit,
 				},
 				Billing: billingv1alpha1.MeterBilling{
+					// Default both to the emission unit. The future SKU layer
+					// will diverge these when pricing units differ.
 					ConsumedUnit: metric.Unit,
 					PricingUnit:  metric.Unit,
 				},
-				MonitoredResourceTypes: metricToMRTs[metric.Name],
+				MonitoredResourceTypes: mrtTypes,
 			},
 		}
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
-			return nil, fmt.Errorf("set controller ref on billing MeterDefinition %q: %w", name, err)
+			return nil, fmt.Errorf("setting controller reference on MeterDefinition %q: %w", name, err)
 		}
-		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
-			return nil, fmt.Errorf("apply billing MeterDefinition %q: %w", name, err)
+		if err := f.Client.Patch(ctx, obj, client.Apply,
+			client.FieldOwner(fieldManagerName),
+			client.ForceOwnership,
+		); err != nil {
+			return nil, fmt.Errorf("applying MeterDefinition %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
 	}
@@ -239,16 +259,6 @@ func (f *BillingFanOut) pruneMeters(
 	return nil
 }
 
-// encodeBillingName produces a deterministic Kubernetes-name-safe slug
-// from a canonical type or meter identifier by lowercasing and replacing
-// `/` and `.` with `-` (e.g. "compute.miloapis.com/Instance" ->
-// "compute-miloapis-com-instance").
-func encodeBillingName(s string) string {
-	out := strings.ToLower(s)
-	out = strings.ReplaceAll(out, "/", "-")
-	out = strings.ReplaceAll(out, ".", "-")
-	return out
-}
 
 func billingLabelsFor(labels []servicesv1alpha1.MonitoredResourceLabel) []billingv1alpha1.MonitoredResourceLabel {
 	if len(labels) == 0 {
