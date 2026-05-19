@@ -19,7 +19,7 @@ spec:
     unit: s
   billing:
     consumedUnit: s
-    pricingUnit: h
+    pricingUnit: s
 ---
 apiVersion: billing.miloapis.com/v1alpha1
 kind: MonitoredResourceType

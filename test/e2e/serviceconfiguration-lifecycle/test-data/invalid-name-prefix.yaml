@@ -12,14 +12,13 @@ spec:
       gvk:
         group: compute.miloapis.com
         kind: Instance
-  meters:
+  metrics:
     - name: wrongprefix/cpu-seconds
       displayName: CPU Seconds
-      measurement:
-        aggregation: Sum
-        unit: s
-      billing:
-        consumedUnit: s
-        pricingUnit: h
-      monitoredResourceTypes:
-        - compute.miloapis.com/Instance
+      kind: Delta
+      unit: s
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: compute.miloapis.com/Instance
+        metrics:
+          - wrongprefix/cpu-seconds
