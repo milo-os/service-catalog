@@ -1,4 +1,59 @@
+import { execSync } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { test, expect } from '../fixtures';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const KUBECONFIG =
+  process.env.KUBECONFIG ?? path.join(REPO_ROOT, '.test-infra/kubeconfig');
+
+const CONFIG_V1_YAML = `\
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute-miloapis-com-v1
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  phase: Deprecated
+  monitoredResourceTypes:
+    - type: compute.miloapis.com/Instance
+      displayName: Compute Instance
+      description: A virtual machine instance running in a Milo zone.
+      gvk:
+        group: compute.miloapis.com
+        kind: Instance
+      labels:
+        - name: region
+          description: The geographic region the instance runs in.
+        - name: zone
+          description: The availability zone within the region.
+  metrics:
+    - name: compute.miloapis.com/instance/cpu-seconds
+      displayName: vCPU Seconds
+      description: Accumulated vCPU-seconds consumed by running instances.
+      kind: Cumulative
+      unit: s
+    - name: compute.miloapis.com/instance/memory-byte-seconds
+      displayName: Memory Byte-Seconds
+      description: Accumulated RAM byte-seconds consumed by running instances.
+      kind: Cumulative
+      unit: By.s
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: compute.miloapis.com/Instance
+        metrics:
+          - compute.miloapis.com/instance/cpu-seconds
+          - compute.miloapis.com/instance/memory-byte-seconds
+`;
+
+test.beforeAll(() => {
+  execSync('kubectl apply -f -', {
+    input: CONFIG_V1_YAML,
+    env: { ...process.env, KUBECONFIG },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+});
 
 test('configuration compare', async ({ page }) => {
   // ── Navigate to compare from the configurations tab ───────────────────────

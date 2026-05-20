@@ -1,0 +1,2160 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+    discovery.miloapis.com/parent-contexts: Organization
+  name: projects.resourcemanager.miloapis.com
+spec:
+  group: resourcemanager.miloapis.com
+  names:
+    kind: Project
+    listKind: ProjectList
+    plural: projects
+    singular: project
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Project is the Schema for the projects API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProjectSpec defines the desired state of Project.
+            properties:
+              ownerRef:
+                description: |-
+                  OwnerRef is a reference to the owner of the project. Must be a valid
+                  resource.
+                properties:
+                  kind:
+                    description: Kind is the kind of the resource.
+                    enum:
+                    - Organization
+                    type: string
+                  name:
+                    description: Name is the name of the resource.
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - ownerRef
+            type: object
+          status:
+            description: ProjectStatus defines the observed state of Project.
+            properties:
+              conditions:
+                default:
+                - lastTransitionTime: "1970-01-01T00:00:00Z"
+                  message: Waiting for control plane to reconcile
+                  reason: Unknown
+                  status: Unknown
+                  type: Ready
+                description: |-
+                  Represents the observations of a project's current state.
+                  Known condition types are: "Ready"
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+    discovery.miloapis.com/parent-contexts: Platform
+  name: projectcontrolplanes.infrastructure.miloapis.com
+spec:
+  group: infrastructure.miloapis.com
+  names:
+    kind: ProjectControlPlane
+    listKind: ProjectControlPlaneList
+    plural: projectcontrolplanes
+    singular: projectcontrolplane
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ProjectControlPlane is the Schema for the projectcontrolplanes
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProjectControlPlaneSpec defines the desired state of ProjectControlPlane.
+            type: object
+          status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Creating a new control plane for the project
+                reason: Creating
+                status: "False"
+                type: ControlPlaneReady
+            description: ProjectControlPlaneStatus defines the observed state of ProjectControlPlane.
+            properties:
+              conditions:
+                description: |-
+                  Represents the observations of a project control plane's current state.
+                  Known condition types are: "Ready"
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: monitoredresourcetypes.billing.miloapis.com
+spec:
+  group: billing.miloapis.com
+  names:
+    kind: MonitoredResourceType
+    listKind: MonitoredResourceTypeList
+    plural: monitoredresourcetypes
+    singular: monitoredresourcetype
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.resourceTypeName
+      name: Type
+      type: string
+    - jsonPath: .spec.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MonitoredResourceType is the Schema for the monitoredresourcetypes
+          API. It is the platform's declaration of which Kubernetes Kinds can
+          appear on a bill or a dashboard, and what descriptive labels their
+          usage events are allowed to carry.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MonitoredResourceTypeSpec defines the desired state of a
+              MonitoredResourceType.
+
+              A MonitoredResourceType declares which Kubernetes Kinds are billable
+              or otherwise monitored by the platform, and the closed set of
+              descriptive labels that usage events against that Kind may carry.
+
+              Core fields (resourceTypeName, gvk.group, gvk.kind) are immutable once
+              created; a breaking change ships as a new MonitoredResourceType with a
+              new canonical name.
+
+              spec.phase is the provider-declared lifecycle intent: Draft ->
+              Published -> Deprecated -> Retired. The controller mirrors that
+              intent via conditions; it does not transition the phase itself.
+
+              Ownership is expressed via labels rather than a spec.owner field.
+            properties:
+              description:
+                description: |-
+                  Description is a plain-English explanation of what the resource
+                  type represents. Editable over the type's lifetime.
+                maxLength: 1024
+                type: string
+              displayName:
+                description: |-
+                  DisplayName is a human-readable name surfaced in portals and
+                  dashboards alongside the canonical resourceTypeName. Editable
+                  over the type's lifetime.
+                maxLength: 128
+                minLength: 1
+                type: string
+              gvk:
+                description: |-
+                  GVK pins the resource type to a Kubernetes Kind. Version is
+                  deliberately omitted: billability is a property of the Kind, not
+                  of a specific API version.
+                properties:
+                  group:
+                    description: |-
+                      Group is the Kubernetes API group of the Kind (e.g.
+                      "compute.miloapis.com"). Immutable.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: gvk.group is immutable
+                      rule: self == oldSelf
+                  kind:
+                    description: Kind is the Kubernetes Kind (e.g. "Instance"). Immutable.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: gvk.kind is immutable
+                      rule: self == oldSelf
+                required:
+                - group
+                - kind
+                type: object
+              labels:
+                description: |-
+                  Labels is the closed set of descriptive labels that usage events
+                  against this resource type are permitted to carry. Events whose
+                  labels are not in this set are rejected at the edge. Adding a new
+                  optional label is additive; adding a required label or removing
+                  any declared label is a breaking change.
+                items:
+                  description: |-
+                    MonitoredResourceLabel declares a single descriptive label that usage
+                    events against the resource type may carry. Labels form a closed set:
+                    events bearing any label not declared here are rejected before they
+                    reach the audit log.
+                  properties:
+                    allowedValues:
+                      description: |-
+                        AllowedValues, when non-empty, constrains the label to a fixed
+                        vocabulary. Events carrying a value outside this set are rejected.
+                      items:
+                        type: string
+                      maxItems: 64
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    description:
+                      description: |-
+                        Description is a plain-English explanation of what the label
+                        conveys. Editable over the resource type's lifetime.
+                      maxLength: 512
+                      type: string
+                    name:
+                      description: |-
+                        Name is the label key as it will appear on usage events (e.g.
+                        "region", "zone", "tier"). It is the map key for this list.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    required:
+                      default: false
+                      description: |-
+                        Required indicates whether every usage event against this
+                        resource type must carry this label. Defaults to false
+                        (optional).
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              phase:
+                allOf:
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                default: Draft
+                description: |-
+                  Phase is the provider-declared lifecycle state of this
+                  monitored resource type. Allowed transitions are forward-only:
+                  Draft -> Published -> Deprecated -> Retired.
+                type: string
+              resourceTypeName:
+                description: |-
+                  ResourceTypeName is the canonical, user-facing identifier for
+                  this monitored resource type. It typically combines the owning
+                  service's reverse-DNS name with the Kubernetes Kind (e.g.
+                  "compute.miloapis.com/Instance") and is the stable identifier
+                  used by portal drill-downs, FinOps exports, and billing events.
+                  Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: resourceTypeName is immutable
+                  rule: self == oldSelf
+            required:
+            - displayName
+            - gvk
+            - phase
+            - resourceTypeName
+            type: object
+          status:
+            description: |-
+              MonitoredResourceTypeStatus defines the observed state of a
+              MonitoredResourceType.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the resource's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              publishedAt:
+                description: |-
+                  PublishedAt is the time at which the controller first observed the
+                  resource in the Published phase.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: meterdefinitions.billing.miloapis.com
+spec:
+  group: billing.miloapis.com
+  names:
+    kind: MeterDefinition
+    listKind: MeterDefinitionList
+    plural: meterdefinitions
+    singular: meterdefinition
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.meterName
+      name: Meter
+      type: string
+    - jsonPath: .spec.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MeterDefinition is the Schema for the meterdefinitions API. It is a
+          declarative, platform-advertised catalog entry for a single billable
+          dimension -- what is measured, in what unit, how it is aggregated.
+          It does not ingest events, calculate money, or store customer data.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MeterDefinitionSpec defines the desired state of a MeterDefinition.
+
+              The spec is organized into three cohesive blocks: identity (who/what
+              this is), measurement (how the signal is captured and aggregated),
+              and billing (how it crosses into commerce). Core fields (meterName,
+              measurement.aggregation, measurement.unit) are immutable once created;
+              a breaking change ships as a new MeterDefinition with a versioned meterName.
+
+              spec.phase is the provider-declared lifecycle intent: Draft ->
+              Published -> Deprecated -> Retired. The controller mirrors that
+              intent via conditions; it does not transition the phase itself.
+
+              Ownership is expressed via labels (e.g. app.kubernetes.io/managed-by)
+              rather than a spec.owner field.
+            properties:
+              billing:
+                description: |-
+                  Billing describes how the meter crosses into commerce. Carries no
+                  rates, currencies, or tiers -- those live in the pricing engine.
+                properties:
+                  consumedUnit:
+                    description: |-
+                      ConsumedUnit is the UCUM unit in which usage is measured (e.g.
+                      "s"). Typically matches measurement.unit; may diverge when the
+                      emitted telemetry is pre-converted. Equality with measurement.unit is
+                      not enforced.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                  pricingUnit:
+                    description: |-
+                      PricingUnit is the UCUM unit pricing quotes against (e.g. "h").
+                      May differ from ConsumedUnit; the pricing engine handles the
+                      conversion.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                required:
+                - consumedUnit
+                - pricingUnit
+                type: object
+              description:
+                description: |-
+                  Description is a plain-English explanation of what the meter
+                  measures. Editable over the meter's lifetime.
+                maxLength: 1024
+                type: string
+              displayName:
+                description: |-
+                  DisplayName is a human-readable name surfaced in portals and on
+                  invoices alongside the canonical meterName.
+                maxLength: 128
+                minLength: 1
+                type: string
+              measurement:
+                description: Measurement describes how the signal is captured and
+                  aggregated.
+                properties:
+                  aggregation:
+                    description: |-
+                      Aggregation is the function applied to samples over a billing
+                      period. Single source of truth for how usage rolls up. Immutable.
+                    enum:
+                    - Sum
+                    - Max
+                    - Min
+                    - Count
+                    - UniqueCount
+                    - Latest
+                    - Average
+                    type: string
+                    x-kubernetes-validations:
+                    - message: measurement.aggregation is immutable
+                      rule: self == oldSelf
+                  dimensions:
+                    description: |-
+                      Dimensions is an ordered list of attribute keys that downstream
+                      systems may group by (e.g. "region", "tier", "resource.type").
+                      Adding a dimension is additive; removing one is a breaking change
+                      and must ship as a new meter.
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  unit:
+                    description: |-
+                      Unit is a UCUM (https://ucum.org/ucum) string describing what the
+                      meter measures (e.g. "s", "By", "{request}", "GBy.h"). Immutable.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: measurement.unit is immutable
+                      rule: self == oldSelf
+                required:
+                - aggregation
+                - unit
+                type: object
+              meterName:
+                description: |-
+                  MeterName is the canonical, user-facing identifier for this
+                  meter. It is the cross-system join key used by invoices, rate
+                  cards, marketplace listings, and FOCUS exports. Typically a
+                  reverse-DNS path (e.g.
+                  "compute.miloapis.com/instance/cpu-seconds"). Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: meterName is immutable
+                  rule: self == oldSelf
+              monitoredResourceTypes:
+                description: |-
+                  MonitoredResourceTypes names the billing.miloapis.com/MonitoredResourceType
+                  instances whose usage events are counted by this meter. Follows
+                  Google's MetricDescriptor.monitored_resource_types pattern: each
+                  entry identifies a resource type that emits samples this meter
+                  aggregates.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+              phase:
+                allOf:
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                - enum:
+                  - Draft
+                  - Published
+                  - Deprecated
+                  - Retired
+                default: Draft
+                description: |-
+                  Phase is the provider-declared lifecycle state of this meter.
+                  Allowed transitions are forward-only:
+                  Draft -> Published -> Deprecated -> Retired.
+                type: string
+            required:
+            - billing
+            - displayName
+            - measurement
+            - meterName
+            - monitoredResourceTypes
+            - phase
+            type: object
+          status:
+            description: MeterDefinitionStatus defines the observed state of a MeterDefinition.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the resource's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              publishedAt:
+                description: |-
+                  PublishedAt is the time at which the controller first observed the
+                  resource in the Published phase.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+    discovery.miloapis.com/parent-contexts: Platform
+  name: resourceregistrations.quota.miloapis.com
+spec:
+  group: quota.miloapis.com
+  names:
+    kind: ResourceRegistration
+    listKind: ResourceRegistrationList
+    plural: resourceregistrations
+    singular: resourceregistration
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Active')].status
+      name: Active
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ResourceRegistration enables quota tracking for a specific resource type.
+          Administrators create registrations to define measurement units, consumer relationships,
+          and claiming permissions.
+
+          ### How It Works
+          - Administrators create registrations to enable quota tracking for specific resource types
+          - The system validates the registration and sets the "Active" condition when ready
+          - ResourceGrants can then allocate capacity for the registered resource type
+          - ResourceClaims can consume capacity when allowed resources are created
+
+          ### Core Relationships
+          - **ResourceGrant.spec.allowances[].resourceType** must match this registration's **spec.resourceType**
+          - **ResourceClaim.spec.requests[].resourceType** must match this registration's **spec.resourceType**
+          - **ResourceClaim.spec.consumerRef** must match this registration's **spec.consumerType** type
+          - **ResourceClaim.spec.resourceRef** kind must be listed in this registration's **spec.claimingResources**
+
+          ### Registration Lifecycle
+          1. **Creation**: Administrator creates **ResourceRegistration** with resource type and consumer type
+          2. **Validation**: System validates that referenced resource types exist and are accessible
+          3. **Activation**: System sets `Active=True` condition when validation passes
+          4. **Operation**: **ResourceGrants** and **ResourceClaims** can reference the active registration
+          5. **Updates**: Only mutable fields (`description`, `claimingResources`) can be changed
+
+          ### Status Conditions
+          - **Active=True**: Registration is validated and operational; grants and claims can use it
+          - **Active=False, reason=ValidationFailed**: Configuration errors prevent activation (check message)
+          - **Active=False, reason=RegistrationPending**: Quota system is processing the registration
+
+          ### Measurement Types
+          - **Entity registrations** (`spec.type=Entity`): Count discrete resource instances (**Projects**, **Users**)
+          - **Allocation registrations** (`spec.type=Allocation`): Measure capacity amounts (CPU, memory, storage)
+
+          ### Field Constraints and Limits
+          - Maximum 20 entries in **spec.claimingResources**
+          - **spec.resourceType**, **spec.consumerType**, and **spec.type** are immutable after creation
+          - **spec.description** maximum 500 characters
+          - **spec.baseUnit** and **spec.displayUnit** maximum 50 characters each
+          - **spec.unitConversionFactor** minimum value is 1
+
+          ### Selectors and Filtering
+          - **Field selectors**: spec.consumerType.kind, spec.consumerType.apiGroup, spec.resourceType
+          - **Recommended labels** (add manually):
+            - quota.miloapis.com/resource-kind: Project
+            - quota.miloapis.com/resource-apigroup: resourcemanager.miloapis.com
+            - quota.miloapis.com/consumer-kind: Organization
+
+          ### Security Considerations
+          - Only include trusted resource types in **spec.claimingResources**
+          - Registrations are cluster-scoped and affect quota system-wide
+          - Consumer types must have appropriate RBAC permissions to create claims
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ResourceRegistrationSpec defines the desired state of ResourceRegistration.
+            properties:
+              baseUnit:
+                description: |-
+                  BaseUnit defines the internal measurement unit for all quota calculations.
+                  The system stores and processes all quota amounts using this unit.
+                  Use singular form with lowercase letters. Maximum 50 characters.
+
+                  Examples:
+                  - "project" (for Entity type tracking Projects)
+                  - "millicore" (for CPU allocation)
+                  - "byte" (for storage or memory)
+                  - "user" (for Entity type tracking Users)
+                maxLength: 50
+                minLength: 1
+                type: string
+              claimingResources:
+                description: |-
+                  ClaimingResources specifies which resource types can create ResourceClaims for this registration.
+                  Only resources listed here can trigger quota consumption for this resource type.
+                  At least one claiming resource must be specified.
+                  Maximum 20 entries.
+                items:
+                  description: |-
+                    ClaimingResource identifies a resource type that can create **ResourceClaims**
+                    for this registration. Uses unversioned references to remain valid across API version changes.
+                  properties:
+                    apiGroup:
+                      description: |-
+                        APIGroup specifies the API group of the resource that can create claims.
+                        Use empty string for Kubernetes core resources (**Secret**, **ConfigMap**, etc.).
+                        Use full group name for custom resources.
+
+                        Examples:
+                        - `""` (core resources like **Secret**, **ConfigMap**)
+                        - `resourcemanager.miloapis.com` (custom resource group)
+                        - `iam.miloapis.com` (Milo IAM resources)
+                      pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    kind:
+                      description: |-
+                        Kind specifies the resource type that can create **ResourceClaims** for this registration.
+                        Must match an existing resource type. Maximum 63 characters.
+
+                        Examples:
+                        - `Project` (**Project** resource creating claims for **Project** quota)
+                        - `User` (**User** resource creating claims for **User** quota)
+                        - `Organization` (**Organization** resource creating claims for **Organization** quota)
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                maxItems: 20
+                minItems: 1
+                type: array
+              consumerType:
+                description: |-
+                  ConsumerType specifies which resource type receives grants and creates claims for this registration.
+                  The consumer type must exist in the cluster before creating the registration.
+
+                  Example: When registering "Projects per Organization", set `ConsumerType` to **Organization**
+                  (apiGroup: `resourcemanager.miloapis.com`, kind: `Organization`). **Organizations** then
+                  receive **ResourceGrants** allocating **Project** quota and create **ResourceClaims** when **Projects** are created.
+                properties:
+                  apiGroup:
+                    description: |-
+                      APIGroup specifies the API group of the quota consumer resource type.
+                      Use empty string for Kubernetes core resources (**Secret**, **ConfigMap**, etc.).
+                      Use full group name for custom resources (for example, `resourcemanager.miloapis.com`).
+                      Must follow DNS subdomain format with lowercase letters, numbers, and hyphens.
+
+                      Examples:
+                      - `resourcemanager.miloapis.com` (**Organizations**, **Projects**)
+                      - `iam.miloapis.com` (**Users**, **Groups**)
+                      - `infrastructure.miloapis.com` (custom infrastructure resources)
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  kind:
+                    description: |-
+                      Kind specifies the resource type that receives quota grants and creates quota claims.
+                      Must match an existing Kubernetes resource type (core or custom).
+                      Use the exact Kind name as defined in the resource's schema.
+
+                      Examples:
+                      - **Organization** (receives **Project** quotas)
+                      - **Project** (receives **User** quotas)
+                      - **User** (receives resource quotas within projects)
+                    type: string
+                required:
+                - apiGroup
+                - kind
+                type: object
+              description:
+                description: |-
+                  Description provides human-readable context about what this registration tracks.
+                  Use clear, specific language that explains the resource type and measurement approach.
+                  Maximum 500 characters.
+
+                  Examples:
+                  - "Projects created within Organizations"
+                  - "CPU millicores allocated to workloads"
+                  - "Storage bytes claimed by volume requests"
+                maxLength: 500
+                minLength: 1
+                type: string
+              displayUnit:
+                description: |-
+                  DisplayUnit defines the unit shown in user interfaces and API responses.
+                  Should be more human-readable than BaseUnit. Use singular form. Maximum 50 characters.
+
+                  Examples:
+                  - "project" (same as BaseUnit when no conversion needed)
+                  - "core" (for displaying CPU instead of millicores)
+                  - "GiB" (for displaying memory/storage instead of bytes)
+                  - "TB" (for large storage volumes)
+                maxLength: 50
+                minLength: 1
+                type: string
+              resourceType:
+                description: |-
+                  ResourceType identifies the resource to track with quota.
+                  Platform administrators define resource type identifiers that make sense for their
+                  quota system usage. This field is immutable after creation.
+
+                  The identifier format is flexible to accommodate various naming conventions
+                  and organizational needs. Service providers can use any meaningful identifier.
+
+                  Examples:
+                  - "resourcemanager.miloapis.com/projects"
+                  - "iam.miloapis.com/users"
+                  - "compute_cpu"
+                  - "storage.volumes"
+                  - "custom-service-quota"
+                maxLength: 253
+                minLength: 1
+                type: string
+              type:
+                description: |-
+                  Type specifies the measurement method for quota tracking.
+                  This field is immutable after creation.
+
+                  Valid values:
+                  - `Entity`: Counts discrete resource instances. Use for resources where each instance
+                    consumes exactly 1 quota unit (for example, **Projects**, **Users**, **Databases**).
+                    Claims always request integer quantities.
+                  - `Allocation`: Measures numeric capacity or resource amounts. Use for resources
+                    with variable consumption (for example, CPU millicores, memory bytes, storage capacity).
+                    Claims can request fractional amounts based on resource specifications.
+                  - `Feature`: A boolean entitlement grant used for org-level feature flags. No admission
+                    enforcement or claim machinery is used — the registration simply signals that a feature
+                    is available to an organization. Grants convey on/off entitlement rather than a numeric
+                    capacity.
+                enum:
+                - Entity
+                - Allocation
+                - Feature
+                type: string
+              unitConversionFactor:
+                description: |-
+                  UnitConversionFactor converts BaseUnit values to DisplayUnit values for presentation.
+                  Must be a positive integer. Minimum value is 1 (no conversion).
+
+                  Formula: displayValue = baseValue / unitConversionFactor
+
+                  Examples:
+                  - 1 (no conversion: "project" to "project")
+                  - 1000 (millicores to cores: 2000 millicores displays as 2 cores)
+                  - 1073741824 (bytes to GiB: 2147483648 bytes displays as 2 GiB)
+                  - 1000000000000 (bytes to TB: 2000000000000 bytes displays as 2 TB)
+                format: int64
+                minimum: 1
+                type: integer
+            required:
+            - baseUnit
+            - claimingResources
+            - consumerType
+            - displayUnit
+            - resourceType
+            - type
+            - unitConversionFactor
+            type: object
+          status:
+            description: |-
+              ResourceRegistrationStatus reports the registration's operational state and processing status.
+              The system updates status conditions to indicate whether the registration is active and
+              usable for quota operations.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represents the latest available observations of the registration's state.
+                  The system sets these conditions to communicate operational status.
+
+                  Standard condition types:
+                  - "Active": Indicates whether the registration is operational. When True, ResourceGrants
+                    and ResourceClaims can reference this registration. When False, quota operations are blocked.
+
+                  Standard condition reasons for "Active":
+                  - "RegistrationActive": Registration is validated and operational
+                  - "ValidationFailed": Specification contains errors (see message for details)
+                  - "RegistrationPending": Registration is being processed
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-validations:
+                - message: Active condition reason must be valid
+                  rule: 'self.all(c, c.type == ''Active'' ? c.reason in [''RegistrationActive'',
+                    ''ValidationFailed'', ''RegistrationPending''] : true)'
+              observedGeneration:
+                description: |-
+                  ObservedGeneration indicates the most recent spec generation that the system has processed.
+                  When ObservedGeneration matches metadata.generation, the status reflects the current spec.
+                  When ObservedGeneration is lower, the system is still processing recent changes.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: spec.resourceType is immutable
+          rule: '!has(oldSelf.spec.resourceType) || self.spec.resourceType == oldSelf.spec.resourceType'
+        - message: spec.consumerType is immutable
+          rule: '!has(oldSelf.spec.consumerType) || self.spec.consumerType == oldSelf.spec.consumerType'
+        - message: spec.type is immutable
+          rule: '!has(oldSelf.spec.type) || self.spec.type == oldSelf.spec.type'
+    selectableFields:
+    - jsonPath: .spec.consumerType.kind
+    - jsonPath: .spec.consumerType.apiGroup
+    - jsonPath: .spec.resourceType
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+    discovery.miloapis.com/parent-contexts: Organization,Project
+  name: resourceclaims.quota.miloapis.com
+spec:
+  group: quota.miloapis.com
+  names:
+    kind: ResourceClaim
+    listKind: ResourceClaimList
+    plural: resourceclaims
+    singular: resourceclaim
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Granted')].status
+      name: Granted
+      type: string
+    - jsonPath: .spec.requests[0].resourceType
+      name: Resource
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ResourceClaim requests quota allocation during resource creation. Claims
+          consume quota capacity from AllowanceBuckets and link to the triggering
+          Kubernetes resource for lifecycle management and auditing.
+
+          ### How It Works
+
+          **ResourceClaims** follow a straightforward lifecycle from creation to
+          resolution. When a **ClaimCreationPolicy** triggers during admission, it
+          creates a **ResourceClaim** that immediately enters the quota evaluation
+          pipeline. The quota system first validates that the consumer type matches the
+          expected `ConsumerType` from the **ResourceRegistration**, then verifies
+          that the triggering resource kind is authorized to claim the requested
+          resource types.
+
+          Once validation passes, the quota system checks quota availability by
+          consulting the relevant **AllowanceBuckets**, one for each (consumer,
+          resourceType) combination in the claim's requests. The quota system treats
+          all requests in a claim as an atomic unit: either sufficient quota exists for
+          every request and the entire claim is granted, or any shortage results in
+          denying the complete claim. This atomic approach ensures consistency and
+          prevents partial resource allocations that could leave the system in an
+          inconsistent state.
+
+          When a claim is granted, it permanently reserves the requested quota amounts
+          until the claim is deleted. This consumption immediately reduces the
+          available quota in the corresponding **AllowanceBuckets**, preventing other
+          claims from accessing that capacity. The quota system updates the claim's
+          status with detailed results for each resource request, including which
+          **AllowanceBucket** provided the quota and any relevant error messages.
+
+          ### Core Relationships
+
+            - **Created by**: **ClaimCreationPolicy** during admission (automatically) or
+              administrators (manually)
+            - **Consumes from**: **AllowanceBucket** matching
+              (`spec.consumerRef`, `spec.requests[].resourceType`)
+            - **Capacity sourced from**: **ResourceGrant** objects aggregated by the bucket
+            - **Linked to**: Triggering resource via `spec.resourceRef` for lifecycle management
+            - **Validated against**: **ResourceRegistration** for each `spec.requests[].resourceType`
+
+          ### Claim Lifecycle States
+
+            - **Initial**: `Granted=False`, `reason=PendingEvaluation` (claim created, awaiting processing)
+            - **Granted**: `Granted=True`, `reason=QuotaAvailable` (all requests allocated successfully)
+            - **Denied**: `Granted=False`, `reason=QuotaExceeded` or `ValidationFailed` (requests could not be satisfied)
+
+          ### Automatic vs Manual Claims
+
+          **Automatic Claims** (created by **ClaimCreationPolicy**):
+
+            - Include standard labels and annotations for tracking
+            - Set owner references to triggering resource when possible
+            - Automatically cleaned up when denied to prevent accumulation
+            - Marked with `quota.miloapis.com/auto-created=true` label
+
+          **Manual Claims** (created by administrators):
+
+            - Require explicit metadata and references
+            - Not automatically cleaned up when denied
+            - Used for testing or special allocation scenarios
+
+          ### Status Information
+
+            - **Overall Status**: `status.conditions[type=Granted]` indicates claim approval
+            - **Detailed Results**: `status.allocations[]` provides per-request allocation details
+            - **Bucket References**: `status.allocations[].allocatingBucket` identifies quota sources
+
+          ### Field Constraints and Validation
+
+            - Maximum 20 resource requests per claim
+            - Each resource type can appear only once in requests
+            - Consumer type must match `ResourceRegistration.spec.consumerType` for each requested type
+            - Triggering resource kind must be listed in `ResourceRegistration.spec.claimingResources`
+
+          ### Selectors and Filtering
+
+            - **Field selectors**: spec.consumerRef.kind, spec.consumerRef.name, spec.resourceRef.apiGroup, spec.resourceRef.kind, spec.resourceRef.name, spec.resourceRef.namespace
+            - **Auto-created labels**: quota.miloapis.com/auto-created, quota.miloapis.com/policy, quota.miloapis.com/gvk
+            - **Auto-created annotations**: quota.miloapis.com/created-by, quota.miloapis.com/created-at,  quota.miloapis.com/resource-name
+
+          ### Common Queries
+
+            - All claims for a consumer: field selector spec.consumerRef.kind + spec.consumerRef.name
+            - Claims from a specific policy: label selector quota.miloapis.com/policy=<policy-name>
+            - Claims for a resource type: add custom labels via policy template
+            - Failed claims: field  selector on status conditions
+
+          ### Troubleshooting
+
+            - **Denied claims**: Check status.allocations[].message for specific quota or validation errors
+            - **Pending claims**: Verify ResourceRegistration is Active and AllowanceBucket exists
+            - **Missing claims**: Check ClaimCreationPolicy conditions and trigger expressions
+
+          ### Performance Considerations
+
+            - Claims are processed synchronously during admission (affects API latency)
+            - Large numbers of claims can impact bucket aggregation performance
+            - Consider batch processing for bulk resource creation
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ResourceClaimSpec defines the desired state of ResourceClaim.
+            properties:
+              consumerRef:
+                description: |-
+                  ConsumerRef identifies the quota consumer making this claim. The consumer
+                  must match the ConsumerType defined in the ResourceRegistration for each
+                  requested resource type. The system validates this relationship during
+                  claim processing.
+
+                  When creating ResourceClaims via ClaimCreationPolicy, this field can be
+                  omitted and the admission plugin will automatically fill it based on the
+                  authenticated user's context (organization or project).
+
+                  Examples:
+
+                    - Organization consuming Project quota
+                    - Project consuming User quota
+                    - Organization consuming storage quota
+                properties:
+                  apiGroup:
+                    description: |-
+                      APIGroup specifies the API group of the consumer resource.
+                      Use full group name for Milo resources.
+
+                      Examples:
+                      - "resourcemanager.miloapis.com" (Organization/Project resources)
+                      - "iam.miloapis.com" (User/Group resources)
+                      - "infrastructure.miloapis.com" (infrastructure resources)
+                    type: string
+                  kind:
+                    description: |-
+                      Kind specifies the type of consumer resource.
+                      Must match an existing Kubernetes resource type that can receive quota grants.
+
+                      Common consumer types:
+                      - "Organization" (top-level quota consumer)
+                      - "Project" (project-level quota consumer)
+                      - "User" (user-level quota consumer)
+                    type: string
+                  name:
+                    description: |-
+                      Name identifies the specific consumer resource instance.
+                      Must match the name of an existing consumer resource in the cluster.
+
+                      Examples:
+                      - "acme-corp" (Organization name)
+                      - "web-application" (Project name)
+                      - "john.doe" (User name)
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace identifies the namespace of the consumer resource.
+                      Required for namespaced consumer resources (e.g., Projects).
+                      Leave empty for cluster-scoped consumer resources (e.g., Organizations).
+
+                      Examples:
+                      - "" (empty for cluster-scoped Organizations)
+                      - "organization-acme-corp" (namespace for Projects within an organization)
+                      - "project-web-app" (namespace for resources within a project)
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              requests:
+                description: |-
+                  Requests specifies the resource types and amounts being claimed from quota.
+                  Each resource type can appear only once in the requests array. Minimum 1
+                  request, maximum 20 requests per claim.
+
+                  The system processes all requests as a single atomic operation: either all
+                  requests are granted or all are denied.
+                items:
+                  description: |-
+                    ResourceRequest defines a single resource request within a ResourceClaim.
+                    Each request specifies a resource type and the amount of quota being claimed.
+                  properties:
+                    amount:
+                      description: |-
+                        Amount specifies how much quota to claim for this resource type. Must be
+                        measured in the BaseUnit defined by the corresponding ResourceRegistration.
+                        Must be a positive integer (minimum value is 0, but 0 means no quota
+                        requested).
+
+                        For Entity registrations: Use 1 for single resource instances (1 Project, 1
+                        User) For Allocation registrations: Use actual capacity amounts (2048 for
+                        2048 MB, 1000 for 1000 millicores)
+
+                        Examples:
+
+                          - 1 (claiming 1 Project)
+                          - 2048 (claiming 2048 bytes of storage)
+                          - 1000 (claiming 1000 CPU millicores)
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    resourceType:
+                      description: |-
+                        ResourceType identifies the specific resource type being claimed. Must
+                        exactly match a ResourceRegistration.spec.resourceType that is currently
+                        active. The quota system validates this reference during claim processing.
+
+                        The format is defined by platform administrators when creating ResourceRegistrations.
+                        Service providers can use any identifier that makes sense for their quota system usage.
+
+                        Examples:
+
+                          - "resourcemanager.miloapis.com/projects"
+                          - "compute_cpu"
+                          - "storage.volumes"
+                          - "custom-service-quota"
+                      type: string
+                  required:
+                  - amount
+                  - resourceType
+                  type: object
+                maxItems: 20
+                minItems: 1
+                type: array
+              resourceRef:
+                description: |-
+                  ResourceRef identifies the actual Kubernetes resource that triggered this
+                  claim. ClaimCreationPolicy automatically populates this field during
+                  admission. Uses unversioned reference (apiGroup + kind + name + namespace)
+                  to remain valid across API version changes.
+
+                  The referenced resource's kind must be listed in the ResourceRegistration's
+                  spec.claimingResources for the claim to be valid.
+
+                  Examples:
+
+                    - Project resource triggering Project quota claim
+                    - User resource triggering User quota claim
+                    - Organization resource triggering storage quota claim
+                properties:
+                  apiGroup:
+                    description: |-
+                      APIGroup specifies the API group of the referenced resource.
+                      Use full group name for Milo resources.
+
+                      Examples:
+                      - "resourcemanager.miloapis.com" (Project, Organization)
+                      - "iam.miloapis.com" (User, Group)
+                      - "infrastructure.miloapis.com" (infrastructure resources)
+                    type: string
+                  kind:
+                    description: |-
+                      Kind specifies the type of the referenced resource.
+                      Must match an existing Kubernetes resource type.
+
+                      Examples:
+                      - "Project" (Project resource that triggered quota claim)
+                      - "User" (User resource that triggered quota claim)
+                      - "Organization" (Organization resource that triggered quota claim)
+                    type: string
+                  name:
+                    description: |-
+                      Name identifies the specific resource instance that triggered the quota claim.
+                      Used for linking claims back to their triggering resources.
+
+                      Examples:
+                      - "web-app-project" (Project that triggered Project quota claim)
+                      - "john.doe" (User that triggered User quota claim)
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace specifies the namespace containing the referenced resource.
+                      Required for namespaced resources, omitted for cluster-scoped resources.
+
+                      Examples:
+                      - "acme-corp" (organization namespace containing Project)
+                      - "team-alpha" (project namespace containing User)
+                      - "" or omitted (for cluster-scoped resources like Organization)
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - requests
+            type: object
+          status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Awaiting capacity evaluation
+                reason: PendingEvaluation
+                status: "False"
+                type: Granted
+            description: |-
+              ResourceClaimStatus reports the claim's processing state and allocation
+              results. The system updates this status to communicate whether quota was
+              granted and provide detailed allocation information for each requested
+              resource type.
+            properties:
+              allocations:
+                description: |-
+                  Allocations provides detailed status for each resource request in the
+                  claim. The system creates one allocation entry for each request in
+                  spec.requests. Use this field to understand which specific requests were
+                  granted or denied.
+
+                  List is indexed by ResourceType for efficient lookups.
+                items:
+                  description: |-
+                    ResourceClaimAllocationStatus tracks the allocation status for a specific resource
+                    request within a claim. The system creates one allocation entry for each
+                    request in the claim specification.
+                  properties:
+                    allocatedAmount:
+                      description: |-
+                        AllocatedAmount specifies how much quota was actually allocated for this
+                        request. Measured in the BaseUnit defined by the ResourceRegistration.
+                        Currently always equals the requested amount or 0 (partial allocations not
+                        supported).
+
+                        Set to the requested amount when Status=Granted, 0 when Status=Denied or
+                        Pending.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    allocatingBucket:
+                      description: |-
+                        AllocatingBucket identifies the AllowanceBucket that provided the quota for
+                        this request. Set only when Status=Granted. Used for tracking and debugging
+                        quota consumption.
+
+                        Format: bucket name (generated as:
+                        consumer-kind-consumer-name-resource-type-hash)
+                      type: string
+                    lastTransitionTime:
+                      description: |-
+                        LastTransitionTime records when this allocation status last changed.
+                        Updates whenever Status, Reason, or Message changes.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        Message provides a human-readable explanation of the allocation result.
+                        Includes specific details about quota availability or validation errors.
+
+                        Examples:
+
+                          - "Allocated 1 project from bucket organization-acme-projects"
+                          - "Insufficient quota: need 2048 bytes, only 1024 available"
+                          - "ResourceRegistration not found for resourceType"
+                      type: string
+                    reason:
+                      description: |-
+                        Reason provides a machine-readable explanation for the current status.
+                        Standard reasons include "QuotaAvailable", "QuotaExceeded",
+                        "ValidationFailed".
+                      type: string
+                    resourceType:
+                      description: |-
+                        ResourceType identifies which resource request this allocation status
+                        describes. Must exactly match one of the resourceType values in
+                        spec.requests.
+                      minLength: 1
+                      type: string
+                    status:
+                      description: |-
+                        Status indicates the allocation result for this specific resource request.
+
+                        Valid values:
+
+                          - "Granted": Quota was available and the request was approved
+                          - "Denied": Insufficient quota or validation failure prevented allocation
+                          - "Pending": Request is being evaluated (initial state)
+                      enum:
+                      - Granted
+                      - Denied
+                      - Pending
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - resourceType
+                  - status
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - resourceType
+                x-kubernetes-list-type: map
+              conditions:
+                description: |-
+                  Conditions represents the overall status of the claim evaluation.
+                  Controllers set these conditions to provide a high-level view of claim
+                  processing.
+
+                  Standard condition types:
+
+                    - "Granted": Indicates whether the claim was approved and quota allocated
+
+                  Standard condition reasons for "Granted":
+
+                    - "QuotaAvailable": All requested quota was available and allocated
+                    - "QuotaExceeded": Insufficient quota prevented allocation (claim denied)
+                    - "ValidationFailed": Configuration errors prevented evaluation (claim denied)
+                    - "PendingEvaluation": Claim is still being processed (initial state)
+
+                  Claim Lifecycle:
+
+                    1. Created: Granted=False, reason=PendingEvaluation
+                    2. Processed: Granted=True/False based on quota availability and validation
+                    3. Updated: Granted condition changes only when allocation results change
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-validations:
+                - message: Granted condition reason must be valid
+                  rule: 'self.all(c, c.type == ''Granted'' ? c.reason in [''QuotaAvailable'',
+                    ''QuotaExceeded'', ''ValidationFailed'', ''PendingEvaluation'']
+                    : true)'
+              observedGeneration:
+                description: |-
+                  ObservedGeneration indicates the most recent spec generation the system has
+                  processed. When ObservedGeneration matches metadata.generation, the status
+                  reflects the current spec. When ObservedGeneration is lower, the system is
+                  still processing recent changes.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    selectableFields:
+    - jsonPath: .spec.consumerRef.kind
+    - jsonPath: .spec.consumerRef.name
+    - jsonPath: .spec.resourceRef.apiGroup
+    - jsonPath: .spec.resourceRef.kind
+    - jsonPath: .spec.resourceRef.name
+    - jsonPath: .spec.resourceRef.namespace
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+    discovery.miloapis.com/parent-contexts: Organization,Project
+  name: resourcegrants.quota.miloapis.com
+spec:
+  group: quota.miloapis.com
+  names:
+    kind: ResourceGrant
+    listKind: ResourceGrantList
+    plural: resourcegrants
+    singular: resourcegrant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Active')].status
+      name: Active
+      type: string
+    - jsonPath: .spec.consumerRef.apiGroup
+      name: Consumer Group
+      priority: 1
+      type: string
+    - jsonPath: .spec.consumerRef.kind
+      name: Consumer Type
+      priority: 1
+      type: string
+    - jsonPath: .spec.consumerRef.name
+      name: Consumer
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ResourceGrant allocates quota capacity to a consumer for specific resource types.
+          Grants provide the allowances that AllowanceBuckets aggregate to determine
+          available quota for ResourceClaim evaluation.
+
+          ### How It Works
+          **ResourceGrants** begin their lifecycle when either an administrator creates them manually or a
+          **GrantCreationPolicy** generates them automatically in response to observed resource changes. Upon
+          creation, the grant enters a validation phase where the quota system examines the consumer type
+          to ensure it matches the expected `ConsumerType` from each **ResourceRegistration** targeted by
+          the grant's allowances. The quota system also verifies that all specified resource types correspond
+          to active registrations and that the allowance amounts are valid non-negative integers.
+
+          When validation succeeds, the quota system marks the grant as `Active`, signaling to **AllowanceBucket**
+          resources that this grant should contribute to quota calculations. The bucket resources
+          continuously monitor for active grants and aggregate their allowance amounts into the appropriate
+          buckets based on consumer and resource type matching. This aggregation process makes the granted
+          quota capacity available for **ResourceClaim** consumption.
+
+          **ResourceClaims** then consume the capacity that active grants provide, creating a flow from grants
+          through buckets to claims. The grant's capacity remains reserved as long as claims reference it,
+          ensuring that quota allocations persist until the consuming resources are removed. This creates
+          a stable quota environment where capacity allocations remain consistent across resource lifecycles.
+
+          ### Core Relationships
+          - **Provides capacity to**: AllowanceBucket matching (spec.consumerRef, spec.allowances[].resourceType)
+          - **Consumed by**: ResourceClaim objects processed against the aggregated buckets
+          - **Validated against**: ResourceRegistration for each spec.allowances[].resourceType
+          - **Created by**: Administrators manually or GrantCreationPolicy automatically
+
+          ### Quota Aggregation Logic
+          Multiple ResourceGrants for the same (consumer, resourceType) combination:
+          - Aggregate into a single AllowanceBucket for that combination
+          - All bucket amounts from all allowances are summed for total capacity
+          - Only Active grants contribute to the aggregated limit
+          - Inactive grants are excluded from quota calculations
+
+          ### Grant vs Bucket Relationship
+          - **ResourceGrant**: Specifies intended quota allocations
+          - **AllowanceBucket**: Aggregates actual available quota from active grants
+          - **ResourceClaim**: Consumes quota from buckets (which source from grants)
+
+          ### Allowance Structure
+          Each grant can contain multiple allowances for different resource types:
+          - All allowances share the same consumer (spec.consumerRef)
+          - Each allowance can have multiple buckets (for tracking, attribution, or incremental increases)
+          - Bucket amounts within an allowance are summed for that resource type
+
+          ### Manual vs Automated Grants
+          **Manual Grants** (created by administrators):
+          - Explicit quota allocations for specific consumers
+          - Require direct management and updates
+          - Useful for base quotas, special allocations, or testing
+
+          **Automated Grants** (created by GrantCreationPolicy):
+          - Generated based on resource lifecycle events
+          - Include labels/annotations for tracking policy source
+          - Automatically managed based on trigger conditions
+
+          ### Validation Requirements
+          - Consumer type must match ResourceRegistration.spec.consumerType for each resource type
+          - All resource types must reference active ResourceRegistration objects
+          - Maximum 20 allowances per grant
+          - All amounts must be non-negative integers in BaseUnit
+
+          ### Field Constraints and Limits
+          - Maximum 20 allowances per grant
+          - Each allowance must have at least 1 bucket
+          - Bucket amounts must be non-negative (0 is allowed but provides no quota)
+          - All amounts measured in BaseUnit from ResourceRegistration
+
+          ### Status Information
+          - **Active condition**: Indicates whether grant is contributing to quota buckets
+          - **Validation errors**: Reported in condition message when Active=False
+          - **Processing status**: ObservedGeneration tracks spec changes
+
+          ### Selectors and Filtering
+          - **Field selectors**: spec.consumerRef.kind, spec.consumerRef.name
+          - **Recommended labels** (add manually for better organization):
+            - quota.miloapis.com/consumer-kind: Organization
+            - quota.miloapis.com/consumer-name: acme-corp
+            - quota.miloapis.com/source: policy-name or manual
+            - quota.miloapis.com/tier: basic, premium, enterprise
+
+          ### Common Queries
+          - All grants for a consumer: field selector spec.consumerRef.kind + spec.consumerRef.name
+          - Grants by source policy: label selector quota.miloapis.com/source=<policy-name>
+          - Grants by resource tier: label selector quota.miloapis.com/tier=<tier-name>
+          - Active vs inactive grants: check status.conditions[type=Active].status
+
+          ### Cross-Cluster Allocation
+          GrantCreationPolicy can create grants in parent control planes for cross-cluster quota:
+          - Policy running in child cluster creates grants in parent cluster
+          - Grants provide capacity that spans multiple child clusters
+          - Enables centralized quota management across cluster hierarchies
+
+          ### Troubleshooting
+          - **Inactive grants**: Check status.conditions[type=Active] for validation errors
+          - **Missing quota**: Verify grants are Active and contributing to correct buckets
+          - **Grant conflicts**: Multiple grants for same consumer+resourceType are aggregated, not conflicting
+
+          ### Performance Considerations
+          - Large numbers of grants can impact bucket aggregation performance
+          - Consider consolidating grants where possible to reduce aggregation overhead
+          - Grant status updates are asynchronous and may lag spec changes
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ResourceGrantSpec defines the desired state of ResourceGrant.
+            properties:
+              allowances:
+                description: |-
+                  Allowances specifies the quota allocations provided by this grant.
+                  Each allowance grants capacity for a specific resource type.
+                  Minimum 1 allowance required, maximum 20 allowances per grant.
+
+                  All allowances in a single grant:
+                  - Apply to the same consumer (spec.consumerRef)
+                  - Contribute to the same AllowanceBucket for each resource type
+                  - Activate and deactivate together based on the grant's status
+                items:
+                  description: |-
+                    Allowance defines quota allocation for a specific resource type within a ResourceGrant.
+                    Each allowance can contain multiple buckets that sum to provide total capacity.
+                  properties:
+                    buckets:
+                      description: |-
+                        Buckets contains the quota allocations for this resource type.
+                        All bucket amounts are summed to determine the total allowance.
+                        Minimum 1 bucket required per allowance.
+
+                        Multiple buckets can be used for:
+                        - Separating quota from different sources or tiers
+                        - Managing incremental quota increases over time
+                        - Tracking quota attribution for billing or reporting
+                      items:
+                        description: |-
+                          Bucket represents a single allocation of quota capacity within an allowance.
+                          Each bucket contributes its amount to the total allowance for a resource type.
+                        properties:
+                          amount:
+                            description: |-
+                              Amount specifies the quota capacity provided by this bucket.
+                              Must be measured in the BaseUnit defined by the corresponding ResourceRegistration.
+                              Must be a non-negative integer (0 is valid but provides no quota).
+
+                              Examples:
+                              - 100 (providing 100 projects)
+                              - 2048000 (providing 2048000 bytes = 2GB)
+                              - 5000 (providing 5000 CPU millicores = 5 cores)
+                            format: int64
+                            minimum: 0
+                            type: integer
+                        required:
+                        - amount
+                        type: object
+                      minItems: 1
+                      type: array
+                    resourceType:
+                      description: |-
+                        ResourceType identifies the specific resource type receiving quota allocation.
+                        Must exactly match a ResourceRegistration.spec.resourceType that is currently active.
+                        The quota system validates this reference when processing the grant.
+
+                        The identifier format is flexible, as defined by platform administrators
+                        in their ResourceRegistrations.
+
+                        Examples:
+                        - "resourcemanager.miloapis.com/projects"
+                        - "compute_cpu"
+                        - "storage.volumes"
+                        - "custom-service-quota"
+                      type: string
+                  required:
+                  - buckets
+                  - resourceType
+                  type: object
+                minItems: 1
+                type: array
+              consumerRef:
+                description: |-
+                  ConsumerRef identifies the quota consumer that receives these allowances.
+                  The consumer type must match the ConsumerType defined in the ResourceRegistration
+                  for each allowance resource type. The system validates this relationship.
+
+                  Examples:
+                  - Organization receiving Project quota allowances
+                  - Project receiving User quota allowances
+                  - Organization receiving storage quota allowances
+                properties:
+                  apiGroup:
+                    description: |-
+                      APIGroup specifies the API group of the consumer resource.
+                      Use full group name for Milo resources.
+
+                      Examples:
+                      - "resourcemanager.miloapis.com" (Organization/Project resources)
+                      - "iam.miloapis.com" (User/Group resources)
+                      - "infrastructure.miloapis.com" (infrastructure resources)
+                    type: string
+                  kind:
+                    description: |-
+                      Kind specifies the type of consumer resource.
+                      Must match an existing Kubernetes resource type that can receive quota grants.
+
+                      Common consumer types:
+                      - "Organization" (top-level quota consumer)
+                      - "Project" (project-level quota consumer)
+                      - "User" (user-level quota consumer)
+                    type: string
+                  name:
+                    description: |-
+                      Name identifies the specific consumer resource instance.
+                      Must match the name of an existing consumer resource in the cluster.
+
+                      Examples:
+                      - "acme-corp" (Organization name)
+                      - "web-application" (Project name)
+                      - "john.doe" (User name)
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace identifies the namespace of the consumer resource.
+                      Required for namespaced consumer resources (e.g., Projects).
+                      Leave empty for cluster-scoped consumer resources (e.g., Organizations).
+
+                      Examples:
+                      - "" (empty for cluster-scoped Organizations)
+                      - "organization-acme-corp" (namespace for Projects within an organization)
+                      - "project-web-app" (namespace for resources within a project)
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - allowances
+            - consumerRef
+            type: object
+          status:
+            description: |-
+              ResourceGrantStatus reports the grant's operational state and processing status.
+              Controllers update status conditions to indicate whether the grant is active
+              and contributing capacity to AllowanceBuckets.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represents the latest available observations of the grant's state.
+                  Controllers set these conditions to communicate operational status.
+
+                  Standard condition types:
+                  - "Active": Indicates whether the grant is operational and contributing to quota buckets.
+                    When True, allowances are aggregated into AllowanceBuckets and available for claims.
+                    When False, allowances do not contribute to quota decisions.
+
+                  Standard condition reasons for "Active":
+                  - "GrantActive": Grant is validated and contributing to quota buckets
+                  - "ValidationFailed": Specification contains errors preventing activation (see message)
+                  - "GrantPending": Grant is being processed by the quota system
+
+                  Grant Lifecycle:
+                  1. Created: Active=Unknown, reason=GrantPending
+                  2. Validated: Active=True, reason=GrantActive OR Active=False, reason=ValidationFailed
+                  3. Updated: Active condition changes only when validation results change
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-validations:
+                - message: Active condition reason must be valid
+                  rule: 'self.all(c, c.type == ''Active'' ? c.reason in [''GrantActive'',
+                    ''ValidationFailed'', ''GrantPending''] : true)'
+              observedGeneration:
+                description: |-
+                  ObservedGeneration indicates the most recent spec generation the quota system has processed.
+                  When ObservedGeneration matches metadata.generation, the status reflects the current spec.
+                  When ObservedGeneration is lower, the quota system is still processing recent changes.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    selectableFields:
+    - jsonPath: .spec.consumerRef.kind
+    - jsonPath: .spec.consumerRef.name
+    served: true
+    storage: true
+    subresources:
+      status: {}

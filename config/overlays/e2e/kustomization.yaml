@@ -5,6 +5,7 @@ resources:
   - ../../base/crd
   - ../../base/manager
   - ../../base/certmanager
+  - dep-crds.yaml
 
 
 components:
@@ -12,7 +13,7 @@ components:
   - ../../components/controller_rbac
 
 images:
-  - name: ghcr.io/milo-os/service-catalog
+  - name: ghcr.io/milo-os/services
     newTag: dev
 
 patches:

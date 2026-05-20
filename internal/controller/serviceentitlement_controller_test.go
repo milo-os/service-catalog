@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func entitlementRequest(cluster, name string) mcreconcile.Request {
 // its add-finalizer / set-status passes in a single test setup.
 func reconcileUntilStable(t *testing.T, r *ServiceEntitlementReconciler, req mcreconcile.Request, maxIters int) {
 	t.Helper()
-	for i := 0; i < maxIters; i++ {
+	for i := range maxIters {
 		res, err := r.Reconcile(context.Background(), req)
 		if err != nil {
 			t.Fatalf("Reconcile iter %d: %v", i, err)
@@ -282,11 +283,51 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 	}
 }
 
-func hasFinalizer(obj client.Object, f string) bool {
-	for _, x := range obj.GetFinalizers() {
-		if x == f {
-			return true
-		}
+// TestServiceEntitlementReconciler_SingleCluster verifies that the reconciler
+// works in single control plane mode. The local cluster is registered under
+// the name "local" (matching how main.go engages it), so GetCluster works the
+// same way as in multi-cluster mode — no special casing needed.
+func TestServiceEntitlementReconciler_SingleCluster(t *testing.T) {
+	// In single-cluster mode the provider project is also "local".
+	svc := newPublishedService(testServiceSlug, testServiceName, "local", "")
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	// Same client serves root, consumer, and provider.
+	localClient := newFakeClient(svc, ent)
+
+	mgr := newTestManager()
+	mgr.add("local", localClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: localClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
 	}
-	return false
+
+	req := entitlementRequest("local", testServiceSlug)
+	reconcileUntilStable(t, r, req, 5)
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := localClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if got.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
+		t.Errorf("entitlement phase = %q, want Active", got.Status.Phase)
+	}
+
+	consumerName := serviceConsumerName(testServiceName, "local")
+	var sc servicesv1alpha1.ServiceConsumer
+	if err := localClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
+		t.Fatalf("get serviceconsumer: %v", err)
+	}
+	if sc.Spec.ConsumerProjectRef.Name != "local" {
+		t.Errorf("consumer.spec.consumerProjectRef.name = %q, want %q", sc.Spec.ConsumerProjectRef.Name, "local")
+	}
+	if sc.Status.Phase != servicesv1alpha1.ConsumerPhaseActive {
+		t.Errorf("consumer phase = %q, want Active", sc.Status.Phase)
+	}
+}
+
+func hasFinalizer(obj client.Object, f string) bool {
+	return slices.Contains(obj.GetFinalizers(), f)
 }

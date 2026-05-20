@@ -65,6 +65,44 @@ spec:
       name: platform-producer-project
 ---
 
+# ── Private Beta Services ─────────────────────────────────────────────────────
+
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: ai-platform-miloapis-com
+spec:
+  serviceName: ai-platform.miloapis.com
+  displayName: AI Platform
+  description: >-
+    Early-access large language model inference, fine-tuning, and embedding
+    APIs. Request access to join the private beta.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+  enablementPolicy:
+    mode: GatedByProvider
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: ai-search-miloapis-com
+spec:
+  serviceName: ai-search.miloapis.com
+  displayName: AI Search
+  description: >-
+    Semantic search powered by AI Platform embeddings. Enabling AI Search
+    automatically enables AI Platform.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+  dependencies:
+    - serviceRef:
+        name: ai-platform-miloapis-com
+---
+
 # ── ServiceConfigurations ─────────────────────────────────────────────────────
 
 apiVersion: services.miloapis.com/v1alpha1
@@ -100,85 +138,31 @@ spec:
           description: The geographic region the disk lives in.
         - name: disk-type
           description: The disk type (ssd, hdd).
-  meters:
+  metrics:
     - name: compute.miloapis.com/instance/cpu-seconds
       displayName: vCPU Seconds
       description: Accumulated vCPU-seconds consumed by running instances.
-      measurement:
-        aggregation: Sum
-        unit: s
-      billing:
-        consumedUnit: s
-        pricingUnit: h
-      monitoredResourceTypes:
-        - compute.miloapis.com/Instance
+      kind: Cumulative
+      unit: s
     - name: compute.miloapis.com/instance/memory-byte-seconds
       displayName: Memory Byte-Seconds
       description: Accumulated RAM byte-seconds consumed by running instances.
-      measurement:
-        aggregation: Sum
-        unit: By.s
-      billing:
-        consumedUnit: By.s
-        pricingUnit: GiBy.h
-      monitoredResourceTypes:
-        - compute.miloapis.com/Instance
+      kind: Cumulative
+      unit: By.s
     - name: compute.miloapis.com/disk/capacity-byte-seconds
       displayName: Disk Capacity Byte-Seconds
       description: Provisioned disk capacity held over time.
-      measurement:
-        aggregation: Sum
-        unit: By.s
-      billing:
-        consumedUnit: By.s
-        pricingUnit: GiBy.mo
-      monitoredResourceTypes:
-        - compute.miloapis.com/Disk
----
-# Second compute config (deprecated) — used for Config Compare UI testing
-apiVersion: services.miloapis.com/v1alpha1
-kind: ServiceConfiguration
-metadata:
-  name: compute-miloapis-com-v1
-spec:
-  serviceRef:
-    name: compute-miloapis-com
-  phase: Deprecated
-  monitoredResourceTypes:
-    - type: compute.miloapis.com/Instance
-      displayName: Compute Instance
-      description: A virtual machine instance running in a Milo zone.
-      gvk:
-        group: compute.miloapis.com
-        kind: Instance
-      labels:
-        - name: region
-          description: The geographic region the instance runs in.
-        - name: zone
-          description: The availability zone within the region.
-  meters:
-    - name: compute.miloapis.com/instance/cpu-seconds
-      displayName: vCPU Seconds
-      description: Accumulated vCPU-seconds consumed by running instances.
-      measurement:
-        aggregation: Sum
-        unit: s
-      billing:
-        consumedUnit: s
-        pricingUnit: h
-      monitoredResourceTypes:
-        - compute.miloapis.com/Instance
-    - name: compute.miloapis.com/instance/memory-byte-seconds
-      displayName: Memory Byte-Seconds
-      description: Accumulated RAM byte-seconds consumed by running instances.
-      measurement:
-        aggregation: Sum
-        unit: By.s
-      billing:
-        consumedUnit: By.s
-        pricingUnit: GiBy.h
-      monitoredResourceTypes:
-        - compute.miloapis.com/Instance
+      kind: Cumulative
+      unit: By.s
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: compute.miloapis.com/Instance
+        metrics:
+          - compute.miloapis.com/instance/cpu-seconds
+          - compute.miloapis.com/instance/memory-byte-seconds
+      - monitoredResourceType: compute.miloapis.com/Disk
+        metrics:
+          - compute.miloapis.com/disk/capacity-byte-seconds
 ---
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConfiguration
@@ -200,40 +184,29 @@ spec:
           description: The region where the bucket's data is stored.
         - name: storage-class
           description: Storage class (STANDARD, NEARLINE, COLDLINE, ARCHIVE).
-  meters:
+  metrics:
     - name: storage.miloapis.com/bucket/stored-byte-seconds
       displayName: Stored Byte-Seconds
       description: Volume of data held in the bucket over time.
-      measurement:
-        aggregation: Sum
-        unit: By.s
-      billing:
-        consumedUnit: By.s
-        pricingUnit: GiBy.mo
-      monitoredResourceTypes:
-        - storage.miloapis.com/Bucket
+      kind: Cumulative
+      unit: By.s
     - name: storage.miloapis.com/bucket/class-a-operations
       displayName: Class A Operations
       description: Mutating operations (PUT, POST, COPY, LIST).
-      measurement:
-        aggregation: Sum
-        unit: "{operation}"
-      billing:
-        consumedUnit: "{operation}"
-        pricingUnit: k{operation}
-      monitoredResourceTypes:
-        - storage.miloapis.com/Bucket
+      kind: Cumulative
+      unit: "{operation}"
     - name: storage.miloapis.com/bucket/class-b-operations
       displayName: Class B Operations
       description: Read operations (GET, HEAD).
-      measurement:
-        aggregation: Sum
-        unit: "{operation}"
-      billing:
-        consumedUnit: "{operation}"
-        pricingUnit: k{operation}
-      monitoredResourceTypes:
-        - storage.miloapis.com/Bucket
+      kind: Cumulative
+      unit: "{operation}"
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: storage.miloapis.com/Bucket
+        metrics:
+          - storage.miloapis.com/bucket/stored-byte-seconds
+          - storage.miloapis.com/bucket/class-a-operations
+          - storage.miloapis.com/bucket/class-b-operations
 ---
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConfiguration
@@ -255,29 +228,23 @@ spec:
           description: Region where the load balancer is provisioned.
         - name: tier
           description: Traffic tier (PREMIUM, STANDARD).
-  meters:
+  metrics:
     - name: networking.miloapis.com/loadbalancer/uptime-seconds
       displayName: Load Balancer Uptime
       description: Seconds a load balancer rule was active.
-      measurement:
-        aggregation: Sum
-        unit: s
-      billing:
-        consumedUnit: s
-        pricingUnit: h
-      monitoredResourceTypes:
-        - networking.miloapis.com/LoadBalancer
+      kind: Cumulative
+      unit: s
     - name: networking.miloapis.com/loadbalancer/processed-bytes
       displayName: Processed Bytes
       description: Bytes processed by the load balancer.
-      measurement:
-        aggregation: Sum
-        unit: By
-      billing:
-        consumedUnit: By
-        pricingUnit: GiBy
-      monitoredResourceTypes:
-        - networking.miloapis.com/LoadBalancer
+      kind: Cumulative
+      unit: By
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: networking.miloapis.com/LoadBalancer
+        metrics:
+          - networking.miloapis.com/loadbalancer/uptime-seconds
+          - networking.miloapis.com/loadbalancer/processed-bytes
 ---
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConfiguration
@@ -301,26 +268,20 @@ spec:
           description: Database engine (postgres, mysql).
         - name: tier
           description: Instance tier (db-f1-micro, db-n1-standard-1, etc).
-  meters:
+  metrics:
     - name: database.miloapis.com/instance/cpu-seconds
       displayName: Database vCPU Seconds
       description: vCPU-seconds consumed by the database instance.
-      measurement:
-        aggregation: Sum
-        unit: s
-      billing:
-        consumedUnit: s
-        pricingUnit: h
-      monitoredResourceTypes:
-        - database.miloapis.com/Instance
+      kind: Cumulative
+      unit: s
     - name: database.miloapis.com/instance/storage-byte-seconds
       displayName: Database Storage
       description: Provisioned storage capacity held over time.
-      measurement:
-        aggregation: Sum
-        unit: By.s
-      billing:
-        consumedUnit: By.s
-        pricingUnit: GiBy.mo
-      monitoredResourceTypes:
-        - database.miloapis.com/Instance
+      kind: Cumulative
+      unit: By.s
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: database.miloapis.com/Instance
+        metrics:
+          - database.miloapis.com/instance/cpu-seconds
+          - database.miloapis.com/instance/storage-byte-seconds
