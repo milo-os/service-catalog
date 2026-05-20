@@ -324,3 +324,53 @@ spec:
         pricingUnit: GiBy.mo
       monitoredResourceTypes:
         - database.miloapis.com/Instance
+---
+
+# ── Private Beta Services (for demo / UI testing) ─────────────────────────────
+
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: ai-platform-miloapis-com
+spec:
+  serviceName: ai-platform.miloapis.com
+  displayName: AI Platform
+  description: >-
+    Early-access large language model inference, fine-tuning, and embedding
+    APIs. Request access to join the private beta.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+  enablementPolicy:
+    mode: GatedByProvider
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: ai-search-miloapis-com
+spec:
+  serviceName: ai-search.miloapis.com
+  displayName: AI Search
+  description: >-
+    Semantic search powered by AI Platform embeddings. Enabling AI Search
+    automatically enables AI Platform.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+  dependencies:
+    - serviceRef:
+        name: ai-platform-miloapis-com
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: entitlement-ai-platform-demo
+spec:
+  serviceRef:
+    name: ai-platform-miloapis-com
+  requestMessage: >-
+    We are building an internal document search tool for our engineering team
+    and would like to evaluate the AI Platform embedding APIs during the beta
+    period.
