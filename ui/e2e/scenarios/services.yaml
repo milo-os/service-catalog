@@ -1,0 +1,6 @@
+name: services
+match:
+  - 'ui/app/routes/services._index.tsx'
+  - 'ui/app/routes/services.$name.tsx'
+description: 'services list and detail — phase badges, configurations tab, and settings tab'
+spec: 'e2e/scenes/services.spec.ts'

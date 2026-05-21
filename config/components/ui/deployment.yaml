@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-ui
+  namespace: services-system
+  labels:
+    app: services-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: services-ui
+  template:
+    metadata:
+      labels:
+        app: services-ui
+    spec:
+      serviceAccountName: services-ui
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ui
+          image: ghcr.io/milo-os/services-ui:dev
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: SERVICES_API_SERVER_URL
+              value: "https://kubernetes.default.svc"
+            - name: SERVICES_API_TOKEN_FILE
+              value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            - name: SERVICES_API_CA_FILE
+              value: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5

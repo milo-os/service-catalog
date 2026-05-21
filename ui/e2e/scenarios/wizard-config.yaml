@@ -1,0 +1,5 @@
+name: wizard-config
+match:
+  - 'ui/app/routes/services.$name_.configurations.new.tsx'
+description: 'new configuration wizard — version selection and configuration publishing flow'
+spec: 'e2e/scenes/wizard-config.spec.ts'
