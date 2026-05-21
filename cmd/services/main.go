@@ -23,11 +23,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
-	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
-	servicesv1alpha1 "go.miloapis.com/services/api/v1alpha1"
-	"go.miloapis.com/services/internal/config"
-	"go.miloapis.com/services/internal/controller"
-	serviceswebhooks "go.miloapis.com/services/internal/webhook/v1alpha1"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/internal/config"
+	"go.miloapis.com/service-catalog/internal/controller"
+	serviceswebhooks "go.miloapis.com/service-catalog/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

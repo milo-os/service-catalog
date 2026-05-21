@@ -15,7 +15,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	servicesv1alpha1 "go.miloapis.com/services/api/v1alpha1"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

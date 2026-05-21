@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	servicesv1alpha1 "go.miloapis.com/services/api/v1alpha1"
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
 // serviceFinalizer is placed on every Service so that future
