@@ -75,6 +75,22 @@ type ProducerProjectReference struct {
 	Name string `json:"name"`
 }
 
+// ServiceRef is a reference to a Service by its metadata.name.
+type ServiceRef struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// ConsumerProjectRef is a reference to a consumer project by name.
+type ConsumerProjectRef struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
 // CatalogStatus is the shared observed-state shape for the three
 // governance catalog resources. It is embedded as a value into each
 // concrete Status so the JSON shape stays flat (no extra envelope) while

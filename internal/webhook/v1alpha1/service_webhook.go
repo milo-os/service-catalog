@@ -19,11 +19,29 @@ import (
 
 var serviceLog = logf.Log.WithName("service-webhook")
 
+// dependenciesEqual reports whether two dependency lists reference the
+// same Services in the same order. Used to skip cycle detection on
+// updates that don't touch the dependency graph.
+// Note: compares only ServiceRef.Name — sufficient because ServiceDependency
+// has no other fields, but callers should be aware if the type grows.
+func dependenciesEqual(a, b []servicesv1alpha1.ServiceDependency) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ServiceRef.Name != b[i].ServiceRef.Name {
+			return false
+		}
+	}
+	return true
+}
+
 // SetupServiceWebhookWithManager registers the Service webhook with
 // the manager.
 func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 	webhook := &serviceWebhook{
 		client: mgr.GetClient(),
+		reader: mgr.GetAPIReader(),
 	}
 
 	return ctrl.NewWebhookManagedBy(mgr).
@@ -39,6 +57,9 @@ func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 
 type serviceWebhook struct {
 	client client.Client
+	// reader is the uncached API reader; cycle detection lists every
+	// Service and must not depend on informer warm-up.
+	reader client.Reader
 }
 
 var _ admission.CustomDefaulter = &serviceWebhook{}
@@ -68,7 +89,9 @@ func (r *serviceWebhook) ValidateCreate(ctx context.Context, obj runtime.Object)
 		"serviceName", svc.Spec.ServiceName,
 	)
 
-	if errs := validation.ValidateServiceCreate(svc); len(errs) > 0 {
+	errs := validation.ValidateServiceCreate(svc)
+	errs = append(errs, validation.ValidateServiceDependencies(ctx, r.reader, svc)...)
+	if len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			obj.GetObjectKind().GroupVersionKind().GroupKind(),
 			svc.Name,
@@ -90,7 +113,11 @@ func (r *serviceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runt
 	}
 	serviceLog.Info("validating update", "name", newSvc.GetName())
 
-	if errs := validation.ValidateServiceUpdate(oldSvc, newSvc); len(errs) > 0 {
+	errs := validation.ValidateServiceUpdate(oldSvc, newSvc)
+	if !dependenciesEqual(oldSvc.Spec.Dependencies, newSvc.Spec.Dependencies) {
+		errs = append(errs, validation.ValidateServiceDependencies(ctx, r.reader, newSvc)...)
+	}
+	if len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSvc.Name,

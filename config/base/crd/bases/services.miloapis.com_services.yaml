@@ -76,6 +76,32 @@ spec:
               declaration via conditions on status; it does not transition the
               phase itself.
             properties:
+              dependencies:
+                description: |-
+                  Dependencies lists services that must be enabled alongside this service.
+                  When a consumer enables this service the platform automatically enables
+                  any listed dependency not already active in that project.
+                items:
+                  description: |-
+                    ServiceDependency declares a service that must be enabled alongside the
+                    owning Service when a consumer project enables it.
+                  properties:
+                    serviceRef:
+                      description: ServiceRef identifies the dependent service by
+                        its metadata.name.
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - serviceRef
+                  type: object
+                maxItems: 16
+                type: array
               description:
                 description: |-
                   Description is a plain-English explanation of what the service
@@ -90,6 +116,25 @@ spec:
                 maxLength: 128
                 minLength: 1
                 type: string
+              enablementPolicy:
+                description: |-
+                  EnablementPolicy controls whether consumers can self-service enable
+                  this service or must wait for provider approval.
+                properties:
+                  mode:
+                    allOf:
+                    - enum:
+                      - SelfService
+                      - GatedByProvider
+                    - enum:
+                      - SelfService
+                      - GatedByProvider
+                    default: SelfService
+                    description: Mode selects the enablement flow for this service.
+                    type: string
+                required:
+                - mode
+                type: object
               owner:
                 description: |-
                   Owner identifies the producer project that publishes and owns
