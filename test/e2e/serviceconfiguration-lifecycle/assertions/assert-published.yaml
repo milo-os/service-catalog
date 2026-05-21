@@ -12,6 +12,9 @@ status:
     - type: BillingFanOutHealthy
       status: "True"
       reason: BillingFanOutHealthy
+    - type: QuotaFanOutHealthy
+      status: "True"
+      reason: QuotaFanOutHealthy
     - type: Published
       status: "True"
   (publishedAt != null): true

@@ -64,16 +64,27 @@ type ServiceConfigurationSpec struct {
 	// +listMapKey=type
 	MonitoredResourceTypes []MonitoredResourceTypeSpec `json:"monitoredResourceTypes,omitempty"`
 
-	// Meters declares the billable dimensions this service emits, each
-	// bound to one or more of the monitored resource types declared
-	// above. Entries are keyed by .name, which must be unique within
-	// the document.
+	// Metrics declares metric descriptors for this service. Each entry becomes
+	// a MeterDefinition in the billing system when routed via spec.billing.
+	// Replaces spec.meters[].
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=256
 	// +listType=map
 	// +listMapKey=name
-	Meters []MeterSpec `json:"meters,omitempty"`
+	Metrics []MetricSpec `json:"metrics,omitempty"`
+
+	// Billing declares routing from metrics to monitored resource types.
+	// Fans out into MeterDefinition billing CRDs.
+	//
+	// +kubebuilder:validation:Optional
+	Billing *ServiceBillingConfig `json:"billing,omitempty"`
+
+	// Quota declares quota limits and metric rules for this service.
+	// Fans out into ResourceRegistration and ClaimCreationPolicy quota CRDs.
+	//
+	// +kubebuilder:validation:Optional
+	Quota *ServiceQuotaConfig `json:"quota,omitempty"`
 }
 
 // ServiceReference identifies the Service a ServiceConfiguration applies
@@ -87,126 +98,6 @@ type ServiceReference struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
-}
-
-// MeterSpec is a single billable dimension declared by a
-// ServiceConfiguration. It carries the same measurement/billing shape
-// that billing's MeterDefinition consumes; the fan-out maps it across
-// verbatim.
-type MeterSpec struct {
-	// Name is the canonical, user-facing identifier for this meter
-	// (e.g. "compute.miloapis.com/instance/cpu-seconds"). Must be
-	// prefixed by the referenced Service's spec.serviceName and unique
-	// within spec.meters. Immutable once the ServiceConfiguration is
-	// Published.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-
-	// DisplayName is a human-readable name surfaced in portals and on
-	// invoices alongside the canonical name.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=128
-	DisplayName string `json:"displayName,omitempty"`
-
-	// Description is a plain-English explanation of what the meter
-	// measures.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=1024
-	Description string `json:"description,omitempty"`
-
-	// Measurement describes how the signal is captured and aggregated.
-	//
-	// +kubebuilder:validation:Required
-	Measurement MeterMeasurement `json:"measurement"`
-
-	// Billing describes how the meter crosses into commerce. Carries
-	// no rates, currencies, or tiers -- those live in the pricing
-	// engine.
-	//
-	// +kubebuilder:validation:Required
-	Billing MeterBilling `json:"billing"`
-
-	// MonitoredResourceTypes binds this meter to the monitored
-	// resource types that emit it. Each entry must match a
-	// spec.monitoredResourceTypes[].type in the same document. At
-	// least one entry is required.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=32
-	// +listType=set
-	MonitoredResourceTypes []string `json:"monitoredResourceTypes"`
-}
-
-// MeterMeasurement describes how a meter's signal is captured.
-type MeterMeasurement struct {
-	// Aggregation is the function applied to samples over a billing
-	// period. Immutable once the ServiceConfiguration is Published.
-	//
-	// +kubebuilder:validation:Required
-	Aggregation MeterAggregation `json:"aggregation"`
-
-	// Unit is a UCUM (https://ucum.org/ucum) string describing what
-	// the meter measures (e.g. "s", "By", "{request}"). Immutable once
-	// the ServiceConfiguration is Published.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	Unit string `json:"unit"`
-
-	// UnitDisplayName is the human-readable label for the measurement
-	// unit surfaced in portals and on invoices (e.g. "Gigabyte",
-	// "Second", "Request"). When absent, consumers fall back to
-	// UCUM-based display logic. Editable at any time.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=128
-	UnitDisplayName string `json:"unitDisplayName,omitempty"`
-}
-
-// MeterBilling describes the commercial framing of a meter. Field
-// names borrow from the FOCUS specification for clean exports.
-type MeterBilling struct {
-	// ConsumedUnit is the UCUM unit in which usage is measured (e.g.
-	// "s"). Typically matches measurement.unit; may diverge when the
-	// emitted telemetry is pre-rolled (e.g. measured in "s" but
-	// emitted pre-rolled in "min").
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	ConsumedUnit string `json:"consumedUnit"`
-
-	// ConsumedUnitDisplayName is the human-readable label for the
-	// consumed unit (e.g. "Gigabyte"). When absent, consumers fall back
-	// to UCUM-based display logic. Editable at any time.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=128
-	ConsumedUnitDisplayName string `json:"consumedUnitDisplayName,omitempty"`
-
-	// PricingUnit is the UCUM unit pricing quotes against (e.g. "h").
-	// May differ from ConsumedUnit; the pricing engine handles the
-	// conversion.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	PricingUnit string `json:"pricingUnit"`
-
-	// PricingUnitDisplayName is the human-readable label for the pricing
-	// unit (e.g. "Hour"). When absent, consumers fall back to UCUM-based
-	// display logic. Editable at any time.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=128
-	PricingUnitDisplayName string `json:"pricingUnitDisplayName,omitempty"`
 }
 
 // MonitoredResourceTypeSpec is a monitored resource type declared by
@@ -295,6 +186,191 @@ type MonitoredResourceLabel struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=512
 	Description string `json:"description,omitempty"`
+}
+
+// MetricKind mirrors google.api.MetricDescriptor.MetricKind.
+//
+// +kubebuilder:validation:Enum=Delta;Gauge;Cumulative
+type MetricKind string
+
+const (
+	MetricKindDelta      MetricKind = "Delta"
+	MetricKindGauge      MetricKind = "Gauge"
+	MetricKindCumulative MetricKind = "Cumulative"
+)
+
+// MetricSpec is a single metric descriptor declared by a ServiceConfiguration.
+type MetricSpec struct {
+	// Name is the canonical metric identifier prefixed by the service name,
+	// e.g. "compute.datumapis.com/instance/cpu-seconds". Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// DisplayName is a human-readable label shown in portals and invoices.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Description is a plain-English explanation of what the metric measures.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	Description string `json:"description,omitempty"`
+
+	// Kind is the metric kind. Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	Kind MetricKind `json:"kind"`
+
+	// Unit is the UCUM emission unit, e.g. "s", "By", "{request}", "1".
+	// This is the unit the producer emits. Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Unit string `json:"unit"`
+}
+
+// ServiceBillingConfig groups all billing routing declarations.
+type ServiceBillingConfig struct {
+	// ConsumerDestinations routes metrics to monitored resource types for billing.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=64
+	// +listType=map
+	// +listMapKey=monitoredResourceType
+	ConsumerDestinations []BillingConsumerDestination `json:"consumerDestinations,omitempty"`
+}
+
+// BillingConsumerDestination routes a set of metrics to a single monitored
+// resource type for billing attribution.
+type BillingConsumerDestination struct {
+	// MonitoredResourceType is the canonical type identifier, e.g.
+	// "compute.datumapis.com/Instance". Must match a spec.monitoredResourceTypes[].type.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	MonitoredResourceType string `json:"monitoredResourceType"`
+
+	// Metrics lists the metric names routed to this resource type for billing.
+	// Each entry must match a spec.metrics[].name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=set
+	Metrics []string `json:"metrics"`
+}
+
+// ServiceQuotaConfig groups all quota declarations.
+type ServiceQuotaConfig struct {
+	// Limits declares per-consumer quota ceilings. Each entry fans out to a
+	// ResourceRegistration in the quota system.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=128
+	// +listType=map
+	// +listMapKey=name
+	Limits []QuotaLimitSpec `json:"limits,omitempty"`
+
+	// MetricRules declares ClaimCreationPolicy CRDs that gate resource creation
+	// by quota availability. The selector uses apiGroup + kind only; the fan-out
+	// resolves the preferred API version at reconcile time.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=128
+	MetricRules []QuotaMetricRule `json:"metricRules,omitempty"`
+}
+
+// QuotaLimitSpec declares a single quota ceiling for a metric.
+type QuotaLimitSpec struct {
+	// Name is a unique identifier for this limit within the ServiceConfiguration.
+	// Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Metric is the metric name this limit applies to.
+	// Must match a spec.metrics[].name. Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	Metric string `json:"metric"`
+
+	// ConsumerType identifies the resource kind that receives quota grants.
+	// Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	ConsumerType QuotaConsumerType `json:"consumerType"`
+
+	// Unit is the quota unit expression, e.g. "1/{project}". Immutable once Published.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Unit string `json:"unit"`
+
+	// DefaultLimit is the quota granted to new consumers on service activation.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=0
+	DefaultLimit int64 `json:"defaultLimit"`
+
+	// MaxLimit is the maximum quota any override may grant. Zero means no cap.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=0
+	MaxLimit int64 `json:"maxLimit,omitempty"`
+}
+
+// QuotaConsumerType identifies the Kubernetes resource kind that receives quota.
+type QuotaConsumerType struct {
+	// +kubebuilder:validation:Required
+	APIGroup string `json:"apiGroup"`
+
+	// +kubebuilder:validation:Required
+	Kind string `json:"kind"`
+}
+
+// QuotaMetricRule declares a ClaimCreationPolicy: which resource kind triggers
+// quota claim creation, and what metric costs are incurred per creation.
+type QuotaMetricRule struct {
+	// Selector identifies the resource kind by apiGroup + kind. Version is
+	// intentionally omitted; the fan-out resolves it via the discovery API so
+	// this config does not need updating when API versions change.
+	//
+	// +kubebuilder:validation:Required
+	Selector QuotaMetricRuleSelector `json:"selector"`
+
+	// MetricCosts maps metric names to integer amounts claimed per resource
+	// creation. Each key must match a spec.metrics[].name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinProperties=1
+	MetricCosts map[string]int64 `json:"metricCosts"`
+}
+
+// QuotaMetricRuleSelector identifies a resource kind without pinning a version.
+type QuotaMetricRuleSelector struct {
+	// APIGroup is the Kubernetes API group, e.g. "compute.datumapis.com".
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	APIGroup string `json:"apiGroup"`
+
+	// Kind is the Kubernetes Kind, e.g. "Workload".
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

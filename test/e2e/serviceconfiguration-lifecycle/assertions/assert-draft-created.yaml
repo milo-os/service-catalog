@@ -16,5 +16,8 @@ status:
     - type: BillingFanOutHealthy
       status: "True"
       reason: BillingFanOutSkipped
+    - type: QuotaFanOutHealthy
+      status: "True"
+      reason: QuotaFanOutSkipped
     - type: Published
       status: "False"
