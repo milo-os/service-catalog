@@ -23,6 +23,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/internal/config"
 	"go.miloapis.com/service-catalog/internal/controller"
@@ -49,6 +51,7 @@ func init() {
 	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(billingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }

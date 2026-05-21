@@ -79,136 +79,90 @@ spec:
               fanned out. The controller mirrors that intent via conditions; it does
               not transition the phase itself.
             properties:
-              meters:
+              billing:
                 description: |-
-                  Meters declares the billable dimensions this service emits, each
-                  bound to one or more of the monitored resource types declared
-                  above. Entries are keyed by .name, which must be unique within
-                  the document.
-                items:
-                  description: |-
-                    MeterSpec is a single billable dimension declared by a
-                    ServiceConfiguration. It carries the same measurement/billing shape
-                    that billing's MeterDefinition consumes; the fan-out maps it across
-                    verbatim.
-                  properties:
-                    billing:
+                  Billing declares routing from metrics to monitored resource types.
+                  Fans out into MeterDefinition billing CRDs.
+                properties:
+                  consumerDestinations:
+                    description: ConsumerDestinations routes metrics to monitored
+                      resource types for billing.
+                    items:
                       description: |-
-                        Billing describes how the meter crosses into commerce. Carries
-                        no rates, currencies, or tiers -- those live in the pricing
-                        engine.
+                        BillingConsumerDestination routes a set of metrics to a single monitored
+                        resource type for billing attribution.
                       properties:
-                        consumedUnit:
+                        metrics:
                           description: |-
-                            ConsumedUnit is the UCUM unit in which usage is measured (e.g.
-                            "s"). Typically matches measurement.unit; may diverge when the
-                            emitted telemetry is pre-rolled (e.g. measured in "s" but
-                            emitted pre-rolled in "min").
-                          maxLength: 64
+                            Metrics lists the metric names routed to this resource type for billing.
+                            Each entry must match a spec.metrics[].name.
+                          items:
+                            type: string
+                          maxItems: 256
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        monitoredResourceType:
+                          description: |-
+                            MonitoredResourceType is the canonical type identifier, e.g.
+                            "compute.datumapis.com/Instance". Must match a spec.monitoredResourceTypes[].type.
+                          maxLength: 253
                           minLength: 1
-                          type: string
-                        consumedUnitDisplayName:
-                          description: |-
-                            ConsumedUnitDisplayName is the human-readable label for the
-                            consumed unit (e.g. "Gigabyte"). When absent, consumers fall back
-                            to UCUM-based display logic. Editable at any time.
-                          maxLength: 128
-                          type: string
-                        pricingUnit:
-                          description: |-
-                            PricingUnit is the UCUM unit pricing quotes against (e.g. "h").
-                            May differ from ConsumedUnit; the pricing engine handles the
-                            conversion.
-                          maxLength: 64
-                          minLength: 1
-                          type: string
-                        pricingUnitDisplayName:
-                          description: |-
-                            PricingUnitDisplayName is the human-readable label for the pricing
-                            unit (e.g. "Hour"). When absent, consumers fall back to UCUM-based
-                            display logic. Editable at any time.
-                          maxLength: 128
                           type: string
                       required:
-                      - consumedUnit
-                      - pricingUnit
+                      - metrics
+                      - monitoredResourceType
                       type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - monitoredResourceType
+                    x-kubernetes-list-type: map
+                type: object
+              metrics:
+                description: |-
+                  Metrics declares metric descriptors for this service. Each entry becomes
+                  a MeterDefinition in the billing system when routed via spec.billing.
+                  Replaces spec.meters[].
+                items:
+                  description: MetricSpec is a single metric descriptor declared by
+                    a ServiceConfiguration.
+                  properties:
                     description:
-                      description: |-
-                        Description is a plain-English explanation of what the meter
-                        measures.
+                      description: Description is a plain-English explanation of what
+                        the metric measures.
                       maxLength: 1024
                       type: string
                     displayName:
-                      description: |-
-                        DisplayName is a human-readable name surfaced in portals and on
-                        invoices alongside the canonical name.
+                      description: DisplayName is a human-readable label shown in
+                        portals and invoices.
                       maxLength: 128
                       type: string
-                    measurement:
-                      description: Measurement describes how the signal is captured
-                        and aggregated.
-                      properties:
-                        aggregation:
-                          description: |-
-                            Aggregation is the function applied to samples over a billing
-                            period. Immutable once the ServiceConfiguration is Published.
-                          enum:
-                          - Sum
-                          - Max
-                          - Min
-                          - Count
-                          - UniqueCount
-                          - Latest
-                          - Average
-                          type: string
-                        unit:
-                          description: |-
-                            Unit is a UCUM (https://ucum.org/ucum) string describing what
-                            the meter measures (e.g. "s", "By", "{request}"). Immutable once
-                            the ServiceConfiguration is Published.
-                          maxLength: 64
-                          minLength: 1
-                          type: string
-                        unitDisplayName:
-                          description: |-
-                            UnitDisplayName is the human-readable label for the measurement
-                            unit surfaced in portals and on invoices (e.g. "Gigabyte",
-                            "Second", "Request"). When absent, consumers fall back to
-                            UCUM-based display logic. Editable at any time.
-                          maxLength: 128
-                          type: string
-                      required:
-                      - aggregation
-                      - unit
-                      type: object
-                    monitoredResourceTypes:
-                      description: |-
-                        MonitoredResourceTypes binds this meter to the monitored
-                        resource types that emit it. Each entry must match a
-                        spec.monitoredResourceTypes[].type in the same document. At
-                        least one entry is required.
-                      items:
-                        type: string
-                      maxItems: 32
-                      minItems: 1
-                      type: array
-                      x-kubernetes-list-type: set
+                    kind:
+                      description: Kind is the metric kind. Immutable once Published.
+                      enum:
+                      - Delta
+                      - Gauge
+                      - Cumulative
+                      type: string
                     name:
                       description: |-
-                        Name is the canonical, user-facing identifier for this meter
-                        (e.g. "compute.miloapis.com/instance/cpu-seconds"). Must be
-                        prefixed by the referenced Service's spec.serviceName and unique
-                        within spec.meters. Immutable once the ServiceConfiguration is
-                        Published.
+                        Name is the canonical metric identifier prefixed by the service name,
+                        e.g. "compute.datumapis.com/instance/cpu-seconds". Immutable once Published.
                       maxLength: 253
                       minLength: 1
                       type: string
+                    unit:
+                      description: |-
+                        Unit is the UCUM emission unit, e.g. "s", "By", "{request}", "1".
+                        This is the unit the producer emits. Immutable once Published.
+                      maxLength: 64
+                      minLength: 1
+                      type: string
                   required:
-                  - billing
-                  - measurement
-                  - monitoredResourceTypes
+                  - kind
                   - name
+                  - unit
                   type: object
                 maxItems: 256
                 type: array
@@ -331,6 +285,121 @@ spec:
                   configuration. Allowed transitions are forward-only:
                   Draft -> Published -> Deprecated -> Retired.
                 type: string
+              quota:
+                description: |-
+                  Quota declares quota limits and metric rules for this service.
+                  Fans out into ResourceRegistration and ClaimCreationPolicy quota CRDs.
+                properties:
+                  limits:
+                    description: |-
+                      Limits declares per-consumer quota ceilings. Each entry fans out to a
+                      ResourceRegistration in the quota system.
+                    items:
+                      description: QuotaLimitSpec declares a single quota ceiling
+                        for a metric.
+                      properties:
+                        consumerType:
+                          description: |-
+                            ConsumerType identifies the resource kind that receives quota grants.
+                            Immutable once Published.
+                          properties:
+                            apiGroup:
+                              type: string
+                            kind:
+                              type: string
+                          required:
+                          - apiGroup
+                          - kind
+                          type: object
+                        defaultLimit:
+                          description: DefaultLimit is the quota granted to new consumers
+                            on service activation.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        maxLimit:
+                          description: MaxLimit is the maximum quota any override
+                            may grant. Zero means no cap.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        metric:
+                          description: |-
+                            Metric is the metric name this limit applies to.
+                            Must match a spec.metrics[].name. Immutable once Published.
+                          type: string
+                        name:
+                          description: |-
+                            Name is a unique identifier for this limit within the ServiceConfiguration.
+                            Immutable once Published.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        unit:
+                          description: Unit is the quota unit expression, e.g. "1/{project}".
+                            Immutable once Published.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - consumerType
+                      - defaultLimit
+                      - metric
+                      - name
+                      - unit
+                      type: object
+                    maxItems: 128
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  metricRules:
+                    description: |-
+                      MetricRules declares ClaimCreationPolicy CRDs that gate resource creation
+                      by quota availability. The selector uses apiGroup + kind only; the fan-out
+                      resolves the preferred API version at reconcile time.
+                    items:
+                      description: |-
+                        QuotaMetricRule declares a ClaimCreationPolicy: which resource kind triggers
+                        quota claim creation, and what metric costs are incurred per creation.
+                      properties:
+                        metricCosts:
+                          additionalProperties:
+                            format: int64
+                            type: integer
+                          description: |-
+                            MetricCosts maps metric names to integer amounts claimed per resource
+                            creation. Each key must match a spec.metrics[].name.
+                          minProperties: 1
+                          type: object
+                        selector:
+                          description: |-
+                            Selector identifies the resource kind by apiGroup + kind. Version is
+                            intentionally omitted; the fan-out resolves it via the discovery API so
+                            this config does not need updating when API versions change.
+                          properties:
+                            apiGroup:
+                              description: APIGroup is the Kubernetes API group, e.g.
+                                "compute.datumapis.com".
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            kind:
+                              description: Kind is the Kubernetes Kind, e.g. "Workload".
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - apiGroup
+                          - kind
+                          type: object
+                      required:
+                      - metricCosts
+                      - selector
+                      type: object
+                    maxItems: 128
+                    type: array
+                type: object
               serviceRef:
                 description: |-
                   ServiceRef points at the Service this document configures. The
