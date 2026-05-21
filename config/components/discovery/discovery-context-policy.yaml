@@ -7,3 +7,6 @@ spec:
     - group: services.miloapis.com
       resources: ["services", "serviceconfigurations"]
       contexts: ["Platform"]
+    - group: services.miloapis.com
+      resources: ["serviceentitlements", "serviceconsumers"]
+      contexts: ["Project"]
