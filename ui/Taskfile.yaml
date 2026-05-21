@@ -1,0 +1,56 @@
+version: '3'
+
+tasks:
+  install:
+    desc: Install services UI dependencies
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    cmds:
+      - pnpm install
+
+  dev:
+    desc: Start services UI in development mode
+    aliases:
+      - start
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    deps:
+      - install
+    cmds:
+      - pnpm run dev
+
+  build:
+    desc: Build services UI for production
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    deps:
+      - install
+    cmds:
+      - pnpm run build
+
+  type-check:
+    desc: Type check services UI
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    deps:
+      - install
+    cmds:
+      - pnpm run type-check
+
+  lint:
+    desc: Lint services UI
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    deps:
+      - install
+    cmds:
+      - pnpm run lint
+
+  test:e2e:
+    desc: Run Playwright e2e tests
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    deps:
+      - install
+    cmds:
+      - pnpm test:e2e
+
+  clean:
+    desc: Clean services UI build artifacts
+    dir: '{{.USER_WORKING_DIR}}/ui'
+    cmds:
+      - rm -rf build node_modules .cache

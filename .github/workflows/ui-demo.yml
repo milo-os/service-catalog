@@ -1,0 +1,277 @@
+name: UI Demo Recording
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'ui/**'
+      - 'config/components/ui/**'
+      - '.github/workflows/ui-demo.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  record:
+    name: Record UI Demo
+    runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Node / pnpm ──────────────────────────────────────────────────────
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: ui
+        run: pnpm exec playwright install chromium --with-deps
+
+      # ── Go / cluster tooling ─────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.24.0'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Cluster + backend ────────────────────────────────────────────────
+      - name: Spin up kind cluster
+        run: task --yes test-infra:cluster-up
+
+      - name: Build backend image
+        run: task dev:build
+
+      - name: Load backend image into kind
+        run: task dev:load
+
+      - name: Deploy backend (e2e overlay)
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -k config/overlays/e2e
+          task --yes test-infra:kubectl -- wait \
+            --for=condition=available \
+            deployment/services-controller-manager \
+            -n services-system \
+            --timeout=120s
+
+      - name: Wait for webhook certificate
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- wait \
+            --for=condition=ready \
+            certificate/services-serving-cert \
+            -n services-system \
+            --timeout=120s
+
+      - name: Seed demo data
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: task --yes test-infra:kubectl -- apply -f hack/seed-dev.yaml
+
+      # ── Resolve scenarios ────────────────────────────────────────────────
+      - name: Resolve scenarios
+        id: scenarios
+        run: |
+          SCENARIOS=$(cd ui && node e2e/resolve-scenarios.mjs)
+          echo "Resolved: $SCENARIOS"
+          # Write to a file so later steps read it directly — expression
+          # substitution in run blocks mangles non-ASCII chars (em-dashes).
+          echo "$SCENARIOS" > /tmp/scenarios.json
+
+      # ── Install ffmpeg ───────────────────────────────────────────────────
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      # ── Record each scenario ─────────────────────────────────────────────
+      - name: Record scenarios
+        run: |
+          mkdir -p /tmp/recordings-out
+
+          # Load all scenario lines into a bash array up front so no open
+          # file descriptor exists during playwright runs (which would be
+          # inherited by pnpm/node subprocesses and corrupt later reads).
+          mapfile -t SCENARIO_LINES < <(jq -c '.[]' /tmp/scenarios.json)
+
+          # Collect all spec paths and run them in a single playwright
+          # invocation so the vite dev server starts only once.
+          SPECS=()
+          for scenario in "${SCENARIO_LINES[@]}"; do
+            SPECS+=("$(echo "$scenario" | jq -r '.spec')")
+          done
+
+          echo "=== Recording ${#SPECS[@]} scenario(s): ${SPECS[*]} ==="
+          (cd ui && pnpm exec playwright test "${SPECS[@]}" --config playwright.demo.config.ts)
+
+          # Convert each spec's video to a GIF.
+          for scenario in "${SCENARIO_LINES[@]}"; do
+            NAME=$(echo "$scenario" | jq -r '.name')
+            SPEC=$(echo "$scenario" | jq -r '.spec')
+            SPEC_BASE=$(basename "$SPEC" .spec.ts)
+
+            VIDEO=$(find ui/test-results -name "*.webm" -path "*${SPEC_BASE}*" 2>/dev/null | head -1)
+            if [ -z "$VIDEO" ]; then
+              echo "No video captured for $NAME (spec: $SPEC_BASE)"
+              exit 1
+            fi
+
+            ffmpeg -i "$VIDEO" \
+              -vf "fps=8,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -loop 0 "/tmp/recordings-out/${NAME}.gif" 2>/dev/null
+
+            if [ -f "/tmp/recordings-out/${NAME}.gif" ]; then
+              echo "Converted $NAME: $(du -sh /tmp/recordings-out/${NAME}.gif | cut -f1)"
+            fi
+          done
+
+      # ── Upload Playwright test-results on failure ─────────────────────────
+      - name: Upload Playwright test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results-${{ github.run_id }}
+          path: ui/test-results/
+          retention-days: 7
+
+      # ── Check whether any GIFs were produced ────────────────────────────
+      - name: Check recordings
+        id: check
+        run: |
+          if ls /tmp/recordings-out/*.gif 1>/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Upload all GIFs as a single artifact ─────────────────────────────
+      - name: Upload GIF artifacts
+        if: steps.check.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-demo-pr-${{ github.event.pull_request.number }}
+          path: /tmp/recordings-out/*.gif
+          retention-days: 30
+
+      # ── Push GIFs to ui-recordings branch ────────────────────────────────
+      - name: Push GIFs to ui-recordings branch
+        if: steps.check.outputs.found == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          PR=${{ github.event.pull_request.number }}
+
+          if git ls-remote --exit-code origin ui-recordings > /dev/null 2>&1; then
+            git fetch origin ui-recordings
+            git worktree add /tmp/recordings origin/ui-recordings
+          else
+            git worktree add --orphan -b ui-recordings /tmp/recordings
+            touch /tmp/recordings/.gitkeep
+            (cd /tmp/recordings && git add .gitkeep && \
+              git commit -m "chore: initialise ui-recordings branch")
+          fi
+
+          mkdir -p "/tmp/recordings/pr-${PR}"
+          cp /tmp/recordings-out/*.gif "/tmp/recordings/pr-${PR}/"
+
+          cd /tmp/recordings
+          git add "pr-${PR}/"
+          git diff --cached --quiet && echo "No changes to push" && exit 0
+          git commit -m "recording: PR #${PR} (run ${{ github.run_id }})"
+          git push origin HEAD:ui-recordings
+
+      # ── Build PR comment body ─────────────────────────────────────────────
+      - name: Build comment body
+        if: steps.check.outputs.found == 'true'
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          SHA=${{ github.sha }}
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "<!-- ui-demo-recording -->"
+            echo "## 🎬 UI Demo"
+            echo ""
+
+            jq -c '.[]' /tmp/scenarios.json | \
+            while IFS= read -r scenario; do
+              NAME=$(echo "$scenario" | jq -r '.name')
+              DESC=$(echo "$scenario" | jq -r '.description')
+              GIF="/tmp/recordings-out/${NAME}.gif"
+              [ -f "$GIF" ] || continue
+
+              TITLE=$(echo "$NAME" | sed 's/-/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
+              GIF_URL="https://raw.githubusercontent.com/${REPO}/ui-recordings/pr-${PR}/${NAME}.gif"
+
+              echo "### ${TITLE}"
+              echo ""
+              echo "Covers: ${DESC}"
+              echo ""
+              echo "![$TITLE]($GIF_URL)"
+              echo ""
+              echo "---"
+              echo ""
+            done
+
+            echo "> Recorded from \`${SHA}\` · [Workflow run](${RUN_URL})"
+          } > /tmp/comment-body.md
+
+          echo "--- Comment preview ---"
+          cat /tmp/comment-body.md
+
+      # ── Post or update PR comment ─────────────────────────────────────────
+      - name: Find existing demo comment
+        id: find-comment
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- ui-demo-recording -->'
+
+      - name: Post or update demo comment (recordings found)
+        if: steps.check.outputs.found == 'true'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body-path: /tmp/comment-body.md
+
+      - name: Post or update demo comment (no recordings)
+        if: steps.check.outputs.found == 'false'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- ui-demo-recording -->
+            ## 🎬 UI Demo
+
+            > ⚠️ No recordings captured for this run. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.

@@ -1,5 +1,11 @@
 namespace: services-system
 
+images:
+  - name: ghcr.io/milo-os/services
+    newTag: dev
+  - name: ghcr.io/milo-os/services-ui
+    newTag: dev
+
 resources:
   - ../../base/crd
   - ../../base/manager
@@ -7,6 +13,7 @@ resources:
 
 components:
   - ../../base/webhook
+  - ../../components/ui
 
 replacements:
   - source:

@@ -1,0 +1,326 @@
+# Seed data for local development / UI testing
+# Apply with: kubectl apply -f hack/seed-dev.yaml --kubeconfig .test-infra/kubeconfig
+---
+# ── Services ──────────────────────────────────────────────────────────────────
+
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: compute-miloapis-com
+spec:
+  serviceName: compute.miloapis.com
+  displayName: Compute
+  description: >-
+    Virtual machine instances with flexible CPU, memory, and storage options
+    for general-purpose and high-performance workloads.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: storage-miloapis-com
+spec:
+  serviceName: storage.miloapis.com
+  displayName: Object Storage
+  description: >-
+    Globally durable, S3-compatible object storage for blobs, backups,
+    and static assets.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: networking-miloapis-com
+spec:
+  serviceName: networking.miloapis.com
+  displayName: Networking
+  description: >-
+    Managed VPCs, load balancers, and private connectivity between
+    Milo-hosted workloads.
+  phase: Draft
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: database-miloapis-com
+spec:
+  serviceName: database.miloapis.com
+  displayName: Managed Database
+  description: >-
+    Fully managed PostgreSQL and MySQL instances with automated backups,
+    failover, and point-in-time recovery. Deprecated in favour of
+    database-v2.miloapis.com.
+  phase: Deprecated
+  owner:
+    producerProjectRef:
+      name: platform-producer-project
+---
+
+# ── ServiceConfigurations ─────────────────────────────────────────────────────
+
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute-miloapis-com
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  phase: Published
+  monitoredResourceTypes:
+    - type: compute.miloapis.com/Instance
+      displayName: Compute Instance
+      description: A virtual machine instance running in a Milo zone.
+      gvk:
+        group: compute.miloapis.com
+        kind: Instance
+      labels:
+        - name: region
+          description: The geographic region the instance runs in.
+        - name: zone
+          description: The availability zone within the region.
+        - name: machine-type
+          description: The machine type family (e.g. n1-standard, c2).
+    - type: compute.miloapis.com/Disk
+      displayName: Persistent Disk
+      description: A persistent block storage volume attached to an instance.
+      gvk:
+        group: compute.miloapis.com
+        kind: Disk
+      labels:
+        - name: region
+          description: The geographic region the disk lives in.
+        - name: disk-type
+          description: The disk type (ssd, hdd).
+  meters:
+    - name: compute.miloapis.com/instance/cpu-seconds
+      displayName: vCPU Seconds
+      description: Accumulated vCPU-seconds consumed by running instances.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - compute.miloapis.com/Instance
+    - name: compute.miloapis.com/instance/memory-byte-seconds
+      displayName: Memory Byte-Seconds
+      description: Accumulated RAM byte-seconds consumed by running instances.
+      measurement:
+        aggregation: Sum
+        unit: By.s
+      billing:
+        consumedUnit: By.s
+        pricingUnit: GiBy.h
+      monitoredResourceTypes:
+        - compute.miloapis.com/Instance
+    - name: compute.miloapis.com/disk/capacity-byte-seconds
+      displayName: Disk Capacity Byte-Seconds
+      description: Provisioned disk capacity held over time.
+      measurement:
+        aggregation: Sum
+        unit: By.s
+      billing:
+        consumedUnit: By.s
+        pricingUnit: GiBy.mo
+      monitoredResourceTypes:
+        - compute.miloapis.com/Disk
+---
+# Second compute config (deprecated) — used for Config Compare UI testing
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: compute-miloapis-com-v1
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  phase: Deprecated
+  monitoredResourceTypes:
+    - type: compute.miloapis.com/Instance
+      displayName: Compute Instance
+      description: A virtual machine instance running in a Milo zone.
+      gvk:
+        group: compute.miloapis.com
+        kind: Instance
+      labels:
+        - name: region
+          description: The geographic region the instance runs in.
+        - name: zone
+          description: The availability zone within the region.
+  meters:
+    - name: compute.miloapis.com/instance/cpu-seconds
+      displayName: vCPU Seconds
+      description: Accumulated vCPU-seconds consumed by running instances.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - compute.miloapis.com/Instance
+    - name: compute.miloapis.com/instance/memory-byte-seconds
+      displayName: Memory Byte-Seconds
+      description: Accumulated RAM byte-seconds consumed by running instances.
+      measurement:
+        aggregation: Sum
+        unit: By.s
+      billing:
+        consumedUnit: By.s
+        pricingUnit: GiBy.h
+      monitoredResourceTypes:
+        - compute.miloapis.com/Instance
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: storage-miloapis-com
+spec:
+  serviceRef:
+    name: storage-miloapis-com
+  phase: Published
+  monitoredResourceTypes:
+    - type: storage.miloapis.com/Bucket
+      displayName: Storage Bucket
+      description: An object storage bucket holding blobs and metadata.
+      gvk:
+        group: storage.miloapis.com
+        kind: Bucket
+      labels:
+        - name: region
+          description: The region where the bucket's data is stored.
+        - name: storage-class
+          description: Storage class (STANDARD, NEARLINE, COLDLINE, ARCHIVE).
+  meters:
+    - name: storage.miloapis.com/bucket/stored-byte-seconds
+      displayName: Stored Byte-Seconds
+      description: Volume of data held in the bucket over time.
+      measurement:
+        aggregation: Sum
+        unit: By.s
+      billing:
+        consumedUnit: By.s
+        pricingUnit: GiBy.mo
+      monitoredResourceTypes:
+        - storage.miloapis.com/Bucket
+    - name: storage.miloapis.com/bucket/class-a-operations
+      displayName: Class A Operations
+      description: Mutating operations (PUT, POST, COPY, LIST).
+      measurement:
+        aggregation: Sum
+        unit: "{operation}"
+      billing:
+        consumedUnit: "{operation}"
+        pricingUnit: k{operation}
+      monitoredResourceTypes:
+        - storage.miloapis.com/Bucket
+    - name: storage.miloapis.com/bucket/class-b-operations
+      displayName: Class B Operations
+      description: Read operations (GET, HEAD).
+      measurement:
+        aggregation: Sum
+        unit: "{operation}"
+      billing:
+        consumedUnit: "{operation}"
+        pricingUnit: k{operation}
+      monitoredResourceTypes:
+        - storage.miloapis.com/Bucket
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: networking-miloapis-com
+spec:
+  serviceRef:
+    name: networking-miloapis-com
+  phase: Draft
+  monitoredResourceTypes:
+    - type: networking.miloapis.com/LoadBalancer
+      displayName: Load Balancer
+      description: A managed L4/L7 load balancer fronting one or more backends.
+      gvk:
+        group: networking.miloapis.com
+        kind: LoadBalancer
+      labels:
+        - name: region
+          description: Region where the load balancer is provisioned.
+        - name: tier
+          description: Traffic tier (PREMIUM, STANDARD).
+  meters:
+    - name: networking.miloapis.com/loadbalancer/uptime-seconds
+      displayName: Load Balancer Uptime
+      description: Seconds a load balancer rule was active.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - networking.miloapis.com/LoadBalancer
+    - name: networking.miloapis.com/loadbalancer/processed-bytes
+      displayName: Processed Bytes
+      description: Bytes processed by the load balancer.
+      measurement:
+        aggregation: Sum
+        unit: By
+      billing:
+        consumedUnit: By
+        pricingUnit: GiBy
+      monitoredResourceTypes:
+        - networking.miloapis.com/LoadBalancer
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: database-miloapis-com
+spec:
+  serviceRef:
+    name: database-miloapis-com
+  phase: Deprecated
+  monitoredResourceTypes:
+    - type: database.miloapis.com/Instance
+      displayName: Database Instance
+      description: A managed PostgreSQL or MySQL database instance.
+      gvk:
+        group: database.miloapis.com
+        kind: Instance
+      labels:
+        - name: region
+          description: Region where the database instance runs.
+        - name: engine
+          description: Database engine (postgres, mysql).
+        - name: tier
+          description: Instance tier (db-f1-micro, db-n1-standard-1, etc).
+  meters:
+    - name: database.miloapis.com/instance/cpu-seconds
+      displayName: Database vCPU Seconds
+      description: vCPU-seconds consumed by the database instance.
+      measurement:
+        aggregation: Sum
+        unit: s
+      billing:
+        consumedUnit: s
+        pricingUnit: h
+      monitoredResourceTypes:
+        - database.miloapis.com/Instance
+    - name: database.miloapis.com/instance/storage-byte-seconds
+      displayName: Database Storage
+      description: Provisioned storage capacity held over time.
+      measurement:
+        aggregation: Sum
+        unit: By.s
+      billing:
+        consumedUnit: By.s
+        pricingUnit: GiBy.mo
+      monitoredResourceTypes:
+        - database.miloapis.com/Instance
