@@ -12,7 +12,7 @@ components:
   - ../../components/controller_rbac
 
 images:
-  - name: ghcr.io/milo-os/services
+  - name: ghcr.io/milo-os/service-catalog
     newTag: dev
 
 patches:

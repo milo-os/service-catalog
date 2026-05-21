@@ -8,7 +8,7 @@ resources:
 - pdb.yaml
 
 images:
-- name: ghcr.io/milo-os/services
+- name: ghcr.io/milo-os/service-catalog
   newTag: latest
 
 configMapGenerator:

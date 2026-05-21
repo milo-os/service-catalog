@@ -25,8 +25,8 @@ jobs:
       packages: write
     uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
     with:
-      bundle-name: ghcr.io/milo-os/services-kustomize
+      bundle-name: ghcr.io/milo-os/service-catalog-kustomize
       bundle-path: config
       image-overlays: config/base/manager
-      image-name: ghcr.io/milo-os/services
+      image-name: ghcr.io/milo-os/service-catalog
     secrets: inherit
