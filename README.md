@@ -4,8 +4,8 @@ Milo's central registry for managed services — the authoritative source of tru
 
 ## Documentation
 
-- [`docs/overview.md`](docs/overview.md) — product overview: what the service catalog is, how it fits into Milo, and what it enables for providers and consumers.
-- [`docs/enhancements/`](docs/enhancements/) — enhancement proposals for each resource. The canonical place for design detail, spec shape, and worked examples.
+- [Product overview](docs/overview.md) — what the service catalog is, how it fits into Milo, and what it enables for providers and consumers.
+- [Enhancement proposals](docs/enhancements/) — design detail, spec shape, and worked examples for each resource.
 
 ## Development
 
