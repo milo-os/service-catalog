@@ -51,6 +51,28 @@ Every Service (and its ServiceConfiguration) moves through a four-stage lifecycl
 
 Transitions are forward-only. A Published service cannot be moved back to Draft. This ensures consumers and downstream systems never encounter unexpected state changes.
 
+## Projects and Ownership
+
+Everything in the Service Catalog is anchored to a **project** — Milo's unit of ownership for both providers and consumers.
+
+**Provider projects** own services. When a team registers a service, that service is owned by their producer project. The project determines who can manage the service's configuration, lifecycle transitions, and access policy. A team managing multiple services groups them under one or more producer projects.
+
+**Consumer projects** hold entitlements. When a project enables a service, a ServiceEntitlement is created within that project. The entitlement belongs to the project, not to an individual user. If a project is deleted, its entitlements go with it.
+
+**The provider project sees its consumers.** When a consumer project enables a service, a ServiceConsumer record is created in the provider's project — not the consumer's. This is how providers see who is using their service: they look at the ServiceConsumer records in their own project.
+
+This means browsing the catalog is a global operation — Services and ServiceConfigurations are platform-wide records not tied to any single project. But managing entitlements is always project-scoped: a consumer manages entitlements from their project, and a provider manages their consumer base from theirs.
+
+```
+Platform (global)                    Projects (scoped)
+─────────────────                    ─────────────────
+Service                   owned by → Producer Project
+ServiceConfiguration      owned by → Producer Project
+
+                                      Consumer Project → ServiceEntitlement
+                                      Producer Project → ServiceConsumer
+```
+
 ## What the Service Catalog Is Not
 
 These boundaries matter when reasoning about where the catalog ends and other services begin:
