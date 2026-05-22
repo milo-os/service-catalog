@@ -106,4 +106,5 @@ The repo uses a Go workspace (`go.work`) that includes the `billing` and `amberf
 
 ## Further reading
 
+- [`docs/overview.md`](docs/overview.md) — product overview: what the service catalog is, how it fits into Milo, and what it enables for providers and consumers.
 - [`docs/enhancements/`](docs/enhancements/) — enhancement proposals for each resource hosted here. The canonical place to go for design detail, spec shape, and worked examples.
