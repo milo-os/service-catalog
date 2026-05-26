@@ -5,4 +5,6 @@
 
 resources:
   - services-admin.yaml
+  - services-approver.yaml
+  - services-entitlement-viewer.yaml
   - services-viewer.yaml
