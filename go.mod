@@ -9,7 +9,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
 	go.miloapis.com/billing v0.0.0-20260416220423-385a1b369d72
-	go.miloapis.com/milo v0.0.0-20260518184803-e6ac7ea55253
+	go.miloapis.com/milo v0.26.1-0.20260527023322-a78982bd81f2
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.2
 	k8s.io/client-go v0.33.1
@@ -20,7 +20,7 @@ require (
 
 replace go.miloapis.com/billing => github.com/milo-os/billing v0.0.0-20260416220423-385a1b369d72
 
-replace go.miloapis.com/milo => github.com/milo-os/milo v0.0.0-20260518184803-e6ac7ea55253
+replace go.miloapis.com/milo => github.com/milo-os/milo v0.26.1-0.20260527023322-a78982bd81f2
 
 require (
 	cel.dev/expr v0.19.1 // indirect
