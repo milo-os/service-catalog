@@ -119,6 +119,41 @@ spec:
                     - monitoredResourceType
                     x-kubernetes-list-type: map
                 type: object
+              locations:
+                description: |-
+                  Locations declares which location classes this service version
+                  supports. The LocationBindingReconciler uses it together with
+                  Location readiness and ServiceAvailability to decide which locations
+                  to project into entitled projects. Class selectors are used rather
+                  than specific location names so new PoPs of a supported class become
+                  available without a new configuration version.
+                properties:
+                  supportedClasses:
+                    description: |-
+                      SupportedClasses is the set of location classes this service version
+                      runs on. The LocationBindingReconciler projects a Location into an
+                      entitled project only when the Location's class appears here.
+                    items:
+                      description: "LocationClassName is the operational class of
+                        a Location. It is a typed\nenum rather than a free-form string
+                        so that service providers can\nreliably reference classes
+                        in ServiceConfiguration.spec.locations and so\nthat controllers
+                        and IAM constraints can branch on a closed set.\n\n\tdatum-managed
+                        \      -> shared PoP operated by the Datum platform team\n\tprovider-dedicated
+                        \ -> infrastructure a provider dedicates to a consumer\n\tself-managed
+                        \       -> consumer-registered on-premises site"
+                      enum:
+                      - datum-managed
+                      - provider-dedicated
+                      - self-managed
+                      type: string
+                    maxItems: 8
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - supportedClasses
+                type: object
               metrics:
                 description: |-
                   Metrics declares metric descriptors for this service. Each entry becomes

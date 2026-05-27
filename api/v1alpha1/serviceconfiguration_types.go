@@ -85,6 +85,16 @@ type ServiceConfigurationSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Quota *ServiceQuotaConfig `json:"quota,omitempty"`
+
+	// Locations declares which location classes this service version
+	// supports. The LocationBindingReconciler uses it together with
+	// Location readiness and ServiceAvailability to decide which locations
+	// to project into entitled projects. Class selectors are used rather
+	// than specific location names so new PoPs of a supported class become
+	// available without a new configuration version.
+	//
+	// +kubebuilder:validation:Optional
+	Locations *ServiceLocationConfig `json:"locations,omitempty"`
 }
 
 // ServiceReference identifies the Service a ServiceConfiguration applies

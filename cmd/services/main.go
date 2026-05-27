@@ -158,6 +158,10 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConfiguration")
 		os.Exit(1)
 	}
+	if err = (&controller.ServiceAvailabilityReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
+		os.Exit(1)
+	}
 
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
 	// planes. We need a multicluster manager backed by the Milo provider so
@@ -207,6 +211,10 @@ func main() {
 		}
 		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
+			os.Exit(1)
+		}
+		if err = serviceswebhooks.SetupServiceAvailabilityWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceAvailability")
 			os.Exit(1)
 		}
 	}
