@@ -1,0 +1,15 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-entitlement-admin
+  annotations:
+    kubernetes.io/display-name: Services Entitlement Admin
+    kubernetes.io/description: "Manage service entitlements for a project"
+spec:
+  launchStage: Alpha
+  inheritedRoles:
+    - name: services.miloapis.com-entitlement-viewer
+  includedPermissions:
+    - services.miloapis.com/serviceentitlements.create
+    - services.miloapis.com/serviceentitlements.update
+    - services.miloapis.com/serviceentitlements.delete
