@@ -4,35 +4,38 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-    discovery.miloapis.com/parent-contexts: Project
-  name: serviceentitlements.services.miloapis.com
+    discovery.miloapis.com/parent-contexts: Platform
+  name: serviceavailabilities.services.miloapis.com
 spec:
   group: services.miloapis.com
   names:
-    kind: ServiceEntitlement
-    listKind: ServiceEntitlementList
-    plural: serviceentitlements
-    singular: serviceentitlement
+    kind: ServiceAvailability
+    listKind: ServiceAvailabilityList
+    plural: serviceavailabilities
+    singular: serviceavailability
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.serviceRef.name
       name: Service
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .spec.locationRef.name
+      name: Location
       type: string
-    - jsonPath: .status.origin
-      name: Origin
+    - jsonPath: .status.conditions[?(@.type=="Available")].status
+      name: Available
       type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
-          ServiceEntitlement is the Schema for the serviceentitlements API. A consumer
-          project admin creates one ServiceEntitlement per service they want to use.
-          The object is written into the consumer project's virtual control plane and
-          the services operator reconciles it into the provider project.
+          ServiceAvailability is the Schema for the serviceavailabilities API. It
+          is the third gate in the location three-gate model: it asserts that a
+          service is deployed and operational at a specific Location, decoupled
+          from the Location's own hardware readiness.
         properties:
           apiVersion:
             description: |-
@@ -52,17 +55,52 @@ spec:
           metadata:
             type: object
           spec:
-            description: ServiceEntitlementSpec defines the desired state of a ServiceEntitlement.
+            description: |-
+              ServiceAvailabilitySpec defines the desired state of a
+              ServiceAvailability.
+
+              A ServiceAvailability records that a specific service is deployed and
+              validated at a specific Location. It decouples "the PoP exists and
+              hardware is Ready" (a Location concern) from "this service is
+              operational here" (a service-operator concern). Each service operator
+              creates a ServiceAvailability when it completes deployment and health
+              checks at a Location; the LocationBindingReconciler reads it as the
+              third gate when deciding which locations to project into entitled
+              projects.
+
+              Both serviceRef and locationRef are immutable: a ServiceAvailability
+              records availability for one (service, location) pair for its entire
+              lifetime. Re-pointing it would silently rewrite that meaning, so a new
+              pairing ships as a new object instead.
             properties:
-              requestMessage:
+              locationRef:
                 description: |-
-                  RequestMessage is an optional human-readable message sent to the
-                  provider when the service requires GatedByProvider approval.
-                maxLength: 1024
-                type: string
+                  LocationRef identifies the platform Location this availability record
+                  applies to. Immutable.
+                properties:
+                  name:
+                    description: Name is the metadata.name of the referenced Location.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the referenced Location in the platform
+                      control plane.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+                x-kubernetes-validations:
+                - message: locationRef is immutable
+                  rule: self == oldSelf
               serviceRef:
-                description: ServiceRef identifies the Service the consumer project
-                  wants to enable.
+                description: |-
+                  ServiceRef identifies the Service this availability record applies
+                  to by metadata.name. Immutable.
                 properties:
                   name:
                     maxLength: 253
@@ -71,17 +109,25 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: serviceRef is immutable
+                  rule: self == oldSelf
             required:
+            - locationRef
             - serviceRef
             type: object
           status:
-            description: ServiceEntitlementStatus defines the observed state of a
-              ServiceEntitlement.
+            description: |-
+              ServiceAvailabilityStatus defines the observed state of a
+              ServiceAvailability. The reconciler owns the Available condition: it is
+              True when the service operator reports the service deployed and validated
+              at the location.
             properties:
               conditions:
                 description: |-
                   Conditions represent the latest available observations of the
-                  entitlement's state.
+                  availability's state. The Available condition is the gate the
+                  LocationBindingReconciler reads.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -140,38 +186,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dependencyOf:
-                description: |-
-                  DependencyOf is the metadata.name of the ServiceEntitlement that caused
-                  this entitlement to be created when origin is Dependency.
-                type: string
-              entitledAt:
-                description: EntitledAt is the time at which this entitlement became
-                  Active.
-                format: date-time
-                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed by the
                   controller.
                 format: int64
                 type: integer
-              origin:
-                description: |-
-                  Origin indicates whether this entitlement was created directly by a
-                  consumer admin or automatically as a dependency of another entitlement.
-                enum:
-                - Direct
-                - Dependency
-                type: string
-              phase:
-                description: Phase is the controller-observed lifecycle state of this
-                  entitlement.
-                enum:
-                - PendingApproval
-                - Active
-                - Rejected
-                type: string
             type: object
         type: object
     served: true

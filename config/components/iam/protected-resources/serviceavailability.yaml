@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-serviceavailability
+spec:
+  serviceRef:
+    name: "services.miloapis.com"
+  kind: ServiceAvailability
+  plural: serviceavailabilities
+  singular: serviceavailability
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
+    - updateStatus
