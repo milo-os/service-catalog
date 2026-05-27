@@ -101,6 +101,57 @@ func TestServiceConsumerReconciler_Denied(t *testing.T) {
 	}
 }
 
+// TestServiceConsumerReconciler_ApprovedByServiceRefNotMetadataName verifies
+// that approval propagates to an entitlement whose metadata.name differs from
+// the consumer's spec.serviceRef.name. This is the common case in production
+// where a user names their entitlement something short (e.g. "my-compute")
+// while the service slug stored on the consumer is "compute".
+func TestServiceConsumerReconciler_ApprovedByServiceRefNotMetadataName(t *testing.T) {
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	sc := newServiceConsumer(consumerName, &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	// Entitlement has a user-chosen metadata.name that differs from the
+	// serviceRef name stored on the ServiceConsumer.
+	const userChosenName = "my-compute"
+	ent := newEntitlement(userChosenName, testServiceSlug)
+
+	providerClient := newFakeClient(sc)
+	consumerClient := newFakeClient(ent)
+
+	mgr := newTestManager()
+	mgr.add(testProviderProject, providerClient)
+	mgr.add(testConsumerProject, consumerClient)
+
+	r := &ServiceConsumerReconciler{
+		Manager: mgr,
+		Scheme:  testScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testProviderProject, consumerName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Consumer status should be Active.
+	var gotSC servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &gotSC); err != nil {
+		t.Fatalf("get sc: %v", err)
+	}
+	if gotSC.Status.Phase != servicesv1alpha1.ConsumerPhaseActive {
+		t.Errorf("consumer phase = %q, want Active", gotSC.Status.Phase)
+	}
+
+	// Entitlement status should be Active — looked up by spec.serviceRef.name,
+	// not by metadata.name.
+	var gotEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: userChosenName}, &gotEnt); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if gotEnt.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
+		t.Errorf("entitlement phase = %q, want Active", gotEnt.Status.Phase)
+	}
+}
+
 func TestServiceConsumerReconciler_NoApprovalIsNoOp(t *testing.T) {
 	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
 	sc := newServiceConsumer(consumerName, nil)
