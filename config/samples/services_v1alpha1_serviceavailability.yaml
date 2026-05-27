@@ -10,4 +10,3 @@ spec:
     name: compute-miloapis-com
   locationRef:
     name: us-central1-a
-    namespace: platform

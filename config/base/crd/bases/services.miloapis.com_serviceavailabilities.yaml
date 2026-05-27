@@ -83,16 +83,8 @@ spec:
                     maxLength: 253
                     minLength: 1
                     type: string
-                  namespace:
-                    description: |-
-                      Namespace is the namespace of the referenced Location in the platform
-                      control plane.
-                    maxLength: 253
-                    minLength: 1
-                    type: string
                 required:
                 - name
-                - namespace
                 type: object
                 x-kubernetes-validations:
                 - message: locationRef is immutable

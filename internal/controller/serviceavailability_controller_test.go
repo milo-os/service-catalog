@@ -24,7 +24,6 @@ const (
 	saName        = "compute--us-central1-a"
 	saServiceName = "compute.miloapis.com"
 	saLocName     = "us-central1-a"
-	saLocNS       = "platform"
 )
 
 // availabilityScheme registers the services types plus the foreign Location
@@ -50,7 +49,7 @@ func newAvailability() *servicesv1alpha1.ServiceAvailability {
 		ObjectMeta: metav1.ObjectMeta{Name: saName},
 		Spec: servicesv1alpha1.ServiceAvailabilitySpec{
 			ServiceRef:  servicesv1alpha1.ServiceRef{Name: saServiceName},
-			LocationRef: servicesv1alpha1.LocationRef{Name: saLocName, Namespace: saLocNS},
+			LocationRef: servicesv1alpha1.LocationRef{Name: saLocName},
 		},
 	}
 }
@@ -65,7 +64,7 @@ func newServiceInPhase(name string, phase servicesv1alpha1.Phase) *servicesv1alp
 	}
 }
 
-func newLocation(name, namespace string, ready bool) *unstructured.Unstructured {
+func newLocation(name string, ready bool) *unstructured.Unstructured {
 	status := string(metav1.ConditionFalse)
 	if ready {
 		status = string(metav1.ConditionTrue)
@@ -73,7 +72,6 @@ func newLocation(name, namespace string, ready bool) *unstructured.Unstructured 
 	loc := &unstructured.Unstructured{}
 	loc.SetGroupVersionKind(locationGVK)
 	loc.SetName(name)
-	loc.SetNamespace(namespace)
 	_ = unstructured.SetNestedSlice(loc.Object, []any{
 		map[string]any{"type": "Ready", "status": status},
 	}, "status", "conditions")
@@ -117,7 +115,7 @@ func TestServiceAvailabilityReconciler_Available(t *testing.T) {
 	c := newAvailabilityClient(
 		newAvailability(),
 		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
-		newLocation(saLocName, saLocNS, true),
+		newLocation(saLocName, true),
 	)
 	got := reconcileAvailability(t, c)
 	assertAvailable(t, got, metav1.ConditionTrue, reasonServiceOperational)
@@ -127,7 +125,7 @@ func TestServiceAvailabilityReconciler_ServiceNotPublished(t *testing.T) {
 	c := newAvailabilityClient(
 		newAvailability(),
 		newServiceInPhase(saServiceName, servicesv1alpha1.PhaseDraft),
-		newLocation(saLocName, saLocNS, true),
+		newLocation(saLocName, true),
 	)
 	got := reconcileAvailability(t, c)
 	assertAvailable(t, got, metav1.ConditionFalse, reasonServiceNotPublished)
@@ -136,7 +134,7 @@ func TestServiceAvailabilityReconciler_ServiceNotPublished(t *testing.T) {
 func TestServiceAvailabilityReconciler_ServiceNotFound(t *testing.T) {
 	c := newAvailabilityClient(
 		newAvailability(),
-		newLocation(saLocName, saLocNS, true),
+		newLocation(saLocName, true),
 	)
 	got := reconcileAvailability(t, c)
 	assertAvailable(t, got, metav1.ConditionFalse, reasonServiceNotPublished)
@@ -146,7 +144,7 @@ func TestServiceAvailabilityReconciler_LocationNotReady(t *testing.T) {
 	c := newAvailabilityClient(
 		newAvailability(),
 		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
-		newLocation(saLocName, saLocNS, false),
+		newLocation(saLocName, false),
 	)
 	got := reconcileAvailability(t, c)
 	assertAvailable(t, got, metav1.ConditionFalse, reasonLocationNotReady)
@@ -168,7 +166,7 @@ func TestServiceAvailabilityReconciler_Idempotent(t *testing.T) {
 	c := newAvailabilityClient(
 		newAvailability(),
 		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
-		newLocation(saLocName, saLocNS, true),
+		newLocation(saLocName, true),
 	)
 	first := reconcileAvailability(t, c)
 	assertAvailable(t, first, metav1.ConditionTrue, reasonServiceOperational)
@@ -191,7 +189,7 @@ func TestServiceAvailabilityReconciler_TransientErrorRequeues(t *testing.T) {
 		WithObjects(
 			newAvailability(),
 			newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
-			newLocation(saLocName, saLocNS, true),
+			newLocation(saLocName, true),
 		).
 		WithStatusSubresource(&servicesv1alpha1.ServiceAvailability{}).
 		Build()

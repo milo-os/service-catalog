@@ -151,13 +151,12 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 	loc := &unstructured.Unstructured{}
 	loc.SetGroupVersionKind(locationGVK)
 	locKey := types.NamespacedName{
-		Name:      sa.Spec.LocationRef.Name,
-		Namespace: sa.Spec.LocationRef.Namespace,
+		Name: sa.Spec.LocationRef.Name,
 	}
 	if err := r.client.Get(ctx, locKey, loc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return deny(cond, reasonLocationNotFound,
-				fmt.Sprintf("no Location %q in namespace %q exists", locKey.Name, locKey.Namespace)), nil
+				fmt.Sprintf("no Location %q exists", locKey.Name)), nil
 		}
 		return cond, fmt.Errorf("failed to load referenced Location: %w", err)
 	}
