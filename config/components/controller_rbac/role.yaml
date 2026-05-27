@@ -64,3 +64,19 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - resourcemanager.miloapis.com
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - infrastructure.miloapis.com
+  resources:
+  - projectcontrolplanes
+  verbs:
+  - get
+  - list
+  - watch
