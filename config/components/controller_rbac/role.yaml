@@ -20,6 +20,18 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - locationbindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
   - locations
   verbs:
   - get
