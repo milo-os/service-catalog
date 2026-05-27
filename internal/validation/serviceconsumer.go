@@ -27,23 +27,6 @@ func IsServicesControllerCaller(user authenticationv1.UserInfo) bool {
 	return false
 }
 
-// ValidateServiceConsumerCreate rejects creates from non-controller
-// callers. Only the services controller should ever create a
-// ServiceConsumer; providers interact via spec.approval on update.
-func ValidateServiceConsumerCreate(
-	user authenticationv1.UserInfo,
-	sc *servicesv1alpha1.ServiceConsumer,
-) field.ErrorList {
-	var allErrs field.ErrorList
-	if !IsServicesControllerCaller(user) {
-		allErrs = append(allErrs, field.Forbidden(
-			field.NewPath("metadata", "name"),
-			"ServiceConsumer objects may only be created by the services controller",
-		))
-	}
-	return allErrs
-}
-
 // ValidateServiceConsumerUpdate enforces the provider-only write surface:
 // provider callers may only mutate spec.approval, and once approval is
 // Denied the decision cannot be changed. The controller bypasses these

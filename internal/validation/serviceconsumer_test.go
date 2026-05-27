@@ -11,10 +11,7 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-var (
-	controllerUser = authenticationv1.UserInfo{Username: "system:serviceaccount:services-system:services-controller"}
-	providerUser   = authenticationv1.UserInfo{Username: "alice@example.com"}
-)
+var providerUser = authenticationv1.UserInfo{Username: "alice@example.com"}
 
 func newConsumer(name string, approval *servicesv1alpha1.ProviderApproval) *servicesv1alpha1.ServiceConsumer {
 	return &servicesv1alpha1.ServiceConsumer{
@@ -24,20 +21,6 @@ func newConsumer(name string, approval *servicesv1alpha1.ProviderApproval) *serv
 			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: "consumer-proj"},
 			Approval:           approval,
 		},
-	}
-}
-
-func TestValidateServiceConsumerCreate_AcceptsController(t *testing.T) {
-	errs := ValidateServiceConsumerCreate(controllerUser, newConsumer("sc-x", nil))
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors from controller create: %v", errs)
-	}
-}
-
-func TestValidateServiceConsumerCreate_RejectsNonController(t *testing.T) {
-	errs := ValidateServiceConsumerCreate(providerUser, newConsumer("sc-x", nil))
-	if len(errs) == 0 {
-		t.Fatal("expected error when non-controller creates ServiceConsumer")
 	}
 }
 

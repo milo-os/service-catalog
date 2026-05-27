@@ -45,23 +45,9 @@ func userInfoFromContext(ctx context.Context) authenticationv1.UserInfo {
 	return req.UserInfo
 }
 
-// ValidateCreate implements webhook.CustomValidator. ServiceConsumer
-// objects are controller-managed; reject creates from any other caller.
-func (r *serviceConsumerWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	sc, ok := obj.(*servicesv1alpha1.ServiceConsumer)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
-	user := userInfoFromContext(ctx)
-	serviceConsumerLog.Info("validating create", "name", sc.GetName(), "user", user.Username)
-
-	if errs := validation.ValidateServiceConsumerCreate(user, sc); len(errs) > 0 {
-		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
-			sc.Name,
-			errs,
-		)
-	}
+// ValidateCreate implements webhook.CustomValidator. Create access is
+// governed entirely by RBAC; no additional validation needed.
+func (r *serviceConsumerWebhook) ValidateCreate(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
 
