@@ -13,7 +13,7 @@ metadata:
   name: locationbindings.networking.datumapis.com
 spec:
   group: networking.datumapis.com
-  scope: Namespaced
+  scope: Cluster
   names:
     kind: LocationBinding
     listKind: LocationBindingList

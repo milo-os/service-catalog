@@ -38,13 +38,6 @@ var locationBindingGVK = schema.GroupVersionKind{
 }
 
 const (
-	// projectBindingNamespace is the namespace within a consumer project's
-	// virtual control plane that LocationBindings are projected into. Project
-	// VCPs expose a single working namespace; the platform-primitive design
-	// places bindings in "default" so `kubectl get locationbindings` lists a
-	// project's accessible locations without a namespace flag.
-	projectBindingNamespace = "default"
-
 	// locationBindingResyncInterval bounds how long a gate change on the root
 	// cluster (ServiceAvailability flips, Location readiness, a new published
 	// ServiceConfiguration) takes to propagate into project bindings. The
@@ -77,8 +70,8 @@ const (
 	// ServiceAvailability reconciler; it is declared there.
 )
 
-// LocationBindingReconciler projects platform Locations into the namespaces of
-// entitled projects as consumer-facing LocationBinding objects. It is the
+// LocationBindingReconciler projects platform Locations into entitled projects
+// as consumer-facing, cluster-scoped LocationBinding objects. It is the
 // tier-2 half of the location two-tier discovery model and the place where the
 // three location gates are combined:
 //
@@ -330,7 +323,6 @@ func (r *LocationBindingReconciler) upsertBinding(
 ) error {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(locationBindingGVK)
-	u.SetNamespace(projectBindingNamespace)
 	u.SetName(locName)
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
@@ -418,7 +410,6 @@ func (r *LocationBindingReconciler) cleanupBindings(
 	var list unstructured.UnstructuredList
 	list.SetGroupVersionKind(locationBindingGVK.GroupVersion().WithKind("LocationBindingList"))
 	if err := consumerClient.List(ctx, &list,
-		client.InNamespace(projectBindingNamespace),
 		client.MatchingLabels{labelManagedBy: labelManagedByValue},
 	); err != nil {
 		if apimeta.IsNoMatchError(err) {

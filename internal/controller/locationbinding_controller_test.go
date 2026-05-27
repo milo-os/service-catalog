@@ -134,7 +134,6 @@ func newClassyLocation(name string, ready bool, class string) *unstructured.Unst
 func existingBinding(locName string, ownerUID types.UID) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(locationBindingGVK)
-	u.SetNamespace(projectBindingNamespace)
 	u.SetName(locName)
 	u.SetLabels(map[string]string{
 		labelManagedBy:   labelManagedByValue,
@@ -173,7 +172,7 @@ func getBinding(t *testing.T, c client.Client, locName string) (*unstructured.Un
 	t.Helper()
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(locationBindingGVK)
-	err := c.Get(context.Background(), types.NamespacedName{Namespace: projectBindingNamespace, Name: locName}, u)
+	err := c.Get(context.Background(), types.NamespacedName{Name: locName}, u)
 	if err != nil {
 		return nil, false
 	}
