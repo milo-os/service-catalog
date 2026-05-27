@@ -102,15 +102,6 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed to get Service %q: %w", entitlement.Spec.ServiceRef.Name, err)
 	}
 
-	// Normalize spec.serviceRef.name to the canonical service identifier so
-	// that it is consistent with ServiceConsumer.spec.serviceRef.name. Update
-	// in-place and continue so the rest of the reconcile runs in the same pass.
-	if entitlement.Spec.ServiceRef.Name != svc.Spec.ServiceName {
-		entitlement.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Spec.ServiceName}
-		if err := consumerClient.Update(ctx, &entitlement); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to normalize serviceRef to canonical name: %w", err)
-		}
-	}
 
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		return ctrl.Result{}, r.setRejectedStatus(ctx, consumerClient, &entitlement,
@@ -165,7 +156,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		message = "Provider denied the request."
 	}
 
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message); err != nil {
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -223,11 +214,14 @@ func equalConsumerStatus(a, b *servicesv1alpha1.ServiceConsumerStatus) bool {
 	return true
 }
 
-func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message string) error {
+func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
 	original := entitlement.Status.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
 	entitlement.Status.Phase = phase
+	if canonicalServiceName != "" {
+		entitlement.Status.ServiceName = canonicalServiceName
+	}
 	if entitlement.Status.Origin == "" {
 		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDirect
 	}
@@ -258,11 +252,11 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 }
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
-	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message)
+	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "")
 }
 
 func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {
-	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf {
+	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf || a.ServiceName != b.ServiceName {
 		return false
 	}
 	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {

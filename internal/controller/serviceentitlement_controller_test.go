@@ -288,9 +288,10 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 	}
 }
 
-func TestServiceEntitlementReconciler_NormalizesServiceRefToCanonicalName(t *testing.T) {
+func TestServiceEntitlementReconciler_StampsCanonicalServiceNameInStatus(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
-	// Entitlement created with the k8s object name instead of canonical name.
+	// Entitlement created with the k8s object name — spec is left as-is but
+	// status.serviceName should be stamped with the canonical identifier.
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
 	rootClient := newFakeClient(svc)
@@ -307,15 +308,18 @@ func TestServiceEntitlementReconciler_NormalizesServiceRefToCanonicalName(t *tes
 		Scheme:     testScheme(),
 	}
 
-	// Drive through finalizer + normalization passes.
 	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 10)
 
 	var got servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); err != nil {
 		t.Fatalf("get entitlement: %v", err)
 	}
-	if got.Spec.ServiceRef.Name != testServiceName {
-		t.Errorf("spec.serviceRef.name = %q, want canonical %q", got.Spec.ServiceRef.Name, testServiceName)
+	if got.Status.ServiceName != testServiceName {
+		t.Errorf("status.serviceName = %q, want canonical %q", got.Status.ServiceName, testServiceName)
+	}
+	// spec.serviceRef.name must NOT be mutated by the reconciler.
+	if got.Spec.ServiceRef.Name != testServiceSlug {
+		t.Errorf("spec.serviceRef.name = %q, want original %q (reconciler must not mutate spec)", got.Spec.ServiceRef.Name, testServiceSlug)
 	}
 }
 
