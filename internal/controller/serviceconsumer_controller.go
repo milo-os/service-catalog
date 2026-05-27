@@ -115,13 +115,13 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	}
 	consumerClient := consumerCluster.GetClient()
 
-	// Look up the ServiceEntitlement in the consumer project by matching
-	// spec.serviceRef.name. The entitlement's metadata.name is a user-chosen
-	// slug (e.g. "compute"), while consumer.Spec.ServiceRef.Name is the
-	// Kubernetes object name of the root Service (also typically the slug).
-	// Rather than assume they are identical, list all entitlements and find
-	// the one whose spec.serviceRef.name matches — this is resilient to the
-	// case where the canonical service name and the k8s object name diverge.
+	// Look up the ServiceEntitlement in the consumer project by matching the
+	// canonical service name. consumer.Spec.ServiceRef.Name holds the canonical
+	// name (e.g. "compute.miloapis.com"). We prefer to match against
+	// status.serviceName, which is the canonical name stamped by the entitlement
+	// reconciler. If status.serviceName is empty (entitlement not yet reconciled),
+	// we fall back to spec.serviceRef.name so behavior degrades gracefully rather
+	// than silently skipping the entitlement.
 	var entitlementList servicesv1alpha1.ServiceEntitlementList
 	if err := consumerClient.List(ctx, &entitlementList); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list ServiceEntitlements in consumer project: %w", err)
@@ -129,7 +129,11 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	var entitlement *servicesv1alpha1.ServiceEntitlement
 	for i := range entitlementList.Items {
 		item := &entitlementList.Items[i]
-		if item.Spec.ServiceRef.Name == consumer.Spec.ServiceRef.Name {
+		name := item.Status.ServiceName
+		if name == "" {
+			name = item.Spec.ServiceRef.Name
+		}
+		if name == consumer.Spec.ServiceRef.Name {
 			entitlement = item
 			break
 		}
