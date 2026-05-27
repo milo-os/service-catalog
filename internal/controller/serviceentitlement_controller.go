@@ -103,13 +103,13 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	// Normalize spec.serviceRef.name to the canonical service identifier so
-	// that it is consistent with ServiceConsumer.spec.serviceRef.name.
+	// that it is consistent with ServiceConsumer.spec.serviceRef.name. Update
+	// in-place and continue so the rest of the reconcile runs in the same pass.
 	if entitlement.Spec.ServiceRef.Name != svc.Spec.ServiceName {
 		entitlement.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Spec.ServiceName}
 		if err := consumerClient.Update(ctx, &entitlement); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to normalize serviceRef to canonical name: %w", err)
 		}
-		return ctrl.Result{}, nil
 	}
 
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
