@@ -8,7 +8,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,15 +56,15 @@ func (m *stubRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string) (
 func (m *stubRESTMapper) ResourceSingularizer(resource string) (string, error) { return resource, nil }
 
 // patchCapturingClient wraps a client.Client and records every Patch call
-// whose object is an *unstructured.Unstructured.
+// whose object is a *quotav1alpha1.ClaimCreationPolicy.
 type patchCapturingClient struct {
 	client.Client
-	patches []*unstructured.Unstructured
+	policies []*quotav1alpha1.ClaimCreationPolicy
 }
 
 func (c *patchCapturingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	if u, ok := obj.(*unstructured.Unstructured); ok {
-		c.patches = append(c.patches, u.DeepCopy())
+	if ccp, ok := obj.(*quotav1alpha1.ClaimCreationPolicy); ok {
+		c.policies = append(c.policies, ccp.DeepCopy())
 	}
 	return nil
 }
@@ -77,13 +76,13 @@ func newQuotaFanOutScheme() *runtime.Scheme {
 	return s
 }
 
-// TestApplyClaimCreationPolicies_NoResourceRef verifies the serialization
-// contract for the unstructured ClaimCreationPolicy SSA patch:
-//   - spec.target.resourceClaimTemplate.spec.resourceRef must be absent
-//     (the server's CEL rule rejects the field; typed marshaling always emits
-//     it for a non-pointer struct even when zero-valued — this is the exact
-//     bug the fix addresses)
-//   - all required camelCase keys are present with non-empty values
+// TestApplyClaimCreationPolicies_NoResourceRef verifies that the
+// ClaimCreationPolicy applied by the controller does not include ResourceRef
+// in the template spec. The server's CEL rule rejects any template where
+// spec.target.resourceClaimTemplate.spec.resourceRef is set, because the
+// field is server-populated at admission time. The upstream fix
+// (milo-os/milo#623) makes ResourceRef a pointer so omitempty works correctly;
+// this test confirms the typed path produces a valid object.
 func TestApplyClaimCreationPolicies_NoResourceRef(t *testing.T) {
 	sc := &servicesv1alpha1.ServiceConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
@@ -130,72 +129,42 @@ func TestApplyClaimCreationPolicies_NoResourceRef(t *testing.T) {
 		t.Fatalf("applyClaimCreationPolicies: %v", err)
 	}
 
-	if len(capturing.patches) == 0 {
+	if len(capturing.policies) == 0 {
 		t.Fatal("expected at least one Patch call, got none")
 	}
 
-	obj := capturing.patches[0].Object
+	ccp := capturing.policies[0]
+	spec := ccp.Spec
 
-	spec := requireMap(t, obj, "spec")
-	target := requireMap(t, spec, "target")
-	rct := requireMap(t, target, "resourceClaimTemplate")
-	rctSpec := requireMap(t, rct, "spec")
-
-	if _, exists := rctSpec["resourceRef"]; exists {
-		t.Error("spec.target.resourceClaimTemplate.spec.resourceRef is present; the server's CEL rule will reject this object")
+	// ResourceRef must be nil — the server rejects templates that include it.
+	if spec.Target.ResourceClaimTemplate.Spec.ResourceRef != nil {
+		t.Error("ResourceClaimTemplate.Spec.ResourceRef is non-nil; the server's CEL rule will reject this object")
 	}
 
-	trigger := requireMap(t, spec, "trigger")
-	triggerResource := requireMap(t, trigger, "resource")
-	requireNonEmptyString(t, triggerResource, "apiVersion", "spec.trigger.resource.apiVersion")
-	requireNonEmptyString(t, triggerResource, "kind", "spec.trigger.resource.kind")
-
-	rctMeta := requireMap(t, rct, "metadata")
-	requireNonEmptyString(t, rctMeta, "generateName", "spec.target.resourceClaimTemplate.metadata.generateName")
-	requireNonEmptyString(t, rctMeta, "namespace", "spec.target.resourceClaimTemplate.metadata.namespace")
-
-	requests, ok := rctSpec["requests"]
-	if !ok {
-		t.Fatal("spec.target.resourceClaimTemplate.spec.requests is absent")
+	// Trigger resource must be fully populated.
+	if spec.Trigger.Resource.APIVersion == "" {
+		t.Error("Trigger.Resource.APIVersion is empty")
 	}
-	reqSlice, ok := requests.([]interface{})
-	if !ok || len(reqSlice) == 0 {
-		t.Errorf("spec.target.resourceClaimTemplate.spec.requests: want non-empty slice, got %T %v", requests, requests)
+	if spec.Trigger.Resource.Kind == "" {
+		t.Error("Trigger.Resource.Kind is empty")
 	}
 
-	metadata := requireMap(t, obj, "metadata")
-	ownerRefs, ok := metadata["ownerReferences"]
-	if !ok {
-		t.Fatal("metadata.ownerReferences is absent")
+	// Template metadata must have dynamic name expressions.
+	meta := spec.Target.ResourceClaimTemplate.Metadata
+	if meta.GenerateName == "" {
+		t.Error("ResourceClaimTemplate.Metadata.GenerateName is empty")
 	}
-	ownerSlice, ok := ownerRefs.([]interface{})
-	if !ok || len(ownerSlice) == 0 {
-		t.Errorf("metadata.ownerReferences: want non-empty slice, got %T %v", ownerRefs, ownerRefs)
+	if meta.Namespace == "" {
+		t.Error("ResourceClaimTemplate.Metadata.Namespace is empty")
 	}
-}
 
-func requireMap(t *testing.T, m map[string]interface{}, key string) map[string]interface{} {
-	t.Helper()
-	v, ok := m[key]
-	if !ok {
-		t.Fatalf("key %q not found", key)
+	// At least one resource request must be present.
+	if len(spec.Target.ResourceClaimTemplate.Spec.Requests) == 0 {
+		t.Error("ResourceClaimTemplate.Spec.Requests is empty")
 	}
-	result, ok := v.(map[string]interface{})
-	if !ok {
-		t.Fatalf("key %q: expected map[string]interface{}, got %T", key, v)
-	}
-	return result
-}
 
-func requireNonEmptyString(t *testing.T, m map[string]interface{}, key, path string) {
-	t.Helper()
-	v, ok := m[key]
-	if !ok {
-		t.Errorf("%s is absent", path)
-		return
-	}
-	s, ok := v.(string)
-	if !ok || s == "" {
-		t.Errorf("%s = %v; want non-empty string", path, v)
+	// Owner reference must be set so the CCP is garbage-collected with the SC.
+	if len(ccp.OwnerReferences) == 0 {
+		t.Error("OwnerReferences is empty")
 	}
 }
