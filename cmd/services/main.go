@@ -15,6 +15,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -165,6 +166,7 @@ func main() {
 	provider, err := miloprovider.New(mgr, miloprovider.Options{
 		InternalServiceDiscovery: false,
 		ProjectRestConfig:        cfg,
+		ClusterOptions:           []cluster.Option{func(o *cluster.Options) { o.Scheme = scheme }},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create Milo multicluster provider")
