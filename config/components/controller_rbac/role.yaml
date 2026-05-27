@@ -34,10 +34,22 @@ rules:
   - services.miloapis.com
   resources:
   - serviceconfigurations
-  - serviceconsumers
   - serviceentitlements
   - services
   verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconsumers
+  verbs:
+  - approve
   - create
   - delete
   - get

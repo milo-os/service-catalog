@@ -5,13 +5,10 @@ package validation
 import (
 	"testing"
 
-	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
-
-var providerUser = authenticationv1.UserInfo{Username: "alice@example.com"}
 
 func newConsumer(name string, approval *servicesv1alpha1.ProviderApproval) *servicesv1alpha1.ServiceConsumer {
 	return &servicesv1alpha1.ServiceConsumer{
@@ -29,7 +26,7 @@ func TestValidateServiceConsumerUpdate_ProviderAccessOnApproval(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionApproved,
 	})
-	errs := ValidateServiceConsumerUpdate(providerUser, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(false, oldSC, newSC)
 	if len(errs) != 0 {
 		t.Fatalf("provider update of spec.approval should be allowed, got %v", errs)
 	}
@@ -39,9 +36,19 @@ func TestValidateServiceConsumerUpdate_ProviderRejectedOnServiceRef(t *testing.T
 	oldSC := newConsumer("sc-x", nil)
 	newSC := newConsumer("sc-x", nil)
 	newSC.Spec.ServiceRef.Name = "other"
-	errs := ValidateServiceConsumerUpdate(providerUser, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(false, oldSC, newSC)
 	if len(errs) == 0 {
 		t.Fatal("expected error when provider mutates spec.serviceRef")
+	}
+}
+
+func TestValidateServiceConsumerUpdate_PrivilegedCallerCanChangeServiceRef(t *testing.T) {
+	oldSC := newConsumer("sc-x", nil)
+	newSC := newConsumer("sc-x", nil)
+	newSC.Spec.ServiceRef.Name = "other"
+	errs := ValidateServiceConsumerUpdate(true, oldSC, newSC)
+	if len(errs) != 0 {
+		t.Fatalf("privileged caller should be able to change spec.serviceRef, got %v", errs)
 	}
 }
 
@@ -52,9 +59,22 @@ func TestValidateServiceConsumerUpdate_DeniedImmutable(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionApproved,
 	})
-	errs := ValidateServiceConsumerUpdate(providerUser, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(false, oldSC, newSC)
 	if len(errs) == 0 {
 		t.Fatal("expected error flipping Denied -> Approved")
+	}
+}
+
+func TestValidateServiceConsumerUpdate_DeniedImmutableEvenForPrivileged(t *testing.T) {
+	oldSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionDenied,
+	})
+	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	errs := ValidateServiceConsumerUpdate(true, oldSC, newSC)
+	if len(errs) == 0 {
+		t.Fatal("expected error flipping Denied -> Approved even for privileged caller")
 	}
 }
 
@@ -66,7 +86,7 @@ func TestValidateServiceConsumerUpdate_DeniedNoOp(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionDenied,
 	})
-	errs := ValidateServiceConsumerUpdate(providerUser, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(false, oldSC, newSC)
 	if len(errs) != 0 {
 		t.Fatalf("Denied -> Denied should be allowed, got %v", errs)
 	}
@@ -78,7 +98,7 @@ func TestValidateServiceConsumerUpdate_FirstTimeDenied(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionDenied,
 	})
-	errs := ValidateServiceConsumerUpdate(providerUser, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(false, oldSC, newSC)
 	if len(errs) != 0 {
 		t.Fatalf("first-time Denied should be allowed, got %v", errs)
 	}
