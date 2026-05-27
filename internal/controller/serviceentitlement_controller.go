@@ -303,6 +303,25 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
 		}
 
+		// The Get returned NotFound, but an entitlement for the same dependency
+		// service may exist under a different metadata.name (e.g. created by the
+		// user directly using the canonical service name). Check by
+		// status.serviceName to avoid creating a duplicate.
+		var allEntitlements servicesv1alpha1.ServiceEntitlementList
+		if err := consumerClient.List(ctx, &allEntitlements); err != nil {
+			return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
+		}
+		alreadyExists := false
+		for i := range allEntitlements.Items {
+			if allEntitlements.Items[i].Status.ServiceName == depCanonical {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
 		depEntitlement := &servicesv1alpha1.ServiceEntitlement{
 			ObjectMeta: metav1.ObjectMeta{Name: depEntitlementName},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
@@ -399,7 +418,13 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 // entitlements created before the canonical-name convention was enforced.
 func (r *ServiceEntitlementReconciler) resolveService(ctx context.Context, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
 	var list servicesv1alpha1.ServiceList
-	if err := r.rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err == nil && len(list.Items) > 0 {
+	if err := r.rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err != nil {
+		// Propagate transient errors (cache not synced, API unavailable, etc.)
+		// rather than silently falling through to the name-based Get, which
+		// could return the wrong Service or a misleading NotFound.
+		return nil, fmt.Errorf("failed to list Services by spec.serviceName %q: %w", nameOrCanonical, err)
+	}
+	if len(list.Items) > 0 {
 		return &list.Items[0], nil
 	}
 	// Backward-compat: try by Kubernetes object name.

@@ -78,10 +78,12 @@ func (r *ServiceEntitlementReconciler) ensureQuotaGrants(
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: servicesv1alpha1.GroupVersion.String(),
-						Kind:       "ServiceEntitlement",
-						Name:       entitlement.Name,
-						UID:        entitlement.UID,
+						APIVersion:         servicesv1alpha1.GroupVersion.String(),
+						Kind:               "ServiceEntitlement",
+						Name:               entitlement.Name,
+						UID:                entitlement.UID,
+						Controller:         boolPtr(true),
+						BlockOwnerDeletion: boolPtr(true),
 					},
 				},
 			},
@@ -124,9 +126,6 @@ func (r *ServiceEntitlementReconciler) pruneQuotaGrants(
 	if err := consumerClient.List(ctx, &list,
 		client.MatchingLabels{labelEntitlementName: entitlement.Name},
 	); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
 		return fmt.Errorf("list ResourceGrants for entitlement %q: %w", entitlement.Name, err)
 	}
 
@@ -145,3 +144,6 @@ func resourceGrantName(serviceName, consumerProject, limitName string) string {
 	sum := sha256.Sum256([]byte(serviceName + "/" + consumerProject + "/" + limitName))
 	return "rg-" + hex.EncodeToString(sum[:8])
 }
+
+// boolPtr returns a pointer to the given bool value.
+func boolPtr(b bool) *bool { return &b }
