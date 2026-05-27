@@ -160,11 +160,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, err
 	}
 
-	// Only enroll dependencies once the parent is Active. Dependency
-	// entitlements created earlier (while gated) would race the parent
-	// approval; defer creation until the parent is unblocked.
+	// Only enroll dependencies and provision quota once the parent is Active.
+	// Dependency entitlements created earlier (while gated) would race the
+	// parent approval; defer creation until the parent is unblocked.
 	if desiredPhase == servicesv1alpha1.EntitlementPhaseActive {
 		if err := r.ensureDependencies(ctx, consumerClient, svc, &entitlement); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.ensureQuotaGrants(ctx, consumerClient, consumerProject, &entitlement, svc); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -378,6 +381,11 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 		}
 	}
 
+	// Clean up any ResourceGrants that were provisioned for this entitlement.
+	if err := r.pruneQuotaGrants(ctx, consumerClient, entitlement); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to prune quota grants: %w", err)
+	}
+
 	controllerutil.RemoveFinalizer(entitlement, serviceEntitlementFinalizer)
 	if err := consumerClient.Update(ctx, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
@@ -434,6 +442,24 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 		},
 	); err != nil {
 		return fmt.Errorf("failed to index Service by spec.serviceName: %w", err)
+	}
+
+	// Index ServiceConfiguration objects by spec.serviceRef.name so
+	// ensureQuotaGrants can efficiently find the configuration for a given
+	// Service without a full list scan.
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.ServiceConfiguration{},
+		"spec.serviceRef.name",
+		func(obj client.Object) []string {
+			sc := obj.(*servicesv1alpha1.ServiceConfiguration)
+			if sc.Spec.ServiceRef.Name == "" {
+				return nil
+			}
+			return []string{sc.Spec.ServiceRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index ServiceConfiguration by spec.serviceRef.name: %w", err)
 	}
 
 	return mcbuilder.ControllerManagedBy(mcMgr).
