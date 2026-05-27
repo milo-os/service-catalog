@@ -122,8 +122,12 @@ func newClassyLocation(name string, ready bool, class string) *unstructured.Unst
 	loc := newLocation(name, lbLocNS, ready)
 	_ = unstructured.SetNestedField(loc.Object, class, "spec", "locationClassName")
 	_ = unstructured.SetNestedField(loc.Object, "Chicago", "spec", "displayName")
-	_ = unstructured.SetNestedField(loc.Object, "ORD", "spec", "city")
-	_ = unstructured.SetNestedField(loc.Object, "us-central1", "spec", "region")
+	// City and region live in the NSO Location's spec.topology map, not as
+	// first-class spec fields.
+	_ = unstructured.SetNestedStringMap(loc.Object, map[string]string{
+		"topology.datum.net/city-code": "ORD",
+		"topology.datum.net/region":    "us-central1",
+	}, "spec", "topology")
 	return loc
 }
 

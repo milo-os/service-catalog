@@ -33,7 +33,7 @@ import (
 // reconciler makes for Location.
 var locationBindingGVK = schema.GroupVersionKind{
 	Group:   "networking.datumapis.com",
-	Version: "v1alpha1",
+	Version: "v1alpha",
 	Kind:    "LocationBinding",
 }
 
@@ -306,8 +306,11 @@ func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 		f.class = servicesv1alpha1.LocationClassName(s)
 	}
 	f.displayName, _, _ = unstructured.NestedString(loc.Object, "spec", "displayName")
-	f.city, _, _ = unstructured.NestedString(loc.Object, "spec", "city")
-	f.region, _, _ = unstructured.NestedString(loc.Object, "spec", "region")
+	// City and region are not first-class spec fields on the NSO Location;
+	// they are carried in spec.topology under datum.net topology keys.
+	topology, _, _ := unstructured.NestedStringMap(loc.Object, "spec", "topology")
+	f.city = topology["topology.datum.net/city-code"]
+	f.region = topology["topology.datum.net/region"]
 	return f
 }
 
