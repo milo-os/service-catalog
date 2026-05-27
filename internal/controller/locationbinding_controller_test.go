@@ -115,17 +115,15 @@ func newAvailabilityWithCondition(locName string, available bool) *servicesv1alp
 	return sa
 }
 
-// newClassyLocation builds a Location carrying a class, topology, and display
-// name, reusing newLocation (from serviceavailability_controller_test.go) for
-// the Ready condition.
+// newClassyLocation builds a Location carrying a class, city/region, and a
+// display name, reusing newLocation (from serviceavailability_controller_test.go)
+// for the Ready condition.
 func newClassyLocation(name string, ready bool, class string) *unstructured.Unstructured {
 	loc := newLocation(name, lbLocNS, ready)
 	_ = unstructured.SetNestedField(loc.Object, class, "spec", "locationClassName")
 	_ = unstructured.SetNestedField(loc.Object, "Chicago", "spec", "displayName")
-	_ = unstructured.SetNestedStringMap(loc.Object, map[string]string{
-		"topology.datum.net/city-code": "ORD",
-		"topology.datum.net/region":    "us-central1",
-	}, "spec", "topology")
+	_ = unstructured.SetNestedField(loc.Object, "ORD", "spec", "city")
+	_ = unstructured.SetNestedField(loc.Object, "us-central1", "spec", "region")
 	return loc
 }
 

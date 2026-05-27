@@ -52,7 +52,7 @@ const (
 // in the LocationRef type definition.
 var locationGVK = schema.GroupVersionKind{
 	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
+	Version: "v1alpha1",
 	Kind:    "Location",
 }
 

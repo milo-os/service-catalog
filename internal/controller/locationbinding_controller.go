@@ -33,7 +33,7 @@ import (
 // reconciler makes for Location.
 var locationBindingGVK = schema.GroupVersionKind{
 	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
+	Version: "v1alpha1",
 	Kind:    "LocationBinding",
 }
 
@@ -298,7 +298,7 @@ type locationFields struct {
 }
 
 // extractLocationFields pulls the projection fields out of an unstructured
-// Location. Every field is best-effort: a Location missing topology metadata
+// Location. Every field is best-effort: a Location missing optional metadata
 // still yields a binding, just with the corresponding fields omitted.
 func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 	var f locationFields
@@ -306,9 +306,8 @@ func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 		f.class = servicesv1alpha1.LocationClassName(s)
 	}
 	f.displayName, _, _ = unstructured.NestedString(loc.Object, "spec", "displayName")
-	topology, _, _ := unstructured.NestedStringMap(loc.Object, "spec", "topology")
-	f.city = topology["topology.datum.net/city-code"]
-	f.region = topology["topology.datum.net/region"]
+	f.city, _, _ = unstructured.NestedString(loc.Object, "spec", "city")
+	f.region, _, _ = unstructured.NestedString(loc.Object, "spec", "region")
 	return f
 }
 

@@ -20,7 +20,7 @@ spec:
     plural: locationbindings
     singular: locationbinding
   versions:
-    - name: v1alpha
+    - name: v1alpha1
       served: true
       storage: true
       subresources:
