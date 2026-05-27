@@ -23,7 +23,6 @@ import (
 const (
 	reasonConsumerApproved = "ConsumerApproved"
 	reasonConsumerDenied   = "ConsumerDenied"
-	reasonConsumerPending  = "ConsumerPending"
 )
 
 // ServiceConsumerReconciler runs in every engaged project cluster. Each
