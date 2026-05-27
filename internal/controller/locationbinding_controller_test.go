@@ -26,7 +26,6 @@ const (
 	lbServiceName     = "compute.miloapis.com"
 	lbConfigName      = "compute-miloapis-com"
 	lbLoc             = "us-central1-a"
-	lbLocNS           = "platform"
 	lbClass           = "datum-managed"
 	lbEntitlementUID  = types.UID("ent-compute-uid")
 )
@@ -99,7 +98,7 @@ func newAvailabilityWithCondition(locName string, available bool) *servicesv1alp
 		ObjectMeta: metav1.ObjectMeta{Name: lbServiceName + "--" + locName},
 		Spec: servicesv1alpha1.ServiceAvailabilitySpec{
 			ServiceRef:  servicesv1alpha1.ServiceRef{Name: lbServiceName},
-			LocationRef: servicesv1alpha1.LocationRef{Name: locName, Namespace: lbLocNS},
+			LocationRef: servicesv1alpha1.LocationRef{Name: locName},
 		},
 	}
 	status := metav1.ConditionFalse
@@ -119,7 +118,7 @@ func newAvailabilityWithCondition(locName string, available bool) *servicesv1alp
 // display name, reusing newLocation (from serviceavailability_controller_test.go)
 // for the Ready condition.
 func newClassyLocation(name string, ready bool, class string) *unstructured.Unstructured {
-	loc := newLocation(name, lbLocNS, ready)
+	loc := newLocation(name, ready)
 	_ = unstructured.SetNestedField(loc.Object, class, "spec", "locationClassName")
 	_ = unstructured.SetNestedField(loc.Object, "Chicago", "spec", "displayName")
 	// City and region live in the NSO Location's spec.topology map, not as

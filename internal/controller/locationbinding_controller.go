@@ -195,7 +195,7 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 		// binding to unavailable on a blip.
 		loc := &unstructured.Unstructured{}
 		loc.SetGroupVersionKind(locationGVK)
-		locKey := types.NamespacedName{Name: locName, Namespace: sa.Spec.LocationRef.Namespace}
+		locKey := types.NamespacedName{Name: locName}
 		if err := r.rootClient.Get(ctx, locKey, loc); err != nil {
 			if apierrors.IsNotFound(err) {
 				// The Location vanished out from under an Available record;

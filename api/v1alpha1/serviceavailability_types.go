@@ -48,7 +48,7 @@ type ServiceLocationConfig struct {
 	SupportedClasses []LocationClassName `json:"supportedClasses"`
 }
 
-// LocationRef is a namespaced reference to a platform Location resource.
+// LocationRef is a reference to a platform Location resource (cluster-scoped).
 // Location lives in a separate API group (networking.datumapis.com today);
 // this reference only constrains the shape so ServiceAvailability does not
 // take a compile-time dependency on the Location Go type.
@@ -59,14 +59,6 @@ type LocationRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
-
-	// Namespace is the namespace of the referenced Location in the platform
-	// control plane.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Namespace string `json:"namespace"`
 }
 
 // ServiceAvailabilitySpec defines the desired state of a
