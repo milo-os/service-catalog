@@ -9,7 +9,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -151,82 +150,54 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 			schema.GroupKind{Group: rule.Selector.APIGroup, Kind: rule.Selector.Kind},
 		)
 		if err != nil {
-			if meta.IsNoMatchError(err) {
-				return nil, fmt.Errorf("resolve REST mapping for %s/%s: %w", rule.Selector.APIGroup, rule.Selector.Kind, err)
-			}
 			return nil, fmt.Errorf("resolve REST mapping for %s/%s: %w", rule.Selector.APIGroup, rule.Selector.Kind, err)
 		}
 		apiVersion := mapping.GroupVersionKind.GroupVersion().String()
 
 		name := encodeName(rule.Selector.APIGroup + "-" + rule.Selector.Kind)
 
-		// Build ResourceRequests from MetricCosts.
-		requests := make([]interface{}, 0, len(rule.MetricCosts))
+		requests := make([]quotav1alpha1.ResourceRequest, 0, len(rule.MetricCosts))
 		for metricName, amount := range rule.MetricCosts {
-			requests = append(requests, map[string]interface{}{
-				"resourceType": metricName,
-				"amount":       amount,
+			requests = append(requests, quotav1alpha1.ResourceRequest{
+				ResourceType: metricName,
+				Amount:       amount,
 			})
 		}
 
-		// Construct as Unstructured to avoid serializing resourceRef's zero-value
-		// struct. ResourceClaimSpec.ResourceRef is a non-pointer struct, so typed
-		// marshaling always emits it; the server rejects any template that includes
-		// the field because it is server-populated.
-		obj := &unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": quotav1alpha1.GroupVersion.String(),
-				"kind":       "ClaimCreationPolicy",
-				"metadata": map[string]interface{}{
-					"name": name,
-					"labels": map[string]interface{}{
-						labelManagedBy: labelManagedByValue,
+		obj := &quotav1alpha1.ClaimCreationPolicy{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: quotav1alpha1.GroupVersion.String(),
+				Kind:       "ClaimCreationPolicy",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+				Labels: map[string]string{
+					labelManagedBy: labelManagedByValue,
+				},
+			},
+			Spec: quotav1alpha1.ClaimCreationPolicySpec{
+				Trigger: quotav1alpha1.ClaimTriggerSpec{
+					Resource: quotav1alpha1.ClaimTriggerResource{
+						APIVersion: apiVersion,
+						Kind:       rule.Selector.Kind,
 					},
 				},
-				"spec": map[string]interface{}{
-					"trigger": map[string]interface{}{
-						"resource": map[string]interface{}{
-							"apiVersion": apiVersion,
-							"kind":       rule.Selector.Kind,
+				Target: quotav1alpha1.ClaimTargetSpec{
+					ResourceClaimTemplate: quotav1alpha1.ResourceClaimTemplate{
+						Metadata: quotav1alpha1.ObjectMetaTemplate{
+							GenerateName: "{{trigger.metadata.name}}-quota-",
+							Namespace:    "{{requestInfo.namespace}}",
 						},
-					},
-					"target": map[string]interface{}{
-						"resourceClaimTemplate": map[string]interface{}{
-							"metadata": map[string]interface{}{
-								"generateName": "{{trigger.metadata.name}}-quota-",
-								"namespace":    "{{requestInfo.namespace}}",
-							},
-							"spec": map[string]interface{}{
-								"requests": requests,
-							},
+						Spec: quotav1alpha1.ResourceClaimSpec{
+							Requests: requests,
 						},
 					},
 				},
 			},
 		}
-
-		// SetControllerReference requires a typed object for the owner; use a
-		// typed shell just to read the UID/name/GVK, then copy ownerReferences
-		// onto the unstructured object.
-		shell := &quotav1alpha1.ClaimCreationPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-		}
-		if err := ctrl.SetControllerReference(sc, shell, f.Scheme); err != nil {
+		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("set controller ref on ClaimCreationPolicy %q: %w", name, err)
 		}
-		ownerRefs := make([]interface{}, len(shell.OwnerReferences))
-		for j, ref := range shell.OwnerReferences {
-			ownerRefs[j] = map[string]interface{}{
-				"apiVersion":         ref.APIVersion,
-				"kind":               ref.Kind,
-				"name":               ref.Name,
-				"uid":                string(ref.UID),
-				"controller":         *ref.Controller,
-				"blockOwnerDeletion": *ref.BlockOwnerDeletion,
-			}
-		}
-		obj.Object["metadata"].(map[string]interface{})["ownerReferences"] = ownerRefs
-
 		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(quotaFieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply ClaimCreationPolicy %q: %w", name, err)
 		}
