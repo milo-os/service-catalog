@@ -125,7 +125,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
 	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
-		consumer.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Name}
+		consumer.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Spec.ServiceName}
 		consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
 		return nil
 	})
