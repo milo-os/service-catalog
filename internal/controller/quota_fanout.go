@@ -150,16 +150,12 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 			schema.GroupKind{Group: rule.Selector.APIGroup, Kind: rule.Selector.Kind},
 		)
 		if err != nil {
-			if meta.IsNoMatchError(err) {
-				return nil, fmt.Errorf("resolve REST mapping for %s/%s: %w", rule.Selector.APIGroup, rule.Selector.Kind, err)
-			}
 			return nil, fmt.Errorf("resolve REST mapping for %s/%s: %w", rule.Selector.APIGroup, rule.Selector.Kind, err)
 		}
 		apiVersion := mapping.GroupVersionKind.GroupVersion().String()
 
 		name := encodeName(rule.Selector.APIGroup + "-" + rule.Selector.Kind)
 
-		// Build ResourceRequests from MetricCosts.
 		requests := make([]quotav1alpha1.ResourceRequest, 0, len(rule.MetricCosts))
 		for metricName, amount := range rule.MetricCosts {
 			requests = append(requests, quotav1alpha1.ResourceRequest{
