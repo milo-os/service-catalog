@@ -1,0 +1,13 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-approver
+  annotations:
+    kubernetes.io/display-name: Services Approver
+    kubernetes.io/description: "Approve or deny gated service consumer requests"
+spec:
+  launchStage: Alpha
+  inheritedRoles:
+    - name: services.miloapis.com-entitlement-viewer
+  includedPermissions:
+    - services.miloapis.com/serviceconsumers.patch
