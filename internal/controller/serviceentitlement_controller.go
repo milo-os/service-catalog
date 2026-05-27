@@ -93,13 +93,23 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, nil
 	}
 
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: entitlement.Spec.ServiceRef.Name}, &svc); err != nil {
+	svc, err := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, r.setRejectedStatus(ctx, consumerClient, &entitlement,
 				reasonServiceNotPublished, "Referenced Service does not exist.")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get Service %q: %w", entitlement.Spec.ServiceRef.Name, err)
+	}
+
+	// Normalize spec.serviceRef.name to the canonical service identifier so
+	// that it is consistent with ServiceConsumer.spec.serviceRef.name.
+	if entitlement.Spec.ServiceRef.Name != svc.Spec.ServiceName {
+		entitlement.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Spec.ServiceName}
+		if err := consumerClient.Update(ctx, &entitlement); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to normalize serviceRef to canonical name: %w", err)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
@@ -163,7 +173,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	// entitlements created earlier (while gated) would race the parent
 	// approval; defer creation until the parent is unblocked.
 	if desiredPhase == servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.ensureDependencies(ctx, consumerClient, &svc, &entitlement); err != nil {
+		if err := r.ensureDependencies(ctx, consumerClient, svc, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -280,36 +290,42 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	}
 
 	for _, dep := range svc.Spec.Dependencies {
-		depName := dep.ServiceRef.Name
+		depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
+		if err != nil {
+			return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+		}
+		depCanonical := depSvc.Spec.ServiceName
+		depEntitlementName := dep.ServiceRef.Name
+
 		var existing servicesv1alpha1.ServiceEntitlement
-		err := consumerClient.Get(ctx, types.NamespacedName{Name: depName}, &existing)
+		err = consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, &existing)
 		if err == nil {
 			continue
 		}
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depName, err)
+			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
 		}
 
 		depEntitlement := &servicesv1alpha1.ServiceEntitlement{
-			ObjectMeta: metav1.ObjectMeta{Name: depName},
+			ObjectMeta: metav1.ObjectMeta{Name: depEntitlementName},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
-				ServiceRef: servicesv1alpha1.ServiceRef{Name: depName},
+				ServiceRef: servicesv1alpha1.ServiceRef{Name: depCanonical},
 			},
 		}
 		if err := consumerClient.Create(ctx, depEntitlement); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create dependency entitlement %q: %w", depName, err)
+			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
 		}
 
 		// Stamp Origin/DependencyOf on status so deletion logic can find this
 		// entitlement as a child of the parent.
 		fresh := &servicesv1alpha1.ServiceEntitlement{}
-		if err := consumerClient.Get(ctx, types.NamespacedName{Name: depName}, fresh); err != nil {
-			return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depName, err)
+		if err := consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, fresh); err != nil {
+			return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depEntitlementName, err)
 		}
 		fresh.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
 		fresh.Status.DependencyOf = parent.Name
 		if err := consumerClient.Status().Update(ctx, fresh); err != nil {
-			return fmt.Errorf("failed to stamp dependency origin on %q: %w", depName, err)
+			return fmt.Errorf("failed to stamp dependency origin on %q: %w", depEntitlementName, err)
 		}
 	}
 	return nil
@@ -324,9 +340,12 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 
 	// Resolve the provider project. The Service may have moved phase (or been
 	// deleted) in the meantime; if so we still want to clean up the consumer.
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: entitlement.Spec.ServiceRef.Name}, &svc); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get Service during finalize: %w", err)
+	svc, svcErr := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
+	if svcErr != nil && !apierrors.IsNotFound(svcErr) {
+		return ctrl.Result{}, fmt.Errorf("failed to get Service during finalize: %w", svcErr)
+	}
+	if svc == nil {
+		svc = &servicesv1alpha1.Service{}
 	}
 
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
@@ -373,6 +392,22 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	return ctrl.Result{}, nil
 }
 
+// resolveService looks up a Service by canonical name (spec.serviceName) first,
+// falling back to Kubernetes object name for backward-compatibility with
+// entitlements created before the canonical-name convention was enforced.
+func (r *ServiceEntitlementReconciler) resolveService(ctx context.Context, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
+	var list servicesv1alpha1.ServiceList
+	if err := r.rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err == nil && len(list.Items) > 0 {
+		return &list.Items[0], nil
+	}
+	// Backward-compat: try by Kubernetes object name.
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: nameOrCanonical}, &svc); err != nil {
+		return nil, err
+	}
+	return &svc, nil
+}
+
 // serviceConsumerName derives a deterministic, DNS-safe name for the
 // ServiceConsumer that mirrors a (service, consumer-project) pair. The hash
 // keeps the name short enough for Kubernetes name validation regardless of
@@ -386,10 +421,28 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 // WithEngageWithProviderClusters(true) — and *not* WithEngageWithLocalCluster —
 // because ServiceEntitlements live in project virtual control planes, never
 // the root cluster.
-func (r *ServiceEntitlementReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
-	r.rootClient = rootClient
-	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
+	r.rootClient = rootMgr.GetClient()
+	r.Manager = mcMgr
+
+	// Index Service objects by spec.serviceName so entitlements can resolve
+	// their serviceRef by canonical name without a full list scan.
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.Service{},
+		"spec.serviceName",
+		func(obj client.Object) []string {
+			svc := obj.(*servicesv1alpha1.Service)
+			if svc.Spec.ServiceName == "" {
+				return nil
+			}
+			return []string{svc.Spec.ServiceName}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index Service by spec.serviceName: %w", err)
+	}
+
+	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
 		Complete(r)

@@ -105,5 +105,12 @@ func newFakeClient(objs ...client.Object) client.Client {
 			&servicesv1alpha1.ServiceConsumer{},
 			&servicesv1alpha1.Service{},
 		).
+		WithIndex(&servicesv1alpha1.Service{}, "spec.serviceName", func(obj client.Object) []string {
+			svc := obj.(*servicesv1alpha1.Service)
+			if svc.Spec.ServiceName == "" {
+				return nil
+			}
+			return []string{svc.Spec.ServiceName}
+		}).
 		Build()
 }
