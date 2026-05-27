@@ -49,12 +49,19 @@ func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, obj ru
 	if !ok {
 		return nil, fmt.Errorf("unexpected type %T", obj)
 	}
+
+	isDryRun := false
+	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
+		isDryRun = *req.DryRun
+	}
+
 	serviceConfigurationLog.Info("validating create",
 		"name", sc.GetName(),
 		"serviceRef", sc.Spec.ServiceRef.Name,
+		"isDryRun", isDryRun,
 	)
 
-	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc); len(errs) > 0 {
+	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc, isDryRun); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			obj.GetObjectKind().GroupVersionKind().GroupKind(),
 			sc.Name,
@@ -74,9 +81,15 @@ func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldObj
 	if !ok {
 		return nil, fmt.Errorf("unexpected type %T", newObj)
 	}
-	serviceConfigurationLog.Info("validating update", "name", newSC.GetName())
 
-	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC); len(errs) > 0 {
+	isDryRun := false
+	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
+		isDryRun = *req.DryRun
+	}
+
+	serviceConfigurationLog.Info("validating update", "name", newSC.GetName(), "isDryRun", isDryRun)
+
+	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC, isDryRun); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
