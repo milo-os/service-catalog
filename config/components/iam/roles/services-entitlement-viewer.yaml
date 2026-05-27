@@ -1,0 +1,16 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-entitlement-viewer
+  annotations:
+    kubernetes.io/display-name: Services Entitlement Viewer
+    kubernetes.io/description: "View access to service entitlements and consumers"
+spec:
+  launchStage: Alpha
+  includedPermissions:
+    - services.miloapis.com/serviceentitlements.list
+    - services.miloapis.com/serviceentitlements.get
+    - services.miloapis.com/serviceentitlements.watch
+    - services.miloapis.com/serviceconsumers.list
+    - services.miloapis.com/serviceconsumers.get
+    - services.miloapis.com/serviceconsumers.watch
