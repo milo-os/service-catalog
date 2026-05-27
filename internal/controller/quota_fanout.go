@@ -43,11 +43,17 @@ func (f *QuotaFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha1.Servic
 		return nil
 	}
 
-	desiredRRs, err := f.applyResourceRegistrations(ctx, sc)
+	var svc servicesv1alpha1.Service
+	if err := f.Client.Get(ctx, client.ObjectKey{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
+		return fmt.Errorf("resolve Service %q: %w", sc.Spec.ServiceRef.Name, err)
+	}
+	serviceName := svc.Spec.ServiceName
+
+	desiredRRs, err := f.applyResourceRegistrations(ctx, sc, serviceName)
 	if err != nil {
 		return err
 	}
-	desiredCCPs, err := f.applyClaimCreationPolicies(ctx, sc)
+	desiredCCPs, err := f.applyClaimCreationPolicies(ctx, sc, serviceName)
 	if err != nil {
 		return err
 	}
@@ -70,6 +76,7 @@ func (f *QuotaFanOut) Cleanup(ctx context.Context, sc *servicesv1alpha1.ServiceC
 func (f *QuotaFanOut) applyResourceRegistrations(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
+	serviceName string,
 ) (map[string]struct{}, error) {
 	// Build an index: metric name -> list of rule selectors that reference it
 	// (for claimingResources on the ResourceRegistration).
@@ -110,7 +117,8 @@ func (f *QuotaFanOut) applyResourceRegistrations(
 			ObjectMeta: metav1.ObjectMeta{
 				Name: name,
 				Labels: map[string]string{
-					labelManagedBy: labelManagedByValue,
+					labelManagedBy:    labelManagedByValue,
+					labelOwnerService: serviceName,
 				},
 			},
 			Spec: quotav1alpha1.ResourceRegistrationSpec{
@@ -140,6 +148,7 @@ func (f *QuotaFanOut) applyResourceRegistrations(
 func (f *QuotaFanOut) applyClaimCreationPolicies(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
+	serviceName string,
 ) (map[string]struct{}, error) {
 	desired := make(map[string]struct{}, len(sc.Spec.Quota.MetricRules))
 	for i := range sc.Spec.Quota.MetricRules {
@@ -172,7 +181,8 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 			ObjectMeta: metav1.ObjectMeta{
 				Name: name,
 				Labels: map[string]string{
-					labelManagedBy: labelManagedByValue,
+					labelManagedBy:    labelManagedByValue,
+					labelOwnerService: serviceName,
 				},
 			},
 			Spec: quotav1alpha1.ClaimCreationPolicySpec{

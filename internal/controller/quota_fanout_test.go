@@ -125,7 +125,7 @@ func TestApplyClaimCreationPolicies_NoResourceRef(t *testing.T) {
 		RESTMapper: mapper,
 	}
 
-	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc); err != nil {
+	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc, "test-service"); err != nil {
 		t.Fatalf("applyClaimCreationPolicies: %v", err)
 	}
 
