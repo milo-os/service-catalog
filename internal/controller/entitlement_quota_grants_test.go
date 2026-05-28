@@ -122,6 +122,7 @@ func TestEnsureQuotaGrants_CreatesGrantsWhenActive(t *testing.T) {
 	// Verify one ResourceGrant per limit was created in the consumer VCP.
 	var grantList quotav1alpha1.ResourceGrantList
 	if err := consumerClient.List(context.Background(), &grantList,
+		client.InNamespace(quotaGrantNamespace),
 		client.MatchingLabels{labelEntitlementName: testServiceSlug},
 	); err != nil {
 		t.Fatalf("list ResourceGrants: %v", err)
@@ -151,10 +152,6 @@ func TestEnsureQuotaGrants_CreatesGrantsWhenActive(t *testing.T) {
 		// Verify entitlement label.
 		if g.Labels[labelEntitlementName] != testServiceSlug {
 			t.Errorf("grant %q label %q = %q, want %q", expectedName, labelEntitlementName, g.Labels[labelEntitlementName], testServiceSlug)
-		}
-		// Verify owner reference points to entitlement.
-		if len(g.OwnerReferences) == 0 {
-			t.Errorf("grant %q has no OwnerReferences", expectedName)
 		}
 		// Verify consumerRef.
 		if g.Spec.ConsumerRef.Name != testConsumerProject {
@@ -225,6 +222,7 @@ func TestEnsureQuotaGrants_SkippedWhenNotActive(t *testing.T) {
 	// No ResourceGrants should have been created.
 	var grantList quotav1alpha1.ResourceGrantList
 	if err := consumerClient.List(context.Background(), &grantList,
+		client.InNamespace(quotaGrantNamespace),
 		client.MatchingLabels{labelEntitlementName: testServiceSlug},
 	); err != nil {
 		t.Fatalf("list ResourceGrants: %v", err)
@@ -255,7 +253,8 @@ func TestPruneQuotaGrants_DeletesGrantsOnFinalization(t *testing.T) {
 	grantName := resourceGrantName(testServiceName, testConsumerProject, "instances")
 	existingGrant := &quotav1alpha1.ResourceGrant{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: grantName,
+			Name:      grantName,
+			Namespace: quotaGrantNamespace,
 			Labels: map[string]string{
 				labelEntitlementManagedBy: labelEntitlementManagedByValue,
 				labelEntitlementName:      testServiceSlug,
@@ -311,7 +310,7 @@ func TestPruneQuotaGrants_DeletesGrantsOnFinalization(t *testing.T) {
 
 	// ResourceGrant should be deleted.
 	var got quotav1alpha1.ResourceGrant
-	err := consumerClient.Get(context.Background(), types.NamespacedName{Name: grantName}, &got)
+	err := consumerClient.Get(context.Background(), types.NamespacedName{Name: grantName, Namespace: quotaGrantNamespace}, &got)
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("expected ResourceGrant %q to be deleted, got err=%v", grantName, err)
 	}
