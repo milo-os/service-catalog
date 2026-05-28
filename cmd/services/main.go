@@ -20,12 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
-	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
+	milowebhook "go.miloapis.com/milo/pkg/webhook"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/internal/config"
 	"go.miloapis.com/service-catalog/internal/controller"
@@ -130,9 +131,12 @@ func main() {
 
 	var webhookServer webhook.Server
 	if serverConfig.WebhookServer != nil {
-		webhookServer = webhook.NewServer(
+		// Wrap with the cluster-aware server so admission handlers can resolve
+		// which project control plane a request targets (via the
+		// iam.miloapis.com/parent-name extra) and authorize the caller there.
+		webhookServer = milowebhook.NewClusterAwareServer(webhook.NewServer(
 			serverConfig.WebhookServer.Options(ctx, bootstrapClient),
-		)
+		))
 	} else {
 		setupLog.Info("webhookServer not configured; admission webhook server disabled")
 	}
@@ -222,7 +226,7 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceEntitlement")
 			os.Exit(1)
 		}
-		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr); err != nil {
+		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr, mcMgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
 			os.Exit(1)
 		}
