@@ -1,4 +1,6 @@
 ---
+# Local dev issues the serving cert for the host the kube apiserver dials back
+# on, rather than the in-cluster Service DNS name.
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
@@ -16,16 +18,25 @@ target:
   version: v1
   name: services-serving-cert
 ---
+# In local dev the controller runs on the host, not in-cluster, so every
+# webhook must call back to host.docker.internal:9443 instead of the in-cluster
+# Service. Entries are keyed by webhook *name* (not list index) so they survive
+# webhooks being added or reordered. clientConfig requires exactly one of
+# url/service, so the service block is dropped (service: null).
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
   name: mutatingwebhook-url-patch
 patch: |-
-  - op: move
-    path: /webhooks/0/clientConfig/url
-    from: /webhooks/0/clientConfig/service/path
-  - op: remove
-    path: /webhooks/0/clientConfig/service
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: MutatingWebhookConfiguration
+  metadata:
+    name: services-mutating
+  webhooks:
+  - name: mservice.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/mutate-services-miloapis-com-v1alpha1-service
+      service: null
 target:
   kind: MutatingWebhookConfiguration
 ---
@@ -34,21 +45,26 @@ kind: PatchTransformer
 metadata:
   name: validatingwebhook-url-patch
 patch: |-
-  - op: move
-    path: /webhooks/0/clientConfig/url
-    from: /webhooks/0/clientConfig/service/path
-  - op: remove
-    path: /webhooks/0/clientConfig/service
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingWebhookConfiguration
+  metadata:
+    name: services-validating
+  webhooks:
+  - name: vservice.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-service
+      service: null
+  - name: vserviceconfiguration.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-serviceconfiguration
+      service: null
+  - name: vserviceconsumer.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-serviceconsumer
+      service: null
+  - name: vserviceentitlement.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-serviceentitlement
+      service: null
 target:
   kind: ValidatingWebhookConfiguration
----
-apiVersion: builtin
-kind: PrefixSuffixTransformer
-metadata:
-  name: hostPrefix
-prefix: "https://host.docker.internal:9443"
-fieldSpecs:
-  - kind: ValidatingWebhookConfiguration
-    path: webhooks/clientConfig/url
-  - kind: MutatingWebhookConfiguration
-    path: webhooks/clientConfig/url
