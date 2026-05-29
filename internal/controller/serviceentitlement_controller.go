@@ -97,7 +97,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: entitlement.Spec.ServiceRef.Name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, r.setRejectedStatus(ctx, consumerClient, &entitlement,
-				reasonServiceNotPublished, "Referenced Service does not exist.")
+				reasonServiceNotPublished, "The requested service could not be found.")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get Service %q: %w", entitlement.Spec.ServiceRef.Name, err)
 	}
@@ -105,8 +105,8 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		return ctrl.Result{}, r.setRejectedStatus(ctx, consumerClient, &entitlement,
 			reasonServiceNotPublished,
-			fmt.Sprintf("Referenced Service %q is in phase %q; only Published services may be entitled.",
-				svc.Spec.ServiceName, svc.Spec.Phase))
+			fmt.Sprintf("The service %q isn't published yet, so it can't be enabled.",
+				svc.Spec.ServiceName))
 	}
 
 	providerProject := svc.Spec.Owner.ProducerProjectRef.Name
@@ -143,16 +143,16 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	// that decision back onto the entitlement.
 	desiredPhase := servicesv1alpha1.EntitlementPhaseActive
 	reason := reasonEntitlementActive
-	message := "Service entitlement is active."
+	message := "This service is enabled and ready to use."
 	switch {
 	case gated && consumer.Spec.Approval == nil:
 		desiredPhase = servicesv1alpha1.EntitlementPhasePendingApproval
 		reason = reasonEntitlementPendingApproval
-		message = "Awaiting provider approval."
+		message = "Waiting for the service provider to approve this request."
 	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
 		desiredPhase = servicesv1alpha1.EntitlementPhaseRejected
 		reason = reasonEntitlementRejected
-		message = "Provider denied the request."
+		message = "The service provider denied this request."
 	}
 
 	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message); err != nil {

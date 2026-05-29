@@ -235,11 +235,11 @@ func evaluateGates(
 ) (bool, string, string) {
 	if _, ok := supported[class]; !ok {
 		return false, reasonLocationClassNotSupported,
-			fmt.Sprintf("Location class %q is not in the service configuration's supported classes.", class)
+			fmt.Sprintf("This service isn't offered for %q locations.", class)
 	}
 	if !ready {
 		return false, reasonLocationNotReady,
-			fmt.Sprintf("Location %q is not Ready.", locName)
+			fmt.Sprintf("Service isn't available here yet because the %q location isn't ready.", locName)
 	}
 	return true, reasonAllGatesOpen, "Service is available at this location."
 }

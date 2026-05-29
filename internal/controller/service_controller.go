@@ -122,7 +122,7 @@ func (r *ServiceReconciler) desiredReadyCondition(
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: svc.Generation,
 		Reason:             reasonServiceReady,
-		Message:            "Service is reconciled.",
+		Message:            "Service is ready.",
 	}
 }
 
@@ -148,10 +148,10 @@ func desiredPublishedCondition(phase servicesv1alpha1.Phase, generation int64) m
 		servicesv1alpha1.PhaseDeprecated,
 		servicesv1alpha1.PhaseRetired:
 		cond.Status = metav1.ConditionTrue
-		cond.Message = fmt.Sprintf("spec.phase is %s.", effective)
+		cond.Message = fmt.Sprintf("This service is published (%s) and available to consumers.", effective)
 	default:
 		cond.Status = metav1.ConditionFalse
-		cond.Message = "spec.phase is Draft; resource is not published."
+		cond.Message = "This service is still a draft and is not yet available to consumers."
 	}
 	return cond
 }

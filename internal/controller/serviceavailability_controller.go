@@ -138,13 +138,13 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 	if err := r.client.Get(ctx, types.NamespacedName{Name: sa.Spec.ServiceRef.Name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return deny(cond, reasonServiceNotPublished,
-				fmt.Sprintf("no Service with metadata.name %q exists", sa.Spec.ServiceRef.Name)), nil
+				fmt.Sprintf("Service %q was not found.", sa.Spec.ServiceRef.Name)), nil
 		}
 		return cond, fmt.Errorf("failed to load referenced Service: %w", err)
 	}
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		return deny(cond, reasonServiceNotPublished,
-			fmt.Sprintf("Service %q is in phase %q; only a Published Service is available", svc.Name, svc.Spec.Phase)), nil
+			fmt.Sprintf("Service %q is not yet published, so it isn't available here.", svc.Name)), nil
 	}
 
 	// Gate 2: the referenced Location must exist and be Ready.
@@ -156,19 +156,19 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 	if err := r.client.Get(ctx, locKey, loc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return deny(cond, reasonLocationNotFound,
-				fmt.Sprintf("no Location %q exists", locKey.Name)), nil
+				fmt.Sprintf("Location %q was not found.", locKey.Name)), nil
 		}
 		return cond, fmt.Errorf("failed to load referenced Location: %w", err)
 	}
 	if !locationReady(loc) {
 		return deny(cond, reasonLocationNotReady,
-			fmt.Sprintf("Location %q is not Ready", locKey.Name)), nil
+			fmt.Sprintf("Service isn't available here yet because the %q location isn't ready.", locKey.Name)), nil
 	}
 
 	// All gates open.
 	cond.Status = metav1.ConditionTrue
 	cond.Reason = reasonServiceOperational
-	cond.Message = "Service is deployed and the location is Ready."
+	cond.Message = "Service is available at this location."
 	return cond, nil
 }
 

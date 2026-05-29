@@ -85,28 +85,29 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	var svc servicesv1alpha1.Service
 	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
 		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("referenced Service %q not found", sc.Spec.ServiceRef.Name)
+			readyMsg := fmt.Sprintf("The service %q this configuration belongs to could not be found.", sc.Spec.ServiceRef.Name)
+			fanOutMsg := fmt.Sprintf("Can't set up billing and quota until the service %q this configuration belongs to exists.", sc.Spec.ServiceRef.Name)
 			return ctrl.Result{}, r.writeStatusConditions(ctx, &sc, "",
 				metav1.Condition{
 					Type:               ConditionTypeReady,
 					Status:             metav1.ConditionFalse,
 					ObservedGeneration: sc.Generation,
 					Reason:             reasonServiceRefNotFound,
-					Message:            msg,
+					Message:            readyMsg,
 				},
 				metav1.Condition{
 					Type:               ConditionTypeBillingFanOutHealthy,
 					Status:             metav1.ConditionFalse,
 					ObservedGeneration: sc.Generation,
 					Reason:             reasonServiceRefNotFound,
-					Message:            msg + "; cannot fan out",
+					Message:            fanOutMsg,
 				},
 				metav1.Condition{
 					Type:               ConditionTypeQuotaFanOutHealthy,
 					Status:             metav1.ConditionFalse,
 					ObservedGeneration: sc.Generation,
 					Reason:             reasonServiceRefNotFound,
-					Message:            msg + "; cannot fan out",
+					Message:            fanOutMsg,
 				},
 			)
 		}
@@ -141,7 +142,7 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	} else {
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
-		readyCondition.Message = "ServiceConfiguration is reconciled."
+		readyCondition.Message = "Service configuration is ready; billing and quota are set up."
 	}
 
 	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName, readyCondition, billingFanOutCondition, quotaFanOutCondition); err != nil {
@@ -241,17 +242,17 @@ func desiredBillingFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, er
 	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonBillingFanOutSkipped
-		c.Message = "ServiceConfiguration is Draft; fan-out skipped."
+		c.Message = "Billing setup is on hold while this configuration is still a draft."
 		return c
 	}
 	if err != nil {
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonBillingFanOutFailed
-		c.Message = fmt.Sprintf("billing fan-out failed: %v", err)
+		c.Message = "Couldn't finish setting up billing for this service; the system will keep retrying."
 	} else {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonBillingFanOutHealthy
-		c.Message = "Billing fan-out reconciled successfully."
+		c.Message = "Billing is set up for this service."
 	}
 	return c
 }
@@ -264,17 +265,17 @@ func desiredQuotaFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err 
 	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonQuotaFanOutSkipped
-		c.Message = "ServiceConfiguration is Draft; fan-out skipped."
+		c.Message = "Quota setup is on hold while this configuration is still a draft."
 		return c
 	}
 	if err != nil {
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonQuotaFanOutFailed
-		c.Message = fmt.Sprintf("quota fan-out failed: %v", err)
+		c.Message = "Couldn't finish setting up quotas for this service; the system will keep retrying."
 	} else {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonQuotaFanOutHealthy
-		c.Message = "Quota fan-out reconciled successfully."
+		c.Message = "Quotas are set up for this service."
 	}
 	return c
 }
