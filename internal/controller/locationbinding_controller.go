@@ -286,8 +286,12 @@ func moreRecent(a, b *servicesv1alpha1.ServiceConfiguration) bool {
 type locationFields struct {
 	class       servicesv1alpha1.LocationClassName
 	displayName string
-	city        string
-	region      string
+	// topology mirrors the referenced Location's spec.topology verbatim. The
+	// network-services LocationBinding API expects spec.topology to carry the
+	// well-known keys (e.g. topology.datum.net/city-code,
+	// topology.datum.net/region) that downstream consumers like the compute
+	// workload webhook read to resolve a binding's valid city codes.
+	topology map[string]string
 }
 
 // extractLocationFields pulls the projection fields out of an unstructured
@@ -299,11 +303,10 @@ func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 		f.class = servicesv1alpha1.LocationClassName(s)
 	}
 	f.displayName, _, _ = unstructured.NestedString(loc.Object, "spec", "displayName")
-	// City and region are not first-class spec fields on the NSO Location;
-	// they are carried in spec.topology under datum.net topology keys.
-	topology, _, _ := unstructured.NestedStringMap(loc.Object, "spec", "topology")
-	f.city = topology["topology.datum.net/city-code"]
-	f.region = topology["topology.datum.net/region"]
+	// City, region, and other location attributes are not first-class spec
+	// fields on the NSO Location; they are carried in spec.topology under
+	// datum.net topology keys. Mirror the whole map onto the binding verbatim.
+	f.topology, _, _ = unstructured.NestedStringMap(loc.Object, "spec", "topology")
 	return f
 }
 
@@ -349,11 +352,16 @@ func (r *LocationBindingReconciler) upsertBinding(
 		if fields.displayName != "" {
 			spec["displayName"] = fields.displayName
 		}
-		if fields.city != "" {
-			spec["city"] = fields.city
-		}
-		if fields.region != "" {
-			spec["region"] = fields.region
+		// Mirror the referenced Location's spec.topology onto the binding.
+		// Downstream consumers (e.g. the compute workload webhook) read
+		// spec.topology to resolve a binding's valid city codes, so an empty
+		// topology silently makes every location-scoped deploy fail.
+		if len(fields.topology) > 0 {
+			topology := make(map[string]any, len(fields.topology))
+			for k, v := range fields.topology {
+				topology[k] = v
+			}
+			spec["topology"] = topology
 		}
 		return unstructured.SetNestedMap(u.Object, spec, "spec")
 	}); err != nil {

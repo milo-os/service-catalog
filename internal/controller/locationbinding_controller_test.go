@@ -221,8 +221,19 @@ func TestLocationBindingReconciler_AllGatesOpen(t *testing.T) {
 	if got := u.GetLabels()[labelClass]; got != lbClass {
 		t.Errorf("class label = %q, want %q", got, lbClass)
 	}
-	if city, _, _ := unstructured.NestedString(u.Object, "spec", "city"); city != "ORD" {
-		t.Errorf("spec.city = %q, want ORD", city)
+	// The Location's spec.topology must be mirrored verbatim onto the binding;
+	// downstream consumers (e.g. the compute workload webhook) read these keys
+	// to resolve the binding's valid city codes, so an empty topology breaks
+	// location-scoped deploys.
+	topology, found, err := unstructured.NestedStringMap(u.Object, "spec", "topology")
+	if err != nil || !found {
+		t.Fatalf("spec.topology not set on binding (found=%v, err=%v)", found, err)
+	}
+	if got := topology["topology.datum.net/city-code"]; got != "ORD" {
+		t.Errorf("spec.topology[city-code] = %q, want ORD", got)
+	}
+	if got := topology["topology.datum.net/region"]; got != "us-central1" {
+		t.Errorf("spec.topology[region] = %q, want us-central1", got)
 	}
 	if !ownedBy(u.GetOwnerReferences(), lbEntitlementUID) {
 		t.Errorf("binding is not owned by the entitlement")
