@@ -49,7 +49,7 @@ func ValidateServiceUpdate(oldSvc, newSvc *servicesv1alpha1.Service) field.Error
 	if oldSvc.Spec.ServiceName != newSvc.Spec.ServiceName {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "serviceName"),
-			"serviceName is immutable",
+			"cannot be changed after the service is created",
 		))
 	}
 
@@ -98,7 +98,7 @@ func ValidateServiceDependencies(
 	if path := findDependencyCycle(svc.Name, adj); len(path) > 0 {
 		allErrs = append(allErrs, field.Invalid(
 			fldPath, dependencyNames(svc.Spec.Dependencies),
-			fmt.Sprintf("dependency cycle detected: %s", strings.Join(path, " -> ")),
+			fmt.Sprintf("these services depend on each other in a loop, which isn't allowed: %s", strings.Join(path, " -> ")),
 		))
 	}
 	return allErrs
@@ -177,7 +177,7 @@ func validateServiceMetadataName(svc *servicesv1alpha1.Service) field.ErrorList 
 	if !serviceSlugRegex.MatchString(name) {
 		allErrs = append(allErrs, field.Invalid(
 			fldPath, name,
-			"must be a DNS-1123 label (lowercase alphanumerics and hyphens, must start and end with an alphanumeric)",
+			"may use only lowercase letters, numbers, and hyphens, and must start and end with a letter or number (for example, \"compute-engine\")",
 		))
 	}
 	return allErrs
@@ -196,7 +196,7 @@ func validateServiceName(serviceName string) field.ErrorList {
 	if !reverseDNSRegex.MatchString(serviceName) {
 		allErrs = append(allErrs, field.Invalid(
 			fldPath, serviceName,
-			fmt.Sprintf("must be a reverse-DNS name such as %q", "compute.miloapis.com"),
+			fmt.Sprintf("must be a reverse-domain name using lowercase letters, numbers, hyphens, and dots (for example, %q)", "compute.miloapis.com"),
 		))
 	}
 	return allErrs

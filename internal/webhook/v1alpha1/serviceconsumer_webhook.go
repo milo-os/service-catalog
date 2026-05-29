@@ -62,15 +62,16 @@ func userInfoFromContext(ctx context.Context) authenticationv1.UserInfo {
 // permission returns an error so the caller is not silently granted manage.
 func (r *serviceConsumerWebhook) callerCanManage(ctx context.Context, user authenticationv1.UserInfo) (bool, error) {
 	if r.mcMgr == nil {
-		return false, fmt.Errorf("multicluster manager not configured; cannot authorize ServiceConsumer write")
+		return false, fmt.Errorf("can't verify your permissions to change this service consumer right now; please try again")
 	}
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok || clusterName == "" {
-		return false, fmt.Errorf("no project cluster in admission context; cannot authorize ServiceConsumer write")
+		return false, fmt.Errorf("can't determine which project this request targets, so your permissions can't be verified")
 	}
 	cl, err := r.mcMgr.GetCluster(ctx, clusterName)
 	if err != nil {
-		return false, fmt.Errorf("failed to reach project control plane %q: %w", clusterName, err)
+		serviceConsumerLog.Error(err, "failed to reach project control plane for ServiceConsumer authorization", "cluster", clusterName)
+		return false, fmt.Errorf("can't reach project %q to verify your permissions right now; please try again", clusterName)
 	}
 
 	sar := &authorizationv1.SubjectAccessReview{
@@ -87,7 +88,8 @@ func (r *serviceConsumerWebhook) callerCanManage(ctx context.Context, user authe
 		},
 	}
 	if err := cl.GetClient().Create(ctx, sar); err != nil {
-		return false, fmt.Errorf("failed to evaluate SubjectAccessReview in project %q: %w", clusterName, err)
+		serviceConsumerLog.Error(err, "failed to evaluate SubjectAccessReview for ServiceConsumer authorization", "cluster", clusterName)
+		return false, fmt.Errorf("couldn't verify your permissions in project %q right now; please try again", clusterName)
 	}
 	return sar.Status.Allowed, nil
 }

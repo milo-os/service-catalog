@@ -13,7 +13,7 @@ import (
 // declared lifecycle. Kept as a single constant so every catalog kind
 // (Service, MeterDefinition, MonitoredResourceType) rejects with the
 // same wording.
-const phaseTransitionMessage = "phase may only transition forward: Draft\u2192Published\u2192Deprecated\u2192Retired"
+const phaseTransitionMessage = "a service only moves forward through its lifecycle (Draft, then Published, then Deprecated, then Retired) and cannot move back or skip ahead"
 
 // phaseOrder maps each phase to its position in the forward lifecycle.
 // An unknown phase (including an empty string) returns -1.

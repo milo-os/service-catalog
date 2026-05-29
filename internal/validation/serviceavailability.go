@@ -28,7 +28,7 @@ func ValidateServiceAvailabilityCreate(
 	if sa.Spec.LocationRef.Name == "" {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "locationRef", "name"),
-			"locationRef.name is required",
+			"a location must be specified",
 		))
 	}
 	return allErrs
@@ -48,13 +48,13 @@ func ValidateServiceAvailabilityUpdate(
 	if oldSA.Spec.ServiceRef != newSA.Spec.ServiceRef {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "serviceRef"),
-			"serviceRef is immutable",
+			"cannot change which service this availability record is for; it covers one service and location for its lifetime",
 		))
 	}
 	if oldSA.Spec.LocationRef != newSA.Spec.LocationRef {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "locationRef"),
-			"locationRef is immutable",
+			"cannot change which location this availability record is for; it covers one service and location for its lifetime",
 		))
 	}
 	return allErrs
@@ -77,7 +77,7 @@ func validateServiceAvailabilityServiceRef(
 		if apierrors.IsNotFound(err) {
 			allErrs = append(allErrs, field.Invalid(
 				fldPath, sa.Spec.ServiceRef.Name,
-				fmt.Sprintf("no Service with metadata.name %q exists", sa.Spec.ServiceRef.Name),
+				fmt.Sprintf("the service %q does not exist", sa.Spec.ServiceRef.Name),
 			))
 			return allErrs
 		}
@@ -89,7 +89,7 @@ func validateServiceAvailabilityServiceRef(
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		allErrs = append(allErrs, field.Invalid(
 			fldPath, sa.Spec.ServiceRef.Name,
-			fmt.Sprintf("Service %q is in phase %q; ServiceAvailability may only reference a Published Service", svc.Name, svc.Spec.Phase),
+			fmt.Sprintf("the service %q isn't published yet, so its availability can't be recorded", svc.Name),
 		))
 	}
 	return allErrs

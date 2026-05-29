@@ -28,7 +28,7 @@ func ValidateServiceConsumerCreate(
 	if !canManage {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("metadata", "name"),
-			"ServiceConsumer objects may only be created by callers with the "+ManagePermission+" permission",
+			"service consumer records are created automatically by the platform; you need the \""+ManagePermission+"\" permission to create one directly",
 		))
 	}
 	return allErrs
@@ -55,7 +55,7 @@ func ValidateServiceConsumerUpdate(
 		if !reflect.DeepEqual(oldNoApproval, newNoApproval) {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec"),
-				"only spec.approval may be modified without the "+ManagePermission+" permission",
+				"without the \""+ManagePermission+"\" permission you can only change the approval decision, not other fields",
 			))
 		}
 	}
@@ -69,7 +69,7 @@ func ValidateServiceConsumerUpdate(
 			newSC.Spec.Approval.Decision != servicesv1alpha1.ApprovalDecisionDenied {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec", "approval", "decision"),
-				"approval.decision is immutable once set to Denied",
+				"once a request has been denied the decision can't be changed; the consumer must remove and recreate the request to try again",
 			))
 		}
 	}
