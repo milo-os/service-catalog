@@ -51,6 +51,14 @@ rules:
   - update
   - watch
 - apiGroups:
+  - resourcemanager.miloapis.com
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - services.miloapis.com
   resources:
   - serviceavailabilities

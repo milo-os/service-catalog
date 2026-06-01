@@ -101,6 +101,10 @@ type LocationBindingReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch;create;update;patch;delete
+// The Milo multicluster provider watches resourcemanager Projects to discover
+// which project control planes to engage; without list/watch here its informer
+// never syncs and the manager crash-loops on the cache-sync timeout.
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get;list;watch
 
 func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)

@@ -73,7 +73,7 @@ spec:
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'must be prefixed with the referenced service')): true
+                  (contains($error, 'must start with the service')): true
 
     - name: delete-serviceconfiguration
       description: |
