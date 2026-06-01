@@ -14,3 +14,6 @@ spec:
     - services.miloapis.com/serviceconfigurations.list
     - services.miloapis.com/serviceconfigurations.get
     - services.miloapis.com/serviceconfigurations.watch
+    - services.miloapis.com/serviceavailabilities.list
+    - services.miloapis.com/serviceavailabilities.get
+    - services.miloapis.com/serviceavailabilities.watch

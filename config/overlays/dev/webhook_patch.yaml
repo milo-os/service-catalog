@@ -54,6 +54,10 @@ patch: |-
     clientConfig:
       url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-service
       service: null
+  - name: vserviceavailability.kb.io
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-serviceavailability
+      service: null
   - name: vserviceconfiguration.kb.io
     clientConfig:
       url: https://host.docker.internal:9443/validate-services-miloapis-com-v1alpha1-serviceconfiguration

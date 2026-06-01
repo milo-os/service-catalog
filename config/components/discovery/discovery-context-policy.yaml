@@ -5,7 +5,7 @@ metadata:
 spec:
   rules:
     - group: services.miloapis.com
-      resources: ["services", "serviceconfigurations"]
+      resources: ["services", "serviceconfigurations", "serviceavailabilities"]
       contexts: ["Platform"]
     - group: services.miloapis.com
       resources: ["serviceentitlements", "serviceconsumers"]
