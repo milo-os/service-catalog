@@ -19,3 +19,4 @@ spec:
     - services.miloapis.com/serviceavailabilities.create
     - services.miloapis.com/serviceavailabilities.update
     - services.miloapis.com/serviceavailabilities.delete
+    - services.miloapis.com/serviceconsumers.manage

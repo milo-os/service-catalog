@@ -17,6 +17,11 @@ spec:
     - delete
     - watch
     - updateStatus
+    # manage grants full write access to a ServiceConsumer spec. The services
+    # controller holds it (so it may keep spec in sync); provider callers do
+    # not and are restricted to spec.approval by the validating webhook, which
+    # gates on this permission via a SubjectAccessReview.
+    - manage
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

@@ -4,61 +4,50 @@ package validation
 
 import (
 	"reflect"
-	"strings"
 
-	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// IsServicesControllerCaller reports whether the admission user appears
-// to be the services controller (or another in-cluster service account).
-// Provider users come in as regular users; the controller comes in as a
-// system:serviceaccount.
-func IsServicesControllerCaller(user authenticationv1.UserInfo) bool {
-	name := user.Username
-	if strings.HasPrefix(name, "system:serviceaccount:") {
-		return true
-	}
-	if strings.Contains(strings.ToLower(name), "services-controller") {
-		return true
-	}
-	return false
-}
+// ManagePermission is the IAM permission that grants full write access to a
+// ServiceConsumer spec. Callers that hold it (the services controller) bypass
+// the provider-only write restrictions; everyone else may only mutate
+// spec.approval. Whether a caller holds it is determined by a
+// SubjectAccessReview in the webhook layer, not by inspecting the username.
+const ManagePermission = "services.miloapis.com/serviceconsumers.manage"
 
-// ValidateServiceConsumerCreate rejects creates from non-controller
-// callers. Only the services controller should ever create a
+// ValidateServiceConsumerCreate rejects creates from callers without the
+// manage permission. Only the services controller should create a
 // ServiceConsumer; providers interact via spec.approval on update.
 func ValidateServiceConsumerCreate(
-	user authenticationv1.UserInfo,
+	canManage bool,
 	sc *servicesv1alpha1.ServiceConsumer,
 ) field.ErrorList {
 	var allErrs field.ErrorList
-	if !IsServicesControllerCaller(user) {
+	if !canManage {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("metadata", "name"),
-			"ServiceConsumer objects may only be created by the services controller",
+			"service consumer records are created automatically by the platform; you need the \""+ManagePermission+"\" permission to create one directly",
 		))
 	}
 	return allErrs
 }
 
 // ValidateServiceConsumerUpdate enforces the provider-only write surface:
-// provider callers may only mutate spec.approval, and once approval is
-// Denied the decision cannot be changed. The controller bypasses these
-// restrictions so it can keep status/spec in sync as the model evolves.
+// callers without the manage permission may only mutate spec.approval, and
+// once approval is Denied the decision cannot be changed. Callers with the
+// manage permission bypass the spec restriction so the controller can keep
+// spec in sync as the model evolves.
 func ValidateServiceConsumerUpdate(
-	user authenticationv1.UserInfo,
+	canManage bool,
 	oldSC, newSC *servicesv1alpha1.ServiceConsumer,
 ) field.ErrorList {
 	var allErrs field.ErrorList
 
-	controllerCaller := IsServicesControllerCaller(user)
-
-	if !controllerCaller {
-		// Provider callers may only touch spec.approval. Compare the rest
-		// of the spec; reject if anything else changed.
+	if !canManage {
+		// Callers without manage may only touch spec.approval. Compare the
+		// rest of the spec; reject if anything else changed.
 		oldNoApproval := oldSC.Spec
 		newNoApproval := newSC.Spec
 		oldNoApproval.Approval = nil
@@ -66,7 +55,7 @@ func ValidateServiceConsumerUpdate(
 		if !reflect.DeepEqual(oldNoApproval, newNoApproval) {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec"),
-				"only spec.approval may be modified by provider callers",
+				"without the \""+ManagePermission+"\" permission you can only change the approval decision, not other fields",
 			))
 		}
 	}
@@ -80,7 +69,7 @@ func ValidateServiceConsumerUpdate(
 			newSC.Spec.Approval.Decision != servicesv1alpha1.ApprovalDecisionDenied {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec", "approval", "decision"),
-				"approval.decision is immutable once set to Denied",
+				"once a request has been denied the decision can't be changed; the consumer must remove and recreate the request to try again",
 			))
 		}
 	}
