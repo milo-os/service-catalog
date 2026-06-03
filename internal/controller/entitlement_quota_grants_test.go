@@ -38,11 +38,11 @@ func (c *ssaClient) Patch(ctx context.Context, obj client.Object, patch client.P
 		return err
 	}
 	// Try update first; if not found, create.
-	if err := c.Client.Update(ctx, obj); err != nil {
+	if err := c.Update(ctx, obj); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-		return c.Client.Create(ctx, obj)
+		return c.Create(ctx, obj)
 	}
 	return nil
 }
