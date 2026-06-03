@@ -25,6 +25,8 @@ export interface Service {
     displayName: string;
     description?: string;
     owner: { producerProjectRef: { name: string } };
+    enablementPolicy?: EnablementPolicy;
+    dependencies?: ServiceDependency[];
   };
   status?: {
     publishedAt?: string;
@@ -70,6 +72,54 @@ export interface MeterSpec {
   measurement: MeterMeasurement;
   billing: MeterBilling;
   monitoredResourceTypes: string[];
+}
+
+export type EntitlementPhase = "PendingApproval" | "Active" | "Rejected";
+export type EntitlementOrigin = "Direct" | "Dependency";
+export type ConsumerPhase = "PendingApproval" | "Active" | "Denied";
+export type ApprovalDecision = "Approved" | "Denied";
+export type EnablementMode = "SelfService" | "GatedByProvider";
+
+export interface ServiceDependency {
+  serviceRef: { name: string };
+}
+
+export interface EnablementPolicy {
+  mode: EnablementMode;
+}
+
+export interface ServiceEntitlement {
+  metadata: KubeMeta;
+  spec: {
+    serviceRef: { name: string };
+    requestMessage?: string;
+  };
+  status?: {
+    phase?: EntitlementPhase;
+    origin?: EntitlementOrigin;
+    dependencyOf?: string;
+    entitledAt?: string;
+    conditions?: ServiceCondition[];
+  };
+}
+
+export interface ProviderApproval {
+  decision: ApprovalDecision;
+  message?: string;
+}
+
+export interface ServiceConsumer {
+  metadata: KubeMeta;
+  spec: {
+    serviceRef: { name: string };
+    consumerProjectRef: { name: string };
+    approval?: ProviderApproval;
+  };
+  status?: {
+    phase?: ConsumerPhase;
+    entitledAt?: string;
+    conditions?: ServiceCondition[];
+  };
 }
 
 export interface ServiceConfiguration {
