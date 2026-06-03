@@ -125,6 +125,9 @@ func TestServiceEntitlementReconciler_SelfServiceActive(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
 		t.Fatalf("get serviceconsumer: %v", err)
 	}
+	if sc.Spec.ServiceRef.Name != testServiceName {
+		t.Errorf("consumer.spec.serviceRef.name = %q, want %q", sc.Spec.ServiceRef.Name, testServiceName)
+	}
 	if sc.Spec.ConsumerProjectRef.Name != testConsumerProject {
 		t.Errorf("consumer.spec.consumerProjectRef.name = %q, want %q", sc.Spec.ConsumerProjectRef.Name, testConsumerProject)
 	}
@@ -165,6 +168,9 @@ func TestServiceEntitlementReconciler_GatedPendingApproval(t *testing.T) {
 	var sc servicesv1alpha1.ServiceConsumer
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
 		t.Fatalf("get serviceconsumer: %v", err)
+	}
+	if sc.Spec.ServiceRef.Name != testServiceName {
+		t.Errorf("consumer.spec.serviceRef.name = %q, want %q", sc.Spec.ServiceRef.Name, testServiceName)
 	}
 	if sc.Status.Phase != servicesv1alpha1.ConsumerPhasePendingApproval {
 		t.Errorf("consumer phase = %q, want PendingApproval", sc.Status.Phase)
@@ -252,7 +258,7 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 	existingConsumer := &servicesv1alpha1.ServiceConsumer{
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 		Spec: servicesv1alpha1.ServiceConsumerSpec{
-			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceSlug},
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceName},
 			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
 		},
 	}
@@ -279,6 +285,155 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 	err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got)
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("expected ServiceConsumer to be deleted, got err=%v", err)
+	}
+}
+
+func TestServiceEntitlementReconciler_StampsCanonicalServiceNameInStatus(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	// Entitlement created with the k8s object name — spec is left as-is but
+	// status.serviceName should be stamped with the canonical identifier.
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 10)
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if got.Status.ServiceName != testServiceName {
+		t.Errorf("status.serviceName = %q, want canonical %q", got.Status.ServiceName, testServiceName)
+	}
+	// spec.serviceRef.name must NOT be mutated by the reconciler.
+	if got.Spec.ServiceRef.Name != testServiceSlug {
+		t.Errorf("spec.serviceRef.name = %q, want original %q (reconciler must not mutate spec)", got.Spec.ServiceRef.Name, testServiceSlug)
+	}
+}
+
+// TestResolveService_CanonicalIndexHit resolves a Service when the lookup name
+// equals spec.serviceName, exercising the canonical-index hit path. The Service
+// object name differs from its canonical name so a name-based Get would miss.
+func TestResolveService_CanonicalIndexHit(t *testing.T) {
+	svc := newPublishedService("compute-obj-name", testServiceName, testProviderProject, "")
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: newFakeClient(svc),
+		Manager:    newTestManager(),
+		Scheme:     testScheme(),
+	}
+
+	// Look up by canonical name; the index must satisfy it without falling
+	// back to a Get on the object name.
+	got, err := r.resolveService(context.Background(), testServiceName)
+	if err != nil {
+		t.Fatalf("resolveService by canonical name: %v", err)
+	}
+	if got.Name != "compute-obj-name" {
+		t.Errorf("resolved object name = %q, want %q", got.Name, "compute-obj-name")
+	}
+	if got.Spec.ServiceName != testServiceName {
+		t.Errorf("resolved canonical name = %q, want %q", got.Spec.ServiceName, testServiceName)
+	}
+}
+
+// TestResolveService_ObjectNameFallback resolves a Service when the lookup name
+// matches ONLY the Service object name (not spec.serviceName), exercising the
+// backward-compatible name-based Get fallback after the canonical index misses.
+func TestResolveService_ObjectNameFallback(t *testing.T) {
+	// Canonical name differs from the object name we will look up by.
+	svc := newPublishedService("compute-obj-name", testServiceName, testProviderProject, "")
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: newFakeClient(svc),
+		Manager:    newTestManager(),
+		Scheme:     testScheme(),
+	}
+
+	// "compute-obj-name" is not any Service's spec.serviceName, so the index
+	// lookup misses and resolveService must fall back to a Get by object name.
+	got, err := r.resolveService(context.Background(), "compute-obj-name")
+	if err != nil {
+		t.Fatalf("resolveService by object name (fallback): %v", err)
+	}
+	if got.Name != "compute-obj-name" {
+		t.Errorf("resolved object name = %q, want %q", got.Name, "compute-obj-name")
+	}
+}
+
+// TestEnsureDependencies_NoDuplicateByCanonicalName verifies the dedup guard:
+// when an entitlement for the dependency's canonical service name already
+// exists under a DIFFERENT metadata.name, ensureDependencies must not create a
+// second (duplicate) dependency entitlement.
+func TestEnsureDependencies_NoDuplicateByCanonicalName(t *testing.T) {
+	const depCanonical = "storage.miloapis.com"
+
+	parentSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	depSvc := newPublishedService(testDepServiceSlug, depCanonical, testProviderProject, "")
+	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	// Pre-seed an entitlement for the same dependency service under a
+	// different metadata.name, with status.serviceName == the canonical name.
+	preExisting := &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{Name: "preexisting-storage"},
+		Spec: servicesv1alpha1.ServiceEntitlementSpec{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: depCanonical},
+		},
+		Status: servicesv1alpha1.ServiceEntitlementStatus{
+			ServiceName: depCanonical,
+		},
+	}
+
+	rootClient := newFakeClient(parentSvc, depSvc)
+	consumerClient := newFakeClient(parentEnt, preExisting)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	// No dependency entitlement should have been created under the dependency
+	// object name (testDepServiceSlug), since one already exists by canonical
+	// name under a different metadata.name.
+	var dup servicesv1alpha1.ServiceEntitlement
+	err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &dup)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected NO duplicate dependency entitlement %q, got err=%v", testDepServiceSlug, err)
+	}
+
+	// Exactly one entitlement for the dependency canonical name must exist.
+	var all servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(context.Background(), &all); err != nil {
+		t.Fatalf("list entitlements: %v", err)
+	}
+	count := 0
+	for i := range all.Items {
+		if all.Items[i].Status.ServiceName == depCanonical {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("got %d entitlements for dependency %q, want 1", count, depCanonical)
 	}
 }
 

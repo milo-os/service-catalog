@@ -56,15 +56,20 @@ func (m *stubRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string) (
 func (m *stubRESTMapper) ResourceSingularizer(resource string) (string, error) { return resource, nil }
 
 // patchCapturingClient wraps a client.Client and records every Patch call
-// whose object is a *quotav1alpha1.ClaimCreationPolicy.
+// whose object is a *quotav1alpha1.ClaimCreationPolicy or
+// *quotav1alpha1.ResourceRegistration.
 type patchCapturingClient struct {
 	client.Client
-	policies []*quotav1alpha1.ClaimCreationPolicy
+	policies      []*quotav1alpha1.ClaimCreationPolicy
+	registrations []*quotav1alpha1.ResourceRegistration
 }
 
 func (c *patchCapturingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	if ccp, ok := obj.(*quotav1alpha1.ClaimCreationPolicy); ok {
-		c.policies = append(c.policies, ccp.DeepCopy())
+	switch o := obj.(type) {
+	case *quotav1alpha1.ClaimCreationPolicy:
+		c.policies = append(c.policies, o.DeepCopy())
+	case *quotav1alpha1.ResourceRegistration:
+		c.registrations = append(c.registrations, o.DeepCopy())
 	}
 	return nil
 }
@@ -125,7 +130,7 @@ func TestApplyClaimCreationPolicies_NoResourceRef(t *testing.T) {
 		RESTMapper: mapper,
 	}
 
-	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc); err != nil {
+	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc, "test-service"); err != nil {
 		t.Fatalf("applyClaimCreationPolicies: %v", err)
 	}
 
@@ -166,5 +171,91 @@ func TestApplyClaimCreationPolicies_NoResourceRef(t *testing.T) {
 	// Owner reference must be set so the CCP is garbage-collected with the SC.
 	if len(ccp.OwnerReferences) == 0 {
 		t.Error("OwnerReferences is empty")
+	}
+}
+
+// TestQuotaFanOut_OwnerServiceLabel verifies that the canonical service name
+// passed in lands on the labelOwnerService label of both the produced
+// ResourceRegistration and ClaimCreationPolicy, alongside the managed-by label.
+func TestQuotaFanOut_OwnerServiceLabel(t *testing.T) {
+	const serviceName = "compute.miloapis.com"
+
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-sc",
+			UID:  "test-uid-owner-label",
+		},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			Quota: &servicesv1alpha1.ServiceQuotaConfig{
+				Limits: []servicesv1alpha1.QuotaLimitSpec{
+					{
+						Name:         "instances",
+						Metric:       "compute.miloapis.com/instances",
+						DefaultLimit: 10,
+						Unit:         "1/{project}",
+						ConsumerType: servicesv1alpha1.QuotaConsumerType{
+							APIGroup: "resourcemanager.miloapis.com",
+							Kind:     "Project",
+						},
+					},
+				},
+				MetricRules: []servicesv1alpha1.QuotaMetricRule{
+					{
+						Selector: servicesv1alpha1.QuotaMetricRuleSelector{
+							APIGroup: "compute.datumapis.com",
+							Kind:     "Workload",
+						},
+						MetricCosts: map[string]int64{"compute.miloapis.com/instances": 1},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newQuotaFanOutScheme()
+	base := fake.NewClientBuilder().WithScheme(scheme).Build()
+	capturing := &patchCapturingClient{Client: base}
+	mapper := &stubRESTMapper{
+		gvk: schema.GroupVersionKind{
+			Group:   "compute.datumapis.com",
+			Version: "v1alpha1",
+			Kind:    "Workload",
+		},
+	}
+
+	fanOut := &QuotaFanOut{
+		Client:     capturing,
+		Scheme:     scheme,
+		RESTMapper: mapper,
+	}
+
+	if _, err := fanOut.applyResourceRegistrations(context.Background(), sc, serviceName); err != nil {
+		t.Fatalf("applyResourceRegistrations: %v", err)
+	}
+	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc, serviceName); err != nil {
+		t.Fatalf("applyClaimCreationPolicies: %v", err)
+	}
+
+	if len(capturing.registrations) == 0 {
+		t.Fatal("expected at least one ResourceRegistration Patch, got none")
+	}
+	rr := capturing.registrations[0]
+	if rr.Labels[labelOwnerService] != serviceName {
+		t.Errorf("ResourceRegistration label %q = %q, want %q", labelOwnerService, rr.Labels[labelOwnerService], serviceName)
+	}
+	if rr.Labels[labelManagedBy] != labelManagedByValue {
+		t.Errorf("ResourceRegistration label %q = %q, want %q", labelManagedBy, rr.Labels[labelManagedBy], labelManagedByValue)
+	}
+
+	if len(capturing.policies) == 0 {
+		t.Fatal("expected at least one ClaimCreationPolicy Patch, got none")
+	}
+	ccp := capturing.policies[0]
+	if ccp.Labels[labelOwnerService] != serviceName {
+		t.Errorf("ClaimCreationPolicy label %q = %q, want %q", labelOwnerService, ccp.Labels[labelOwnerService], serviceName)
+	}
+	if ccp.Labels[labelManagedBy] != labelManagedByValue {
+		t.Errorf("ClaimCreationPolicy label %q = %q, want %q", labelManagedBy, ccp.Labels[labelManagedBy], labelManagedByValue)
 	}
 }

@@ -10,4 +10,5 @@ spec:
   inheritedRoles:
     - name: services.miloapis.com-entitlement-viewer
   includedPermissions:
+    - services.miloapis.com/serviceconsumers.approve
     - services.miloapis.com/serviceconsumers.patch

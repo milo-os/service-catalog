@@ -22,6 +22,11 @@ spec:
     # not and are restricted to spec.approval by the validating webhook, which
     # gates on this permission via a SubjectAccessReview.
     - manage
+    # approve grants the ability to set or change the provider's approval
+    # decision (spec.approval) on a ServiceConsumer. Callers without manage may
+    # only mutate spec.approval if they hold this permission; the validating
+    # webhook gates on it via a SubjectAccessReview.
+    - approve
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

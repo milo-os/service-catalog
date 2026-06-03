@@ -4,7 +4,7 @@ metadata:
   name: compute-miloapis-com-instance
   labels:
     services.miloapis.com/service: compute.miloapis.com
-    app.kubernetes.io/managed-by: services-operator
+    app.kubernetes.io/managed-by: services.miloapis.com
   ownerReferences:
     - apiVersion: services.miloapis.com/v1alpha1
       kind: ServiceConfiguration

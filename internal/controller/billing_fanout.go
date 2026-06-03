@@ -8,7 +8,9 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -19,10 +21,32 @@ import (
 
 const (
 	labelManagedBy      = "app.kubernetes.io/managed-by"
-	labelManagedByValue = "services-operator"
+	labelManagedByValue = "services.miloapis.com"
 	labelOwnerService   = "services.miloapis.com/service"
 	fieldManagerName    = "services-operator"
+
+	// labelManagedByValueLegacy is the previous managed-by value. It is matched
+	// (in addition to labelManagedByValue) when pruning fan-out objects so that
+	// objects created by an earlier release are not stranded after the rename.
+	// Drop this once all clusters have reconciled past the change.
+	labelManagedByValueLegacy = "services-operator"
 )
+
+// managedByFanoutSelector matches fan-out objects carrying either the current
+// or the legacy managed-by value. Used by prune logic during the transitional
+// release so a value rename does not orphan previously-created objects.
+var managedByFanoutSelector = labels.NewSelector().Add(
+	mustLabelRequirement(labelManagedBy, selection.In,
+		labelManagedByValue, labelManagedByValueLegacy),
+)
+
+func mustLabelRequirement(key string, op selection.Operator, vals ...string) labels.Requirement {
+	req, err := labels.NewRequirement(key, op, vals)
+	if err != nil {
+		panic(fmt.Sprintf("invalid label requirement %s %s %v: %v", key, op, vals, err))
+	}
+	return *req
+}
 
 // BillingFanOut materializes the downstream billing objects declared by
 // a ServiceConfiguration (MeterDefinition, MonitoredResourceType) via
@@ -217,7 +241,7 @@ func (f *BillingFanOut) pruneMonitoredResourceTypes(
 	desired map[string]struct{},
 ) error {
 	var list billingv1alpha1.MonitoredResourceTypeList
-	if err := f.Client.List(ctx, &list, client.MatchingLabels{labelManagedBy: labelManagedByValue}); err != nil {
+	if err := f.Client.List(ctx, &list, client.MatchingLabelsSelector{Selector: managedByFanoutSelector}); err != nil {
 		return fmt.Errorf("list billing MonitoredResourceTypes: %w", err)
 	}
 	for i := range list.Items {
@@ -241,7 +265,7 @@ func (f *BillingFanOut) pruneMeters(
 	desired map[string]struct{},
 ) error {
 	var list billingv1alpha1.MeterDefinitionList
-	if err := f.Client.List(ctx, &list, client.MatchingLabels{labelManagedBy: labelManagedByValue}); err != nil {
+	if err := f.Client.List(ctx, &list, client.MatchingLabelsSelector{Selector: managedByFanoutSelector}); err != nil {
 		return fmt.Errorf("list billing MeterDefinitions: %w", err)
 	}
 	for i := range list.Items {
@@ -258,7 +282,6 @@ func (f *BillingFanOut) pruneMeters(
 	}
 	return nil
 }
-
 
 func billingLabelsFor(labels []servicesv1alpha1.MonitoredResourceLabel) []billingv1alpha1.MonitoredResourceLabel {
 	if len(labels) == 0 {
