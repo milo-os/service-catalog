@@ -10,7 +10,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -116,13 +115,35 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	}
 	consumerClient := consumerCluster.GetClient()
 
-	var entitlement servicesv1alpha1.ServiceEntitlement
-	if err := consumerClient.Get(ctx, types.NamespacedName{Name: consumer.Spec.ServiceRef.Name}, &entitlement); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Entitlement was deleted out from under us; nothing to update.
-			return ctrl.Result{}, nil
+	// Look up the ServiceEntitlement in the consumer project by matching the
+	// canonical service name. consumer.Spec.ServiceRef.Name holds the canonical
+	// name (e.g. "compute.miloapis.com"). We prefer to match against
+	// status.serviceName, which is the canonical name stamped by the entitlement
+	// reconciler. If status.serviceName is empty (entitlement not yet reconciled),
+	// we fall back to spec.serviceRef.name so behavior degrades gracefully rather
+	// than silently skipping the entitlement.
+	var entitlementList servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(ctx, &entitlementList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to list ServiceEntitlements in consumer project: %w", err)
+	}
+	var entitlement *servicesv1alpha1.ServiceEntitlement
+	for i := range entitlementList.Items {
+		item := &entitlementList.Items[i]
+		name := item.Status.ServiceName
+		if name == "" {
+			name = item.Spec.ServiceRef.Name
 		}
-		return ctrl.Result{}, fmt.Errorf("failed to get matching ServiceEntitlement: %w", err)
+		if name == consumer.Spec.ServiceRef.Name {
+			entitlement = item
+			break
+		}
+	}
+	if entitlement == nil {
+		// Entitlement was deleted out from under us; nothing to update.
+		logger.Info("no matching ServiceEntitlement found in consumer project, skipping",
+			"consumerProject", consumerProject,
+			"serviceRef", consumer.Spec.ServiceRef.Name)
+		return ctrl.Result{}, nil
 	}
 
 	original := entitlement.Status.DeepCopy()
@@ -143,7 +164,7 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	if equalEntitlementStatus(original, &entitlement.Status) {
 		return ctrl.Result{}, nil
 	}
-	if err := consumerClient.Status().Update(ctx, &entitlement); err != nil {
+	if err := consumerClient.Status().Update(ctx, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
 	}
 	return ctrl.Result{}, nil

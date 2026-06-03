@@ -23,13 +23,15 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// testScheme returns a scheme with the services API types registered.
+// testScheme returns a scheme with the services and quota API types registered.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = quotav1alpha1.AddToScheme(s)
 	return s
 }
 
@@ -95,9 +97,10 @@ func (m *testManager) GetFieldIndexer() client.FieldIndexer                  { r
 func (m *testManager) Engage(context.Context, string, cluster.Cluster) error { return nil }
 
 // newFakeClient builds a fake client with the services scheme and full
-// status-subresource support for our types.
+// status-subresource support for our types. SSA Apply patches are handled
+// via the ssaClient shim defined in entitlement_quota_grants_test.go.
 func newFakeClient(objs ...client.Object) client.Client {
-	return fake.NewClientBuilder().
+	base := fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
 		WithStatusSubresource(
@@ -105,5 +108,20 @@ func newFakeClient(objs ...client.Object) client.Client {
 			&servicesv1alpha1.ServiceConsumer{},
 			&servicesv1alpha1.Service{},
 		).
+		WithIndex(&servicesv1alpha1.Service{}, "spec.serviceName", func(obj client.Object) []string {
+			svc := obj.(*servicesv1alpha1.Service)
+			if svc.Spec.ServiceName == "" {
+				return nil
+			}
+			return []string{svc.Spec.ServiceName}
+		}).
+		WithIndex(&servicesv1alpha1.ServiceConfiguration{}, "spec.serviceRef.name", func(obj client.Object) []string {
+			sc := obj.(*servicesv1alpha1.ServiceConfiguration)
+			if sc.Spec.ServiceRef.Name == "" {
+				return nil
+			}
+			return []string{sc.Spec.ServiceRef.Name}
+		}).
 		Build()
+	return &ssaClient{Client: base}
 }

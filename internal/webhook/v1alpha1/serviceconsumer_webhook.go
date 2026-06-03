@@ -5,6 +5,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -61,6 +62,26 @@ func userInfoFromContext(ctx context.Context) authenticationv1.UserInfo {
 // by how it happens to be named. Fails closed: any inability to evaluate the
 // permission returns an error so the caller is not silently granted manage.
 func (r *serviceConsumerWebhook) callerCanManage(ctx context.Context, user authenticationv1.UserInfo) (bool, error) {
+	return r.callerCan(ctx, user, "manage")
+}
+
+// callerCanApprove reports whether the admission caller holds the
+// serviceconsumers.approve permission in the project control plane the request
+// targets. It mirrors callerCanManage, issuing a SubjectAccessReview for the
+// "approve" verb against the same originating project cluster. Fails closed:
+// any inability to evaluate the permission returns an error so the caller is
+// not silently granted approve.
+func (r *serviceConsumerWebhook) callerCanApprove(ctx context.Context, user authenticationv1.UserInfo) (bool, error) {
+	return r.callerCan(ctx, user, "approve")
+}
+
+// callerCan issues a SubjectAccessReview for the given verb on serviceconsumers
+// against the project control plane the request targets (identified by the
+// cluster context the ClusterAwareServer injects from the request's UserInfo).
+// The caller's identity is determined by what it is authorized to do, not by
+// how it happens to be named. Fails closed: any inability to evaluate the
+// permission returns an error so the caller is not silently granted the verb.
+func (r *serviceConsumerWebhook) callerCan(ctx context.Context, user authenticationv1.UserInfo, verb string) (bool, error) {
 	if r.mcMgr == nil {
 		return false, fmt.Errorf("can't verify your permissions to change this service consumer right now; please try again")
 	}
@@ -70,14 +91,14 @@ func (r *serviceConsumerWebhook) callerCanManage(ctx context.Context, user authe
 	}
 	cl, err := r.mcMgr.GetCluster(ctx, clusterName)
 	if err != nil {
-		serviceConsumerLog.Error(err, "failed to reach project control plane for ServiceConsumer authorization", "cluster", clusterName)
+		serviceConsumerLog.Error(err, "failed to reach project control plane for ServiceConsumer authorization", "cluster", clusterName, "verb", verb)
 		return false, fmt.Errorf("can't reach project %q to verify your permissions right now; please try again", clusterName)
 	}
 
 	sar := &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Verb:     "manage",
+				Verb:     verb,
 				Group:    servicesv1alpha1.GroupVersion.Group,
 				Resource: "serviceconsumers",
 			},
@@ -88,10 +109,17 @@ func (r *serviceConsumerWebhook) callerCanManage(ctx context.Context, user authe
 		},
 	}
 	if err := cl.GetClient().Create(ctx, sar); err != nil {
-		serviceConsumerLog.Error(err, "failed to evaluate SubjectAccessReview for ServiceConsumer authorization", "cluster", clusterName)
+		serviceConsumerLog.Error(err, "failed to evaluate SubjectAccessReview for ServiceConsumer authorization", "cluster", clusterName, "verb", verb)
 		return false, fmt.Errorf("couldn't verify your permissions in project %q right now; please try again", clusterName)
 	}
 	return sar.Status.Allowed, nil
+}
+
+// approvalMutated reports whether the update sets or changes the provider's
+// approval decision (spec.approval), which is the gate for requiring the
+// approve permission from non-manage callers.
+func approvalMutated(oldSC, newSC *servicesv1alpha1.ServiceConsumer) bool {
+	return !reflect.DeepEqual(oldSC.Spec.Approval, newSC.Spec.Approval)
 }
 
 // convertExtra adapts authentication ExtraValues (as carried on the admission
@@ -152,7 +180,17 @@ func (r *serviceConsumerWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 		return nil, err
 	}
 
-	if errs := validation.ValidateServiceConsumerUpdate(canManage, oldSC, newSC); len(errs) > 0 {
+	// Only non-manage callers that actually mutate spec.approval need the
+	// approve permission; avoid an extra SubjectAccessReview otherwise.
+	canApprove := false
+	if !canManage && approvalMutated(oldSC, newSC) {
+		canApprove, err = r.callerCanApprove(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if errs := validation.ValidateServiceConsumerUpdate(canManage, canApprove, oldSC, newSC); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
