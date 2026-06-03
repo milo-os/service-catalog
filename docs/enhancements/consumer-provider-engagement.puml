@@ -1,0 +1,31 @@
+@startuml consumer-provider-engagement
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Dynamic.puml
+!include datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Consumer engagement and cleanup
+
+Person(consumer, "Consumer", "Project owner who enables the service")
+
+System_Boundary(provider_cp, "Provider project") {
+    Container(sc, "ServiceConsumer objects", "Catalog records", "One per service + consumer project; carries the active phase")
+}
+
+System_Boundary(operator, "Service operator") {
+    Container(provider, "consumer.Provider", "Reusable library", "Watches consumers, counts the active ones per consumer project, engages and disengages")
+}
+
+System_Boundary(consumer_cp, "Consumer project") {
+    Container(managed, "Resources the operator manages", "read · create · update status · watch", "It owns the ones it creates (e.g. LocationBinding): labelled with the service name and owned by the consumer-side entitlement")
+}
+
+Rel(consumer, sc, "Enables the service", "creates the consumer record")
+Rel(sc, provider, "Watched", "only this operator's services")
+Rel(provider, provider, "Recompute active set", "list, bucket by consumer project, count active services (one consumer per service)")
+Rel(provider, managed, "Count > 0 — engage", "hand the operator's controllers a client + cache for the project")
+Rel(provider, managed, "Count = 0 — disengage", "stop the operator's reconcilers, delete the types it created (by service-name label), run teardowns")
+
+SHOW_LEGEND()
+@enduml
