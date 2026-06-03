@@ -10,3 +10,4 @@ resources:
   - serviceconfiguration.yaml
   - serviceentitlement.yaml
   - serviceconsumer.yaml
+  - serviceavailability.yaml

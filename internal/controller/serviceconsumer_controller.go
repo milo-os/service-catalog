@@ -87,12 +87,12 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		desiredPhase = servicesv1alpha1.ConsumerPhaseActive
 		entitlementPhase = servicesv1alpha1.EntitlementPhaseActive
 		reason = reasonConsumerApproved
-		message = "Provider approved the request."
+		message = "This request was approved; the consumer now has access to the service."
 	case servicesv1alpha1.ApprovalDecisionDenied:
 		desiredPhase = servicesv1alpha1.ConsumerPhaseDenied
 		entitlementPhase = servicesv1alpha1.EntitlementPhaseRejected
 		reason = reasonConsumerDenied
-		message = "Provider denied the request."
+		message = "This request was denied; the consumer does not have access to the service."
 	default:
 		return ctrl.Result{}, fmt.Errorf("unexpected ApprovalDecision %q", consumer.Spec.Approval.Decision)
 	}

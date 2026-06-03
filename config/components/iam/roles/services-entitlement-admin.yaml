@@ -4,7 +4,7 @@ metadata:
   name: services.miloapis.com-entitlement-admin
   annotations:
     kubernetes.io/display-name: Services Entitlement Admin
-    kubernetes.io/description: "Manage service entitlements for a project"
+    kubernetes.io/description: "Manage service entitlements; view service consumers"
 spec:
   launchStage: Alpha
   inheritedRoles:
@@ -12,4 +12,5 @@ spec:
   includedPermissions:
     - services.miloapis.com/serviceentitlements.create
     - services.miloapis.com/serviceentitlements.update
+    - services.miloapis.com/serviceentitlements.patch
     - services.miloapis.com/serviceentitlements.delete

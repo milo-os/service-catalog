@@ -143,13 +143,13 @@ func TestValidateServiceDependencies_RejectsIndirectCycle(t *testing.T) {
 	}
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "cycle") {
+		if strings.Contains(e.Error(), "loop") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected error mentioning 'cycle', got: %v", errs)
+		t.Fatalf("expected error mentioning a dependency loop, got: %v", errs)
 	}
 }
 
@@ -167,13 +167,13 @@ func TestValidateServiceDependencies_RejectsSelfReference(t *testing.T) {
 	}
 	found := false
 	for _, e := range errs {
-		if strings.Contains(e.Error(), "cycle") {
+		if strings.Contains(e.Error(), "loop") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected error mentioning 'cycle', got: %v", errs)
+		t.Fatalf("expected error mentioning a dependency loop, got: %v", errs)
 	}
 }
 

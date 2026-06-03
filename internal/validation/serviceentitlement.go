@@ -40,7 +40,7 @@ func ValidateServiceEntitlementUpdate(
 	if oldSE.Spec.ServiceRef.Name != newSE.Spec.ServiceRef.Name {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("spec", "serviceRef", "name"),
-			"serviceRef.name is immutable",
+			"cannot change which service this entitlement is for; remove it and create a new one instead",
 		))
 	}
 	return allErrs
@@ -77,7 +77,7 @@ func ValidateServiceEntitlementDelete(
 	if parent.Status.Phase == servicesv1alpha1.EntitlementPhaseActive {
 		allErrs = append(allErrs, field.Forbidden(
 			field.NewPath("metadata", "name"),
-			fmt.Sprintf("dependency entitlement cannot be deleted while parent entitlement %q is Active", parent.Name),
+			fmt.Sprintf("this service is required by %q, which is still in use; disable that service first", parent.Name),
 		))
 	}
 	return allErrs
@@ -100,7 +100,7 @@ func validateServiceEntitlementServiceRef(
 		if apierrors.IsNotFound(err) {
 			allErrs = append(allErrs, field.Invalid(
 				fldPath, se.Spec.ServiceRef.Name,
-				fmt.Sprintf("no Service with metadata.name %q exists", se.Spec.ServiceRef.Name),
+				fmt.Sprintf("the service %q does not exist", se.Spec.ServiceRef.Name),
 			))
 			return allErrs
 		}
@@ -112,7 +112,7 @@ func validateServiceEntitlementServiceRef(
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		allErrs = append(allErrs, field.Invalid(
 			fldPath, se.Spec.ServiceRef.Name,
-			fmt.Sprintf("Service %q is in phase %q; only Published Services can be entitled", svc.Name, svc.Spec.Phase),
+			fmt.Sprintf("the service %q isn't published yet, so it can't be enabled", svc.Name),
 		))
 	}
 	return allErrs

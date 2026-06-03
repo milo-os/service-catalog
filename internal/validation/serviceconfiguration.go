@@ -140,14 +140,14 @@ func validateBillingDestinationRefs(
 			allErrs = append(allErrs, field.Invalid(
 				path.Index(i).Child("monitoredResourceType"),
 				dest.MonitoredResourceType,
-				"must match a spec.monitoredResourceTypes[].type",
+				"must name a monitored resource type that this configuration defines",
 			))
 		}
 		for j, m := range dest.Metrics {
 			if _, ok := metricNames[m]; !ok {
 				allErrs = append(allErrs, field.Invalid(
 					path.Index(i).Child("metrics").Index(j), m,
-					"must match a spec.metrics[].name",
+					"must name a metric that this configuration defines",
 				))
 			}
 		}
@@ -184,7 +184,7 @@ func validateQuotaRefs(
 		if _, ok := metricNames[l.Metric]; !ok {
 			allErrs = append(allErrs, field.Invalid(
 				limitsPath.Index(i).Child("metric"), l.Metric,
-				"must match a spec.metrics[].name",
+				"must name a metric that this configuration defines",
 			))
 		}
 	}
@@ -194,7 +194,7 @@ func validateQuotaRefs(
 			if _, ok := metricNames[k]; !ok {
 				allErrs = append(allErrs, field.Invalid(
 					rulesPath.Index(i).Child("metricCosts"), k,
-					"must match a spec.metrics[].name",
+					"must name a metric that this configuration defines",
 				))
 			}
 		}
@@ -223,7 +223,7 @@ func validateServiceConfigurationNamePrefixes(
 		if apierrors.IsNotFound(err) {
 			allErrs = append(allErrs, field.Invalid(
 				serviceRefPath, sc.Spec.ServiceRef.Name,
-				fmt.Sprintf("no Service with metadata.name %q exists", sc.Spec.ServiceRef.Name),
+				fmt.Sprintf("the service %q this configuration refers to does not exist", sc.Spec.ServiceRef.Name),
 			))
 			return allErrs
 		}
@@ -246,7 +246,7 @@ func validateServiceConfigurationNamePrefixes(
 		if !strings.HasPrefix(mrt.Type, prefix) || strings.TrimPrefix(mrt.Type, prefix) == "" {
 			allErrs = append(allErrs, field.Invalid(
 				mrtsPath.Index(i).Child("type"), mrt.Type,
-				fmt.Sprintf("must be prefixed with the referenced service %q (e.g. %q)",
+				fmt.Sprintf("must start with the service's name %q so it stays unique to this service (for example, %q)",
 					prefix, prefix+"ExampleKind"),
 			))
 		}
@@ -260,7 +260,7 @@ func validateServiceConfigurationNamePrefixes(
 		if !strings.HasPrefix(m.Name, prefix) || strings.TrimPrefix(m.Name, prefix) == "" {
 			allErrs = append(allErrs, field.Invalid(
 				metricsPath.Index(i).Child("name"), m.Name,
-				fmt.Sprintf("must be prefixed with the referenced service %q (e.g. %q)",
+				fmt.Sprintf("must start with the service's name %q so it stays unique to this service (for example, %q)",
 					prefix, prefix+"example-metric"),
 			))
 		}
@@ -291,7 +291,7 @@ func validateServiceConfigurationPublishedImmutability(
 		if _, ok := newMRTsByType[oldType]; !ok {
 			allErrs = append(allErrs, field.Forbidden(
 				mrtsPath,
-				fmt.Sprintf("monitored resource type %q cannot be removed or renamed once the ServiceConfiguration is Published", oldType),
+				fmt.Sprintf("the monitored resource type %q can't be removed or renamed once the configuration is published", oldType),
 			))
 		}
 	}
@@ -304,7 +304,7 @@ func validateServiceConfigurationPublishedImmutability(
 		if oldMRT.GVK != newMRT.GVK {
 			allErrs = append(allErrs, field.Forbidden(
 				itemPath.Child("gvk"),
-				"gvk is immutable once the ServiceConfiguration is Published",
+				"the resource type can't be changed once the configuration is published",
 			))
 		}
 	}
@@ -321,7 +321,7 @@ func validateServiceConfigurationPublishedImmutability(
 	for name, old := range oldMetrics {
 		if _, exists := newMetricSet[name]; !exists {
 			allErrs = append(allErrs, field.Forbidden(metricsPath,
-				fmt.Sprintf("cannot remove metric %q after publishing", name)))
+				fmt.Sprintf("the metric %q can't be removed once the configuration is published", name)))
 			continue
 		}
 		for i, m := range newSC.Spec.Metrics {
@@ -330,11 +330,11 @@ func validateServiceConfigurationPublishedImmutability(
 			}
 			if m.Kind != old.Kind {
 				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("kind"),
-					"immutable after publishing"))
+					"can't be changed once the configuration is published"))
 			}
 			if m.Unit != old.Unit {
 				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("unit"),
-					"immutable after publishing"))
+					"can't be changed once the configuration is published"))
 			}
 		}
 	}
@@ -354,7 +354,7 @@ func validateServiceConfigurationPublishedImmutability(
 		for name, old := range oldLimits {
 			if _, exists := newLimitSet[name]; !exists {
 				allErrs = append(allErrs, field.Forbidden(quotaPath,
-					fmt.Sprintf("cannot remove quota limit %q after publishing", name)))
+					fmt.Sprintf("the quota limit %q can't be removed once the configuration is published", name)))
 				continue
 			}
 			if newSC.Spec.Quota == nil {
@@ -366,15 +366,15 @@ func validateServiceConfigurationPublishedImmutability(
 				}
 				if l.Metric != old.Metric {
 					allErrs = append(allErrs, field.Forbidden(quotaPath.Index(i).Child("metric"),
-						"immutable after publishing"))
+						"can't be changed once the configuration is published"))
 				}
 				if l.Unit != old.Unit {
 					allErrs = append(allErrs, field.Forbidden(quotaPath.Index(i).Child("unit"),
-						"immutable after publishing"))
+						"can't be changed once the configuration is published"))
 				}
 				if l.ConsumerType != old.ConsumerType {
 					allErrs = append(allErrs, field.Forbidden(quotaPath.Index(i).Child("consumerType"),
-						"immutable after publishing"))
+						"can't be changed once the configuration is published"))
 				}
 			}
 		}
@@ -396,14 +396,14 @@ func validateServiceConfigurationPublishedImmutability(
 			newDest, exists := newDests[mrt]
 			if !exists {
 				allErrs = append(allErrs, field.Forbidden(billingPath,
-					fmt.Sprintf("cannot remove billing destination %q after publishing", mrt)))
+					fmt.Sprintf("the billing destination %q can't be removed once the configuration is published", mrt)))
 				continue
 			}
 			newMetricSet := stringSet(newDest.Metrics)
 			for _, m := range old.Metrics {
 				if _, ok := newMetricSet[m]; !ok {
 					allErrs = append(allErrs, field.Forbidden(billingPath,
-						fmt.Sprintf("cannot remove metric %q from destination %q after publishing", m, mrt)))
+						fmt.Sprintf("the metric %q can't be removed from billing destination %q once the configuration is published", m, mrt)))
 				}
 			}
 		}

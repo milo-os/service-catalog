@@ -1,0 +1,12 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAvailability
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-miloapis-com--us-central1-a
+spec:
+  serviceRef:
+    name: compute-miloapis-com
+  locationRef:
+    name: us-central1-a
