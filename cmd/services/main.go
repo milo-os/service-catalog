@@ -10,6 +10,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -31,6 +32,7 @@ import (
 	"go.miloapis.com/service-catalog/internal/config"
 	"go.miloapis.com/service-catalog/internal/controller"
 	serviceswebhooks "go.miloapis.com/service-catalog/internal/webhook/v1alpha1"
+	consumer "go.miloapis.com/service-catalog/pkg/multicluster-runtime/consumer"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -208,9 +210,121 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
 		os.Exit(1)
 	}
-	if err = (&controller.LocationBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
-		os.Exit(1)
+	// LocationBinding projection runs either on the all-projects manager
+	// (today's default) or, when consumer-scoped projection is enabled, on a
+	// dedicated multicluster manager whose membership is driven by the consumer
+	// provider — only consumer projects with an active ServiceConsumer for one
+	// of the configured services. The reconciler is unchanged in either case;
+	// only which manager hosts it differs. Its rootClient stays pinned to the
+	// all-projects manager's client, where the cluster-scoped
+	// ServiceConfiguration / ServiceAvailability / Location objects live.
+	if csp := serverConfig.ConsumerScopedProjection; csp != nil {
+		if csp.ProviderProject == "" {
+			setupLog.Error(fmt.Errorf("consumerScopedProjection.providerProject must be set"),
+				"invalid consumer-scoped projection config")
+			os.Exit(1)
+		}
+
+		// The provider project hosts this operator's ServiceConsumer objects.
+		// Build a manager pointed at its control plane; the consumer provider
+		// reads the provider project from this manager's rest.Config and
+		// re-addresses it per consumer project when engaging.
+		providerProjectCfg, err := consumer.ProjectRestConfig(cfg, csp.ProviderProject)
+		if err != nil {
+			setupLog.Error(err, "unable to build provider-project rest config")
+			os.Exit(1)
+		}
+
+		providerMgr, err := ctrl.NewManager(providerProjectCfg, ctrl.Options{
+			Scheme: scheme,
+			Metrics: metricsserver.Options{
+				// Avoid port conflict with the primary manager's metrics server.
+				BindAddress: "0",
+			},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create provider-project manager")
+			os.Exit(1)
+		}
+
+		consumerOpts := consumer.Options{
+			// Canonical Service.spec.serviceName values the catalog owns.
+			ServiceNames: csp.ServiceNames,
+			// Engaged consumer clusters must use our scheme; without it their
+			// cache falls back to the client-go global scheme and every
+			// consumer-side LocationBinding / ServiceEntitlement watch fails
+			// with "kind must be registered to the Scheme".
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) { o.Scheme = scheme },
+			},
+			// LocationBinding is the only type the catalog projects into
+			// consumer projects; it is deleted (label-scoped) on deactivation.
+			// Note: networking.datumapis.com uses version v1alpha (not v1alpha1).
+			ManagedResources: []schema.GroupVersionKind{
+				{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding"},
+			},
+		}
+		if csp.ResyncInterval != nil {
+			consumerOpts.ResyncInterval = csp.ResyncInterval.Duration
+		}
+
+		consumerProvider, err := consumer.New(providerMgr, consumerOpts)
+		if err != nil {
+			setupLog.Error(err, "unable to create consumer provider")
+			os.Exit(1)
+		}
+
+		consumerMcMgr, err := mcmanager.New(cfg, consumerProvider, mcmanager.Options{
+			Scheme: scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: "0",
+			},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create consumer multicluster manager")
+			os.Exit(1)
+		}
+
+		if err = (&controller.LocationBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			os.Exit(1)
+		}
+
+		// The provider watch (gated on provider-project readiness), the consumer
+		// provider Run, and the consumer multicluster manager each block and
+		// depend on one another, so each runs in its own goroutine — mirroring
+		// the mcMgr wiring below. The consumer manager engages no local "" cluster:
+		// its membership is exclusively the consumer projects the provider hands it.
+		go func() {
+			if err := consumer.WaitProviderProjectReady(ctx, cfg, csp.ProviderProject); err != nil {
+				setupLog.Error(err, "provider project did not become ready")
+				os.Exit(1)
+			}
+			if err := providerMgr.Start(ctx); err != nil {
+				setupLog.Error(err, "provider-project manager failed")
+				os.Exit(1)
+			}
+		}()
+		go func() {
+			if err := consumerProvider.Run(ctx, consumerMcMgr); err != nil {
+				setupLog.Error(err, "consumer provider failed")
+				os.Exit(1)
+			}
+		}()
+		go func() {
+			if err := consumerMcMgr.Start(ctx); err != nil {
+				setupLog.Error(err, "consumer multicluster manager failed")
+				os.Exit(1)
+			}
+		}()
+
+		setupLog.Info("consumer-scoped projection enabled",
+			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
+	} else {
+		if err = (&controller.LocationBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			os.Exit(1)
+		}
 	}
 
 	if serverConfig.WebhookServer != nil {

@@ -3,3 +3,8 @@ kind: ServicesOperator
 metricsServer:
   bindAddress: "0"
 webhookServer: {}
+# Consumer-scoped projection is intentionally OFF in e2e: the chainsaw env is a
+# single cluster with no multicluster harness, so the consumer path would gate
+# forever on a provider Project that never goes Ready — zero coverage plus two
+# idle managers. Exercising it needs a multicluster test harness (future work).
+# LocationBinding projection therefore runs on the all-projects manager here.

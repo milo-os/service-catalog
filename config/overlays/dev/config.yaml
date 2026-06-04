@@ -8,3 +8,12 @@ webhookServer:
     secretRef:
       name: services-webhook-cert
       namespace: kube-system
+# Consumer-scoped projection: engage a consumer project only while it has an
+# active ServiceConsumer for one of serviceNames, and project LocationBindings
+# there (instead of running projection on the all-projects manager). Remove this
+# block to fall back to the all-projects behavior. providerProject must name the
+# Project whose virtual control plane hosts this operator's ServiceConsumers.
+consumerScopedProjection:
+  providerProject: dev-producer-project
+  serviceNames:
+    - compute.miloapis.com
