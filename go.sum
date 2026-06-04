@@ -84,8 +84,6 @@ github.com/mailru/easyjson v0.9.0 h1:PrnmzHw7262yW8sTBwxi1PdJA3Iw/EKBa8psRf7d9a4
 github.com/mailru/easyjson v0.9.0/go.mod h1:1+xMtQp2MRNVL/V1bOzuP3aP8VNwRW55fQUto+XFtTU=
 github.com/milo-os/billing v0.0.0-20260416220423-385a1b369d72 h1:n9zt0lilteHXr5Kae98WkmEM9DqsqzbrIfCG+fsibsE=
 github.com/milo-os/billing v0.0.0-20260416220423-385a1b369d72/go.mod h1:vr+XvRr3ET1Tm8lMGE6YDqitlYcJlCIEfO1mIB3v0Hg=
-github.com/milo-os/milo v0.0.0-20260518184803-e6ac7ea55253 h1:IqSe9sOfR8blJdRxCpI6UywLn6N8OuNd9QeIVetZjxk=
-github.com/milo-os/milo v0.0.0-20260518184803-e6ac7ea55253/go.mod h1:xOFYvUsvSZV3z6eow5YdB5C/qRQf2s/5/arcfJs5XPg=
 github.com/milo-os/milo v0.26.1-0.20260527023322-a78982bd81f2 h1:U3g0RsaJxPistqa6k70sikY0coHc9jMVZvFuBFDQmTw=
 github.com/milo-os/milo v0.26.1-0.20260527023322-a78982bd81f2/go.mod h1:xOFYvUsvSZV3z6eow5YdB5C/qRQf2s/5/arcfJs5XPg=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
