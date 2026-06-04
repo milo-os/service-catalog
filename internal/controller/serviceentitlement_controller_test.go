@@ -125,8 +125,11 @@ func TestServiceEntitlementReconciler_SelfServiceActive(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
 		t.Fatalf("get serviceconsumer: %v", err)
 	}
-	if sc.Spec.ServiceRef.Name != testServiceName {
-		t.Errorf("consumer.spec.serviceRef.name = %q, want %q", sc.Spec.ServiceRef.Name, testServiceName)
+	if sc.Spec.ServiceRef.Name != testServiceSlug {
+		t.Errorf("consumer.spec.serviceRef.name = %q, want entitlement ref %q (reconciler must mirror the ref, not canonicalize the immutable field)", sc.Spec.ServiceRef.Name, testServiceSlug)
+	}
+	if sc.Status.ServiceName != testServiceName {
+		t.Errorf("consumer.status.serviceName = %q, want canonical %q", sc.Status.ServiceName, testServiceName)
 	}
 	if sc.Spec.ConsumerProjectRef.Name != testConsumerProject {
 		t.Errorf("consumer.spec.consumerProjectRef.name = %q, want %q", sc.Spec.ConsumerProjectRef.Name, testConsumerProject)
@@ -169,8 +172,11 @@ func TestServiceEntitlementReconciler_GatedPendingApproval(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
 		t.Fatalf("get serviceconsumer: %v", err)
 	}
-	if sc.Spec.ServiceRef.Name != testServiceName {
-		t.Errorf("consumer.spec.serviceRef.name = %q, want %q", sc.Spec.ServiceRef.Name, testServiceName)
+	if sc.Spec.ServiceRef.Name != testServiceSlug {
+		t.Errorf("consumer.spec.serviceRef.name = %q, want entitlement ref %q (reconciler must mirror the ref, not canonicalize the immutable field)", sc.Spec.ServiceRef.Name, testServiceSlug)
+	}
+	if sc.Status.ServiceName != testServiceName {
+		t.Errorf("consumer.status.serviceName = %q, want canonical %q", sc.Status.ServiceName, testServiceName)
 	}
 	if sc.Status.Phase != servicesv1alpha1.ConsumerPhasePendingApproval {
 		t.Errorf("consumer phase = %q, want PendingApproval", sc.Status.Phase)
