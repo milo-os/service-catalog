@@ -97,6 +97,12 @@ type ServiceConsumerStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
+	// ServiceName is the canonical service identifier (e.g. "compute.datumapis.com")
+	// resolved from spec.serviceRef and set by the controller.
+	//
+	// +kubebuilder:validation:Optional
+	ServiceName string `json:"serviceName,omitempty"`
+
 	// ObservedGeneration is the most recent generation observed by the
 	// controller.
 	//

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -126,7 +127,8 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
 	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
-		consumer.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Spec.ServiceName}
+		// Mirror the caller's ref verbatim; the canonical name lives on status.serviceName.
+		consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
 		consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
 		return nil
 	})
@@ -135,7 +137,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated); err != nil {
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -175,9 +177,10 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool) error {
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string) error {
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
+	consumer.Status.ServiceName = canonicalServiceName
 
 	desired := servicesv1alpha1.ConsumerPhaseActive
 	switch {
@@ -195,26 +198,13 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 		consumer.Status.EntitledAt = &now
 	}
 
-	if equalConsumerStatus(original, &consumer.Status) {
+	if apiequality.Semantic.DeepEqual(original, &consumer.Status) {
 		return nil
 	}
 	if err := providerClient.Status().Update(ctx, consumer); err != nil {
 		return fmt.Errorf("failed to update ServiceConsumer status: %w", err)
 	}
 	return nil
-}
-
-func equalConsumerStatus(a, b *servicesv1alpha1.ServiceConsumerStatus) bool {
-	if a.Phase != b.Phase {
-		return false
-	}
-	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {
-		return false
-	}
-	if a.ObservedGeneration != b.ObservedGeneration {
-		return false
-	}
-	return true
 }
 
 func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {

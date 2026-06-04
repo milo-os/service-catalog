@@ -191,6 +191,11 @@ spec:
                 - Active
                 - Denied
                 type: string
+              serviceName:
+                description: |-
+                  ServiceName is the canonical service identifier (e.g. "compute.datumapis.com")
+                  resolved from spec.serviceRef and set by the controller.
+                type: string
             type: object
         type: object
     served: true

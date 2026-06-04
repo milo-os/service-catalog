@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -197,7 +198,7 @@ func (r *ServiceConsumerReconciler) updateConsumerStatus(ctx context.Context, pr
 	}
 	apimeta.SetStatusCondition(&consumer.Status.Conditions, cond)
 
-	if equalConsumerStatus(original, &consumer.Status) {
+	if apiequality.Semantic.DeepEqual(original, &consumer.Status) {
 		return nil
 	}
 	if err := providerClient.Status().Update(ctx, consumer); err != nil {
