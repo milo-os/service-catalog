@@ -336,10 +336,46 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 			return ctrl.Result{Requeue: true}, nil
 		}
 		providerClient := providerCluster.GetClient()
-		consumerName := serviceConsumerName(svc.Spec.ServiceName, consumerProject)
-		consumer := &servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: consumerName}}
-		if err := providerClient.Delete(ctx, consumer); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("failed to delete ServiceConsumer %q: %w", consumerName, err)
+
+		// Reference-count the shared ServiceConsumer before deleting it.
+		// Multiple ServiceEntitlements in the same consumer project that
+		// reference the same service all map to a single ServiceConsumer
+		// (keyed by serviceName + consumerProject in serviceConsumerName).
+		// Deleting the consumer while other entitlements still reference the
+		// same service would prematurely tear it down — and, for the
+		// consumer-scoped provider, trigger a destructive teardown of
+		// still-entitled projected resources. Only delete once the LAST
+		// referencing entitlement is being finalized. We skip siblings that
+		// are themselves terminating so concurrent deletes converge safely.
+		var siblings servicesv1alpha1.ServiceEntitlementList
+		if err := consumerClient.List(ctx, &siblings); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to list entitlements during finalize: %w", err)
+		}
+		stillReferenced := false
+		for i := range siblings.Items {
+			sibling := &siblings.Items[i]
+			if sibling.Name == entitlement.Name {
+				continue // the entitlement currently being finalized
+			}
+			if !sibling.DeletionTimestamp.IsZero() {
+				continue // a terminating sibling is on its way out too
+			}
+			if sibling.Spec.ServiceRef.Name != entitlement.Spec.ServiceRef.Name {
+				continue // references a different service → different ServiceConsumer
+			}
+			stillReferenced = true
+			break
+		}
+
+		if stillReferenced {
+			logger.Info("ServiceConsumer still referenced by other entitlements; skipping delete",
+				"service", svc.Spec.ServiceName, "consumerProject", consumerProject)
+		} else {
+			consumerName := serviceConsumerName(svc.Spec.ServiceName, consumerProject)
+			consumer := &servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: consumerName}}
+			if err := providerClient.Delete(ctx, consumer); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to delete ServiceConsumer %q: %w", consumerName, err)
+			}
 		}
 	}
 

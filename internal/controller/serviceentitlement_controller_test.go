@@ -282,6 +282,145 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 	}
 }
 
+// terminatingEntitlement builds a ServiceEntitlement that is mid-finalize:
+// it carries the finalizer and a deletion timestamp.
+func terminatingEntitlement(name, serviceRef string) *servicesv1alpha1.ServiceEntitlement {
+	now := metav1.NewTime(time.Now())
+	return &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Finalizers:        []string{serviceEntitlementFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec: servicesv1alpha1.ServiceEntitlementSpec{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: serviceRef},
+		},
+	}
+}
+
+// Two entitlements reference the same service. Finalizing one must NOT delete
+// the shared ServiceConsumer while the other (active) entitlement remains.
+func TestServiceEntitlementReconciler_DeleteKeepsConsumerWhenSiblingActive(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	finalizing := terminatingEntitlement("ent-a", testServiceSlug)
+	sibling := newEntitlement("ent-b", testServiceSlug)
+
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	existingConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceSlug},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(finalizing, sibling)
+	providerClient := newFakeClient(existingConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, "ent-a")); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
+		t.Errorf("expected ServiceConsumer to survive while an active sibling entitlement remains, got err=%v", err)
+	}
+}
+
+// Finalizing the LAST entitlement for a service deletes the shared
+// ServiceConsumer even when a sibling for the same service is itself
+// terminating — a concurrent/terminating sibling must not leak the consumer.
+func TestServiceEntitlementReconciler_DeleteRemovesConsumerWhenSiblingTerminating(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	finalizing := terminatingEntitlement("ent-a", testServiceSlug)
+	terminatingSibling := terminatingEntitlement("ent-b", testServiceSlug)
+
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	existingConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceSlug},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(finalizing, terminatingSibling)
+	providerClient := newFakeClient(existingConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, "ent-a")); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected ServiceConsumer to be deleted when all remaining siblings are terminating, got err=%v", err)
+	}
+}
+
+// A sibling entitlement that references a DIFFERENT service does not keep the
+// consumer alive — its different serviceRef maps to a different ServiceConsumer.
+func TestServiceEntitlementReconciler_DeleteIgnoresSiblingForDifferentService(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	finalizing := terminatingEntitlement("ent-a", testServiceSlug)
+	otherService := newEntitlement("ent-other", testDepServiceSlug)
+
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	existingConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceSlug},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(finalizing, otherService)
+	providerClient := newFakeClient(existingConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, "ent-a")); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("expected ServiceConsumer to be deleted; a sibling for a different service must not keep it alive, got err=%v", err)
+	}
+}
+
 func hasFinalizer(obj client.Object, f string) bool {
 	for _, x := range obj.GetFinalizers() {
 		if x == f {
