@@ -211,6 +211,7 @@ func (f *BillingFanOut) applyMeterDefinitions(
 				Measurement: billingv1alpha1.MeterMeasurement{
 					Aggregation: metricKindToAggregation(metric.Kind),
 					Unit:        metric.Unit,
+					Dimensions:  metric.Dimensions,
 				},
 				Billing: billingv1alpha1.MeterBilling{
 					// Default both to the emission unit. The future SKU layer

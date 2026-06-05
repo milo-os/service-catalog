@@ -243,6 +243,19 @@ type MetricSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	Unit string `json:"unit"`
+
+	// Dimensions is an ordered list of attribute keys that downstream
+	// systems may group, filter, or price by (e.g. "model", "region",
+	// "tier"). Each key must be declared here for a producer to attach it
+	// to a usage event; the billing validator quarantines events carrying
+	// undeclared dimension keys. Adding a dimension is additive; removing
+	// one is a breaking change and must ship as a new meter. Fans out to
+	// MeterDefinition.spec.measurement.dimensions.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	Dimensions []string `json:"dimensions,omitempty"`
 }
 
 // ServiceBillingConfig groups all billing routing declarations.
