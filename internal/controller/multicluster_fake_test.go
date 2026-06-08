@@ -24,14 +24,19 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// testScheme returns a scheme with the services and quota API types registered.
+// testScheme returns a scheme with the services, quota, and
+// resourcemanager API types registered. Resourcemanager is needed by
+// OrganizationDefaultsReconciler tests; pre-existing tests do not
+// reference its types and so are unaffected.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
 	_ = quotav1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	return s
 }
 
