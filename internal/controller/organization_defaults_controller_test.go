@@ -321,3 +321,78 @@ func TestOrganizationDefaults_MultipleConfigurations(t *testing.T) {
 		t.Errorf("got %d grants, want 2 (one per Published org-scoped limit)", len(grants.Items))
 	}
 }
+
+// TestOrganizationDefaults_DeprecatedPreservesExistingGrants verifies the
+// Deprecated phase contract: "existing references continue to work." A
+// SC that gains a grant on an org while Published, then moves to
+// Deprecated, must keep its grant on the next reconcile — pruning would
+// silently revoke quota from customers already on the service.
+func TestOrganizationDefaults_DeprecatedPreservesExistingGrants(t *testing.T) {
+	org := newOrganization(testOrgName)
+	sc := newPublishedServiceConfiguration(
+		testOrgServiceConfigName,
+		testOrgServiceName,
+		[]servicesv1alpha1.QuotaLimitSpec{
+			newOrgScopedLimit(testOrgLimitName, testOrgMetricName, 1),
+		},
+	)
+	c := newFakeClient(org, sc)
+	r := newReconciler(c)
+
+	// First reconcile while Published — grant lands.
+	if _, err := r.Reconcile(context.Background(), orgRequest(testOrgName)); err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	var grants quotav1alpha1.ResourceGrantList
+	if err := c.List(context.Background(), &grants); err != nil {
+		t.Fatalf("list grants after publish: %v", err)
+	}
+	if len(grants.Items) != 1 {
+		t.Fatalf("got %d grants after publish, want 1", len(grants.Items))
+	}
+
+	// Move SC to Deprecated and reconcile again — grant must survive.
+	sc.Spec.Phase = servicesv1alpha1.PhaseDeprecated
+	if err := c.Update(context.Background(), sc); err != nil {
+		t.Fatalf("update SC to Deprecated: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), orgRequest(testOrgName)); err != nil {
+		t.Fatalf("post-deprecation Reconcile: %v", err)
+	}
+	if err := c.List(context.Background(), &grants); err != nil {
+		t.Fatalf("list grants after deprecation: %v", err)
+	}
+	if len(grants.Items) != 1 {
+		t.Errorf("got %d grants after deprecation, want 1 (deprecated SC must preserve existing grants)", len(grants.Items))
+	}
+}
+
+// TestOrganizationDefaults_DeprecatedDoesNotIssueNewGrants verifies that
+// a SC that is Deprecated *before* any org has a grant for it does not
+// produce new grants. Deprecated is "hidden from new onboarding" — orgs
+// that did not already have the grant must not pick it up.
+func TestOrganizationDefaults_DeprecatedDoesNotIssueNewGrants(t *testing.T) {
+	org := newOrganization(testOrgName)
+	sc := newPublishedServiceConfiguration(
+		testOrgServiceConfigName,
+		testOrgServiceName,
+		[]servicesv1alpha1.QuotaLimitSpec{
+			newOrgScopedLimit(testOrgLimitName, testOrgMetricName, 1),
+		},
+	)
+	sc.Spec.Phase = servicesv1alpha1.PhaseDeprecated
+	c := newFakeClient(org, sc)
+	r := newReconciler(c)
+
+	if _, err := r.Reconcile(context.Background(), orgRequest(testOrgName)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var grants quotav1alpha1.ResourceGrantList
+	if err := c.List(context.Background(), &grants); err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(grants.Items) != 0 {
+		t.Errorf("got %d grants for deprecated SC, want 0 (no new onboarding from deprecated)", len(grants.Items))
+	}
+}

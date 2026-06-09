@@ -102,68 +102,105 @@ func (r *OrganizationDefaultsReconciler) Reconcile(ctx context.Context, req reco
 	desired := make(map[string]struct{})
 	for i := range scList.Items {
 		sc := &scList.Items[i]
-		if sc.Spec.Phase != servicesv1alpha1.PhasePublished || sc.Spec.Quota == nil {
+		if sc.Spec.Quota == nil {
 			continue
 		}
 
-		for j := range sc.Spec.Quota.Limits {
-			limit := &sc.Spec.Quota.Limits[j]
-			if limit.ConsumerType.Kind != orgConsumerKind {
-				continue
-			}
+		// Phase semantics (from api/v1alpha1/common_types.go):
+		//   Published  — issue new grants and protect existing ones from prune.
+		//   Deprecated — "existing references continue to work"; do not issue
+		//                new grants, but protect existing grants from prune so
+		//                orgs already on this service keep their quota.
+		//   Draft / Retired — neither issue nor protect; existing grants are
+		//                allowed to drop on the next reconcile.
+		switch sc.Spec.Phase {
+		case servicesv1alpha1.PhasePublished:
+			for j := range sc.Spec.Quota.Limits {
+				limit := &sc.Spec.Quota.Limits[j]
+				if limit.ConsumerType.Kind != orgConsumerKind {
+					continue
+				}
 
-			grantName := organizationDefaultGrantName(sc.Spec.ServiceRef.Name, org.Name, limit.Name)
+				grantName := organizationDefaultGrantName(sc.Spec.ServiceRef.Name, org.Name, limit.Name)
 
-			grant := &quotav1alpha1.ResourceGrant{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: quotav1alpha1.GroupVersion.String(),
-					Kind:       "ResourceGrant",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      grantName,
-					Namespace: orgNamespace,
-					Labels: map[string]string{
-						labelManagedBy:    labelManagedByValue,
-						labelOrgDefaults:  "true",
-						labelOwnerService: sc.Spec.ServiceRef.Name,
+				grant := &quotav1alpha1.ResourceGrant{
+					TypeMeta: metav1.TypeMeta{
+						APIVersion: quotav1alpha1.GroupVersion.String(),
+						Kind:       "ResourceGrant",
 					},
-				},
-				Spec: quotav1alpha1.ResourceGrantSpec{
-					ConsumerRef: quotav1alpha1.ConsumerRef{
-						APIGroup: limit.ConsumerType.APIGroup,
-						Kind:     limit.ConsumerType.Kind,
-						Name:     org.Name,
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      grantName,
+						Namespace: orgNamespace,
+						Labels: map[string]string{
+							labelManagedBy:    labelManagedByValue,
+							labelOrgDefaults:  "true",
+							labelOwnerService: sc.Spec.ServiceRef.Name,
+						},
 					},
-					Allowances: []quotav1alpha1.Allowance{
-						{
-							ResourceType: limit.Metric,
-							Buckets: []quotav1alpha1.Bucket{
-								{Amount: limit.DefaultLimit},
+					Spec: quotav1alpha1.ResourceGrantSpec{
+						ConsumerRef: quotav1alpha1.ConsumerRef{
+							APIGroup: limit.ConsumerType.APIGroup,
+							Kind:     limit.ConsumerType.Kind,
+							Name:     org.Name,
+						},
+						Allowances: []quotav1alpha1.Allowance{
+							{
+								ResourceType: limit.Metric,
+								Buckets: []quotav1alpha1.Bucket{
+									{Amount: limit.DefaultLimit},
+								},
 							},
 						},
 					},
-				},
+				}
+
+				if err := r.Patch(ctx, grant, client.Apply,
+					client.FieldOwner(orgDefaultsFieldManager),
+					client.ForceOwnership,
+				); err != nil {
+					// A missing namespace means the resourcemanager controller
+					// has not finished provisioning this org yet; controller-
+					// runtime will retry. Surface the error so the retry shows
+					// up in metrics rather than silently swallowing it.
+					return ctrl.Result{}, fmt.Errorf("apply ResourceGrant %q for limit %q in org %q: %w",
+						grantName, limit.Name, org.Name, err)
+				}
+
+				logger.V(1).Info("applied org default grant",
+					"org", org.Name,
+					"grant", grantName,
+					"limit", limit.Name,
+					"amount", limit.DefaultLimit,
+				)
+				desired[grantName] = struct{}{}
 			}
 
-			if err := r.Patch(ctx, grant, client.Apply,
-				client.FieldOwner(orgDefaultsFieldManager),
-				client.ForceOwnership,
-			); err != nil {
-				// A missing namespace means the resourcemanager controller
-				// has not finished provisioning this org yet; controller-
-				// runtime will retry. Surface the error so the retry shows
-				// up in metrics rather than silently swallowing it.
-				return ctrl.Result{}, fmt.Errorf("apply ResourceGrant %q for limit %q in org %q: %w",
-					grantName, limit.Name, org.Name, err)
+		case servicesv1alpha1.PhaseDeprecated:
+			// Preserve only: add expected grant names to `desired` *iff* the
+			// grant actually exists today, without applying. This keeps orgs
+			// already on the deprecated service from losing their quota at
+			// the next reconcile, while ensuring new orgs do not pick up
+			// grants for a service that is no longer accepting onboarding.
+			for j := range sc.Spec.Quota.Limits {
+				limit := &sc.Spec.Quota.Limits[j]
+				if limit.ConsumerType.Kind != orgConsumerKind {
+					continue
+				}
+				grantName := organizationDefaultGrantName(sc.Spec.ServiceRef.Name, org.Name, limit.Name)
+				var existing quotav1alpha1.ResourceGrant
+				if err := r.Get(ctx, client.ObjectKey{Namespace: orgNamespace, Name: grantName}, &existing); err == nil {
+					desired[grantName] = struct{}{}
+				} else if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("get existing grant %q while protecting deprecated SC %q: %w",
+						grantName, sc.Name, err)
+				}
 			}
 
-			logger.V(1).Info("applied org default grant",
-				"org", org.Name,
-				"grant", grantName,
-				"limit", limit.Name,
-				"amount", limit.DefaultLimit,
-			)
-			desired[grantName] = struct{}{}
+		default:
+			// Draft / Retired: neither issue new grants nor protect existing
+			// ones from prune. Draft is "rejected by admission controllers"
+			// so any quota for the service should disappear; Retired is
+			// terminal.
 		}
 	}
 
