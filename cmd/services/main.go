@@ -25,6 +25,7 @@ import (
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	milowebhook "go.miloapis.com/milo/pkg/webhook"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -54,6 +55,7 @@ func init() {
 	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(billingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(resourcemanagerv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -165,6 +167,10 @@ func main() {
 	}
 	if err = (&controller.ServiceAvailabilityReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
+		os.Exit(1)
+	}
+	if err = (&controller.OrganizationDefaultsReconciler{Scheme: scheme}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "OrganizationDefaults")
 		os.Exit(1)
 	}
 
