@@ -20,6 +20,12 @@ import (
 
 const (
 	quotaFieldManagerName = "services-operator-quota"
+
+	// Standard kubernetes.io annotations propagated from a QuotaLimitSpec's
+	// display metadata onto the generated ResourceRegistration, so portals and
+	// dashboards can render human-readable names and descriptions.
+	annotationDisplayName = "kubernetes.io/display-name"
+	annotationDescription = "kubernetes.io/description"
 )
 
 // QuotaFanOut materializes the downstream quota objects declared by
@@ -109,6 +115,20 @@ func (f *QuotaFanOut) applyResourceRegistrations(
 			}
 		}
 
+		// Surface the limit's display metadata to portals/dashboards via the
+		// standard kubernetes.io annotations. Only set keys that have a value
+		// so server-side apply doesn't write empty annotations.
+		annotations := map[string]string{}
+		if limit.DisplayName != "" {
+			annotations[annotationDisplayName] = limit.DisplayName
+		}
+		if limit.Description != "" {
+			annotations[annotationDescription] = limit.Description
+		}
+		if len(annotations) == 0 {
+			annotations = nil
+		}
+
 		obj := &quotav1alpha1.ResourceRegistration{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: quotav1alpha1.GroupVersion.String(),
@@ -120,6 +140,7 @@ func (f *QuotaFanOut) applyResourceRegistrations(
 					labelManagedBy:    labelManagedByValue,
 					labelOwnerService: serviceName,
 				},
+				Annotations: annotations,
 			},
 			Spec: quotav1alpha1.ResourceRegistrationSpec{
 				ResourceType: limit.Metric,

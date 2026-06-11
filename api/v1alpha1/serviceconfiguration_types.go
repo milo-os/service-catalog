@@ -320,6 +320,22 @@ type QuotaLimitSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
+	// DisplayName is a human-readable name for this quota surfaced in portals
+	// and dashboards (e.g. "Instances"). Propagated to the generated
+	// ResourceRegistration's kubernetes.io/display-name annotation.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Description is a plain-English explanation of what this quota limits
+	// (e.g. "Maximum number of compute instances per project"). Propagated to
+	// the generated ResourceRegistration's kubernetes.io/description annotation.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	Description string `json:"description,omitempty"`
+
 	// Metric is the metric name this limit applies to.
 	// Must match a spec.metrics[].name. Immutable once Published.
 	//
