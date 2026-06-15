@@ -259,3 +259,77 @@ func TestQuotaFanOut_OwnerServiceLabel(t *testing.T) {
 		t.Errorf("ClaimCreationPolicy label %q = %q, want %q", labelManagedBy, ccp.Labels[labelManagedBy], labelManagedByValue)
 	}
 }
+
+// TestQuotaFanOut_DisplayMetadataAnnotations verifies that a limit's
+// DisplayName/Description are propagated to the generated ResourceRegistration
+// as kubernetes.io display annotations, and that a limit without display
+// metadata produces no annotations (rather than empty-string entries).
+func TestQuotaFanOut_DisplayMetadataAnnotations(t *testing.T) {
+	const serviceName = "compute.datumapis.com"
+
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-sc",
+			UID:  "test-uid-display-annotations",
+		},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			Quota: &servicesv1alpha1.ServiceQuotaConfig{
+				Limits: []servicesv1alpha1.QuotaLimitSpec{
+					{
+						Name:         "instances",
+						DisplayName:  "Instances",
+						Description:  "Maximum number of compute instances per project",
+						Metric:       "compute.datumapis.com/instances",
+						DefaultLimit: 10,
+						Unit:         "1/{project}",
+						ConsumerType: servicesv1alpha1.QuotaConsumerType{
+							APIGroup: "resourcemanager.miloapis.com",
+							Kind:     "Project",
+						},
+					},
+					{
+						Name:         "workloads",
+						Metric:       "compute.datumapis.com/workloads",
+						DefaultLimit: 1000,
+						Unit:         "1/{project}",
+						ConsumerType: servicesv1alpha1.QuotaConsumerType{
+							APIGroup: "resourcemanager.miloapis.com",
+							Kind:     "Project",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newQuotaFanOutScheme()
+	base := fake.NewClientBuilder().WithScheme(scheme).Build()
+	capturing := &patchCapturingClient{Client: base}
+	fanOut := &QuotaFanOut{
+		Client:     capturing,
+		Scheme:     scheme,
+		RESTMapper: &stubRESTMapper{},
+	}
+
+	if _, err := fanOut.applyResourceRegistrations(context.Background(), sc, serviceName); err != nil {
+		t.Fatalf("applyResourceRegistrations: %v", err)
+	}
+
+	byResourceType := make(map[string]map[string]string)
+	for _, rr := range capturing.registrations {
+		byResourceType[rr.Spec.ResourceType] = rr.Annotations
+	}
+
+	withMeta := byResourceType["compute.datumapis.com/instances"]
+	if got := withMeta[annotationDisplayName]; got != "Instances" {
+		t.Errorf("display-name annotation = %q, want %q", got, "Instances")
+	}
+	if got := withMeta[annotationDescription]; got != "Maximum number of compute instances per project" {
+		t.Errorf("description annotation = %q, want the limit description", got)
+	}
+
+	if anns := byResourceType["compute.datumapis.com/workloads"]; len(anns) != 0 {
+		t.Errorf("expected no annotations for a limit without display metadata, got %v", anns)
+	}
+}
