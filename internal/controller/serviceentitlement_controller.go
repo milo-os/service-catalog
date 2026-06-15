@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,6 +37,14 @@ const (
 	reasonEntitlementRejected        = "EntitlementRejected"
 	reasonServiceNotPublished        = "ServiceNotPublished"
 )
+
+// pendingApprovalRequeueInterval bounds the latency between a provider
+// recording an approval decision and the entitlement reflecting it. The
+// decision lives on a ServiceConsumer in the provider project's control
+// plane, which this controller doesn't watch; the consumer controller
+// normally propagates it, but if that write is missed the only other
+// trigger is the multi-hour cache resync.
+const pendingApprovalRequeueInterval = 2 * time.Minute
 
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
@@ -127,9 +136,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
 	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
-		// Mirror the caller's ref verbatim; the canonical name lives on status.serviceName.
-		consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
-		consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
+		// Mirror the caller's ref verbatim; the canonical name lives on
+		// status.serviceName. Both fields are immutable after creation — the
+		// webhook enforces this for everyone, including this controller — so
+		// only set them on create.
+		if consumer.CreationTimestamp.IsZero() {
+			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
+			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
+		}
 		return nil
 	})
 	if err != nil {
@@ -174,6 +188,10 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 	}
 
+	// Bound approval latency while waiting on the provider's decision.
+	if desiredPhase == servicesv1alpha1.EntitlementPhasePendingApproval {
+		return ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -295,20 +313,14 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 
 		// The Get returned NotFound, but an entitlement for the same dependency
 		// service may exist under a different metadata.name (e.g. created by the
-		// user directly using the canonical service name). Check by
-		// status.serviceName to avoid creating a duplicate.
-		var allEntitlements servicesv1alpha1.ServiceEntitlementList
-		if err := consumerClient.List(ctx, &allEntitlements); err != nil {
+		// user directly using the canonical service name). Check by the stamped
+		// canonical name via the field index to avoid creating a duplicate.
+		var existingByCanonical servicesv1alpha1.ServiceEntitlementList
+		if err := consumerClient.List(ctx, &existingByCanonical,
+			client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
 			return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
 		}
-		alreadyExists := false
-		for i := range allEntitlements.Items {
-			if allEntitlements.Items[i].Status.ServiceName == depCanonical {
-				alreadyExists = true
-				break
-			}
-		}
-		if alreadyExists {
+		if len(existingByCanonical.Items) > 0 {
 			continue
 		}
 
@@ -441,6 +453,19 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
 	r.Manager = mcMgr
+
+	// Index ServiceEntitlement objects by the canonical service name stamped
+	// on status.serviceName. The multicluster manager propagates the index to
+	// every engaged project cluster. Registered once here; the ServiceConsumer
+	// reconciler relies on this index too.
+	if err := mcMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.ServiceEntitlement{},
+		entitlementServiceNameIndex,
+		entitlementServiceNameIndexer,
+	); err != nil {
+		return fmt.Errorf("failed to index ServiceEntitlement by %s: %w", entitlementServiceNameIndex, err)
+	}
 
 	// Index Service objects by spec.serviceName so entitlements can resolve
 	// their serviceRef by canonical name without a full list scan.

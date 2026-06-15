@@ -77,6 +77,13 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		return ctrl.Result{}, nil
 	}
 
+	// The entitlement reconciler stamps the canonical service name on
+	// status.serviceName on every pass; that status write fires this
+	// controller's own watch, so we're re-triggered event-driven.
+	if consumer.Status.ServiceName == "" {
+		return ctrl.Result{}, nil
+	}
+
 	var (
 		desiredPhase     servicesv1alpha1.ConsumerPhase
 		entitlementPhase servicesv1alpha1.EntitlementPhase
@@ -116,36 +123,30 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	}
 	consumerClient := consumerCluster.GetClient()
 
-	// Look up the ServiceEntitlement in the consumer project by matching the
-	// canonical service name. consumer.Spec.ServiceRef.Name holds the canonical
-	// name (e.g. "compute.miloapis.com"). We prefer to match against
-	// status.serviceName, which is the canonical name stamped by the entitlement
-	// reconciler. If status.serviceName is empty (entitlement not yet reconciled),
-	// we fall back to spec.serviceRef.name so behavior degrades gracefully rather
-	// than silently skipping the entitlement.
+	// Look up the ServiceEntitlement in the consumer project by canonical
+	// service name. By convention, spec.serviceRef holds the caller's
+	// verbatim ref (e.g. "compute") on both objects, while the entitlement
+	// reconciler stamps the canonical name (e.g. "compute.miloapis.com") on
+	// status.serviceName of both. Matching works only off the stamped
+	// canonical name via the field index; unstamped entitlements don't match
+	// and are retried via error backoff until stamped.
+	want := consumer.Status.ServiceName
 	var entitlementList servicesv1alpha1.ServiceEntitlementList
-	if err := consumerClient.List(ctx, &entitlementList); err != nil {
+	if err := consumerClient.List(ctx, &entitlementList,
+		client.MatchingFields{entitlementServiceNameIndex: want}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to list ServiceEntitlements in consumer project: %w", err)
 	}
-	var entitlement *servicesv1alpha1.ServiceEntitlement
-	for i := range entitlementList.Items {
-		item := &entitlementList.Items[i]
-		name := item.Status.ServiceName
-		if name == "" {
-			name = item.Spec.ServiceRef.Name
-		}
-		if name == consumer.Spec.ServiceRef.Name {
-			entitlement = item
-			break
-		}
+	if len(entitlementList.Items) == 0 {
+		// Consumers are only created by the entitlement reconciler, so a
+		// decided consumer with no matching entitlement is an inconsistency,
+		// not a normal state. The only legitimate case is a deletion race
+		// (entitlement deleted, consumer delete in flight), which self-resolves
+		// under error backoff: the entitlement finalizer deletes the consumer,
+		// after which this reconcile short-circuits on NotFound or the
+		// deletion timestamp.
+		return ctrl.Result{}, fmt.Errorf("no ServiceEntitlement matching service %q found in consumer project %q", want, consumerProject)
 	}
-	if entitlement == nil {
-		// Entitlement was deleted out from under us; nothing to update.
-		logger.Info("no matching ServiceEntitlement found in consumer project, skipping",
-			"consumerProject", consumerProject,
-			"serviceRef", consumer.Spec.ServiceRef.Name)
-		return ctrl.Result{}, nil
-	}
+	entitlement := &entitlementList.Items[0]
 
 	original := entitlement.Status.DeepCopy()
 	entitlement.Status.Phase = entitlementPhase

@@ -159,6 +159,16 @@ func TestServiceEntitlementReconciler_GatedPendingApproval(t *testing.T) {
 
 	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
 
+	// Pin the bounded requeue for pending approvals (see
+	// pendingApprovalRequeueInterval).
+	res, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil {
+		t.Fatalf("reconcile pending entitlement: %v", err)
+	}
+	if res != (ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}) {
+		t.Errorf("pending reconcile result = %+v, want RequeueAfter=%v", res, pendingApprovalRequeueInterval)
+	}
+
 	var got servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); err != nil {
 		t.Fatalf("get entitlement: %v", err)
@@ -326,6 +336,66 @@ func TestServiceEntitlementReconciler_StampsCanonicalServiceNameInStatus(t *test
 	// spec.serviceRef.name must NOT be mutated by the reconciler.
 	if got.Spec.ServiceRef.Name != testServiceSlug {
 		t.Errorf("spec.serviceRef.name = %q, want original %q (reconciler must not mutate spec)", got.Spec.ServiceRef.Name, testServiceSlug)
+	}
+}
+
+// TestServiceEntitlementReconciler_DoesNotRewriteExistingConsumerSpec verifies
+// the reconciler leaves the identity fields of a pre-existing ServiceConsumer
+// alone. spec.serviceRef and spec.consumerProjectRef are immutable after
+// creation (enforced by the ServiceConsumer webhook for everyone, including
+// the controller), so rewriting them on a consumer whose stored ref differs
+// would produce an Update the webhook rejects, wedging the reconcile.
+func TestServiceEntitlementReconciler_DoesNotRewriteExistingConsumerSpec(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	// Pre-existing consumer (old vintage): the canonical name was written
+	// into the immutable spec.serviceRef directly. CreationTimestamp is set
+	// explicitly because the fake client does not stamp it on seeded objects.
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	existingConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              consumerName,
+			CreationTimestamp: metav1.NewTime(time.Now()),
+		},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceName},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient(existingConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var sc servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
+		t.Fatalf("get serviceconsumer: %v", err)
+	}
+	if sc.Spec.ServiceRef.Name != testServiceName {
+		t.Errorf("consumer.spec.serviceRef.name = %q, want untouched %q (identity fields are immutable; the reconciler must not rewrite them on existing consumers)", sc.Spec.ServiceRef.Name, testServiceName)
+	}
+	if sc.Spec.ConsumerProjectRef.Name != testConsumerProject {
+		t.Errorf("consumer.spec.consumerProjectRef.name = %q, want untouched %q", sc.Spec.ConsumerProjectRef.Name, testConsumerProject)
+	}
+	// Status reconciliation must still proceed for the existing consumer.
+	if sc.Status.ServiceName != testServiceName {
+		t.Errorf("consumer.status.serviceName = %q, want canonical %q", sc.Status.ServiceName, testServiceName)
+	}
+	if sc.Status.Phase != servicesv1alpha1.ConsumerPhaseActive {
+		t.Errorf("consumer phase = %q, want Active", sc.Status.Phase)
 	}
 }
 
