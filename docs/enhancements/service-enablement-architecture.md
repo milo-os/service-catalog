@@ -304,8 +304,7 @@ the consumer project.
    - Set `ServiceConsumer.status.phase = Active` via the provider cluster client.
    - Set `ServiceEntitlement.status.phase = Active` via the consumer cluster client.
    - Stamp `status.entitledAt`.
-   - Emit downstream signals (billing enrollment, quota allocation — see
-     [Downstream Push Architecture](./downstream-push-architecture.md)).
+   - Emit downstream signals (billing enrollment, quota allocation).
 6. If `mode == GatedByProvider`:
    - Set both objects to `PendingApproval`.
    - Re-enqueue when `ServiceConsumer` is updated (provider sets approval).
@@ -492,7 +491,7 @@ filter begins scoping them to the project control-plane context.
 | Entitlement reconciler + dependency graph | `services` (this repo) |
 | Consumer reconciler + approval flow | `services` (this repo) |
 | Multicluster-runtime wiring + Milo provider | `services` (this repo) — same pattern as quota controllers in `milo` |
-| Billing enrollment signal | `services` reconciler → `billing` (downstream push, see [architecture](./downstream-push-architecture.md)) |
+| Billing enrollment signal | `services` reconciler → `billing` (downstream push) |
 | Quota allocation | `services` reconciler → `quota` (future — same push pattern) |
 | IAM role provisioning | `services` reconciler → `iam` (future) |
 | Provider-facing approval UX | Consumer of `ServiceConsumer` via project control plane |
@@ -521,10 +520,11 @@ filter begins scoping them to the project control-plane context.
    requeue rather than fail permanently. Define the requeue backoff policy.
 
 4. **Downstream signals.** The entitlement reconciler needs to notify billing
-   and quota when a project activates or deactivates a service. The
-   [Downstream Push Architecture](./downstream-push-architecture.md) doc covers
-   the push pattern for `MeterDefinition`; service enablement signals should
-   follow the same mechanism. Confirm whether billing needs a new event type or
+   and quota when a project activates or deactivates a service. The same
+   downstream push pattern used for `MeterDefinition` — the `services`
+   reconciler server-side-applies the billing/quota types it owns — applies
+   here; service enablement signals should follow the same mechanism. Confirm
+   whether billing needs a new event type or
    whether an existing push channel can carry the enrollment signal.
 
 ---
@@ -534,7 +534,6 @@ filter begins scoping them to the project control-plane context.
 - [PR #8 — Service Enablement Enhancement](https://github.com/milo-os/service-catalog/pull/8)
 - [Service Registry](./service-registry.md)
 - [Metering Definitions](./metering-definitions.md)
-- [Downstream Push Architecture](./downstream-push-architecture.md)
 - [Milo project storage decorator](../../fraud/tmp/milo/internal/apiserver/storage/project/)
 - [Milo multicluster-runtime provider](../../fraud/tmp/milo/pkg/multicluster-runtime/milo/provider.go)
 - [Discovery contexts doc](../../fraud/tmp/milo/docs/architecture/discovery-contexts.md)
