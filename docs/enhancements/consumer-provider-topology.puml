@@ -1,0 +1,25 @@
+@startuml consumer-provider-topology
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+!include datum-theme.puml
+
+title Two-manager topology
+
+System_Ext(provider_cp, "Provider project", "Holds the ServiceConsumer objects")
+System_Ext(consumer_cp, "Consumer projects", "Only those using the service")
+
+Container_Boundary(operator, "Service operator process") {
+    Container_Boundary(provider_mgr, "providerMgr — single manager") {
+        Component(provider, "consumer.Provider", "Reusable library", "Watches ServiceConsumer; engages and disengages consumer clusters")
+    }
+    Container_Boundary(mc_mgr, "consumerMcMgr — multicluster manager") {
+        Component(controllers, "Operator's reconcilers", "e.g. LocationBinding", "Manage resources in each engaged consumer project")
+    }
+}
+
+Rel_L(provider, provider_cp, "Watches ServiceConsumer")
+Rel_R(provider, controllers, "Engages / disengages the consumer clusters they run on")
+Rel_R(controllers, consumer_cp, "Reads, creates, updates & cleans up resources")
+
+SHOW_LEGEND()
+@enduml
