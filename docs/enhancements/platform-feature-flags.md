@@ -49,13 +49,13 @@ Some product behavior should default on for everyone: auto-provisioning a defaul
 
 | Mechanism | Scope | What it answers |
 |-----------|-------|-----------------|
-| [`ServiceEntitlement`](./service-enablement.md) | Project | Has this project opted into this managed service? |
-| Quota `AllowanceBucket` where `ResourceRegistration.type = Feature` | Organization | Does this org have entitlement to a commerce- or tier-gated feature? |
-| Env / build vars (e.g. Datum desktop app) | Install / release | Is this binary or deployment configured to do X? |
+| [Service entitlement](./service-enablement.md) | Project | Has this project opted into this managed service? |
+| Organization feature entitlement | Organization | Does this org get a commerce- or tier-gated feature? |
+| Client build / environment settings | Install / release | Is this client configured to do X? |
 
-Auto-create WAF on tunnel create shows the gap. It is not "this project enabled networking." It is platform-wide behavior wired into create flows in the Datum desktop app and the cloud portal.
+Auto-create WAF on tunnel create shows the gap. It is not "this project enabled networking." It is platform-wide behavior built into the create flows of the Datum desktop app and the cloud portal.
 
-Org-scoped quota Feature buckets work for billing-gated UI but simulating a global rollout means creating or updating buckets per org. Env vars on the Datum desktop app are not shared with the portal and cannot be flipped mid-incident without a release.
+Organization feature entitlements work well for billing-gated UI, but driving a global rollout that way means changing entitlements org by org. Client environment settings are not shared between the desktop app and the portal, and can't be flipped mid-incident without a release.
 
 ### Goals
 
@@ -93,14 +93,14 @@ The Datum desktop app checks platform flags at session start. If Milo is unreach
 
 ### Notes/Constraints/Caveats
 
-- A flag's initial `spec.enabled` value sets where it starts when first registered. It is not a client-side fallback when the platform is unreachable; clients still fail closed.
+- A flag's initial value sets where it starts when first registered. It is not a client-side fallback when the platform is unreachable; clients still fail closed.
 - During rollout, the Datum desktop app may honor an existing local override until the platform flag is everywhere. When both exist, an explicit operator "off" at platform scope wins.
 - Today's org portal feature flags are read-only evaluation with no audit timeline and no operator toggle. Platform feature flags are a separate primitive for platform-wide operator control.
 
 <<[UNRESOLVED]>>
 - Retired flags: remain readable forever in list/get APIs, or hidden from discovery while preserved in etcd?
 - Change reason required on disable only, on every disable, or never?
-- `status.history` cap (64 suggested): large enough for incident windows, small enough to keep status bounded?
+- On-object change history cap (64 suggested): large enough for incident windows, small enough to keep the record bounded?
 - Cache TTL (5s suggested): tradeoff between incident response speed and API load.
 <<[/UNRESOLVED]>>
 
