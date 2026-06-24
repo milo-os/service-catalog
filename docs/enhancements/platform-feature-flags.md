@@ -35,11 +35,11 @@ latest-milestone: "v0.x"
 
 ## Summary
 
-Rollout and kill-switch behavior on Milo is split across org-scoped quota Feature buckets, per-project service entitlements, and client env vars. None of that gives platform operators one runtime switch that applies everywhere.
+Platform operators have no single runtime switch to turn product behavior on or off everywhere. Today that behavior is split across org-scoped quota Feature buckets, per-project service entitlements, and client-side environment variables. None of those lets an operator flip one behavior for every organization, project, and client at once.
 
-This enhancement adds `PlatformFeatureFlag`, a cluster-scoped resource on `services.miloapis.com/v1alpha1`. Platform operators PATCH `status.enabled` on the root Platform API to turn behavior on or off for every org, project, and client. Clients evaluate flags fail-closed. Audit flows through apiserver audit, on-object `status.history`, and `ActivityPolicy` rules (the same pattern billing uses, not the read-only org `AllowanceBucket` path in cloud portal).
+This enhancement adds platform feature flags: a catalog of named, platform-wide on/off switches the platform team controls at runtime. An operator can turn a behavior on or off in seconds, with no redeploy and no per-organization changes, and every change is recorded on the activity timeline showing who changed what and why. Clients evaluate flags fail-closed, so if the platform can't be reached the gated behavior stays off rather than guessing.
 
-The first motivating flag is `networking.datumapis.com/auto-create-traffic-protection` (default on), shared by the Datum desktop app and cloud portal for auto-create WAF / traffic protection on tunnel and edge create.
+The first flag is auto-create traffic protection on tunnel and edge create (default on), shared by the Datum desktop app and the cloud portal.
 
 Sibling catalog docs: [`Service`](./service-registry.md), [`MeterDefinition`](./metering-definitions.md), [`MonitoredResourceType`](./monitored-resource-types.md). Enhancement template: [datum-cloud/enhancements/template](https://github.com/datum-cloud/enhancements/tree/main/enhancements/template).
 
@@ -59,11 +59,11 @@ Org-scoped quota Feature buckets work for billing-gated UI but simulating a glob
 
 ### Goals
 
-- One cluster-scoped catalog object per platform rollout or kill-switch, keyed by reverse-DNS `spec.key`.
-- Platform operators PATCH `status.enabled` on the root Platform API; same result for every org, project, and user.
-- Fail-closed client evaluation: behavior stays off unless lookup succeeds and finds an `Active` flag with `status.enabled: true`.
-- Audit trail via apiserver audit, `status.lastTransition` / `status.history`, and `ActivityPolicy` summaries.
-- First consumer: `networking.datumapis.com/auto-create-traffic-protection` (Datum desktop app + cloud portal).
+- One named, platform-wide switch per rollout or kill-switch behavior, owned by the platform team.
+- Operators turn a behavior on or off once, with the same result for every organization, project, and user, and without a redeploy or per-org changes.
+- Behavior stays off when the platform can't confirm a flag is on (fail-closed), so outages can't silently turn risky defaults on.
+- A clear audit trail of every change, surfaced on the activity timeline: who flipped a flag, when, and why.
+- First consumer: auto-create traffic protection on tunnel / edge create, shared by the Datum desktop app and cloud portal.
 
 ### Non-Goals
 
@@ -75,27 +75,27 @@ Org-scoped quota Feature buckets work for billing-gated UI but simulating a glob
 
 ## Proposal
 
-Introduce `PlatformFeatureFlag` on `services.miloapis.com/v1alpha1`, cluster-scoped, Platform parent context (root etcd, same as `Service` and `MeterDefinition`). Operators register flags once, flip `status.enabled` once, and clients pick up changes within cache TTL.
+Add platform feature flags as a new catalog primitive: named, platform-wide switches that the platform team registers once and controls at runtime. An operator registers a flag, turns it on or off, and clients pick up the change within a few seconds. Each flag is a simple boolean today, on or off for everyone, with room to grow later. The concrete API shape, evaluation rules, and audit wiring live in [Design Details](#design-details).
 
 ### User Stories
 
 #### Platform operator disables auto-create WAF during an incident
 
-An operator sees false positives from default traffic protection rules. They open the platform operator UI (or use kubectl), PATCH `status.enabled: false` on `auto-create-traffic-protection`, and supply a change reason. Within client cache TTL, the Datum desktop app stops auto-creating `TrafficProtectionPolicy` on tunnel create and the cloud portal stops defaulting WAF enforcement to on. Activity timeline shows who disabled the flag and when.
+An operator sees false positives from default traffic protection rules. From the platform operator UI (or the command line), they turn the auto-create traffic protection flag off and record why. Within a few seconds, the Datum desktop app stops auto-creating traffic protection on tunnel create and the cloud portal stops defaulting WAF enforcement to on. The activity timeline shows who disabled the flag and when.
 
 #### Platform operator re-enables after fix
 
-After deploying updated rules, the operator PATCHes `status.enabled: true`. New tunnels and edge creates resume auto-provisioning. `status.history` on the object records the flip without a separate audit query.
+After deploying updated rules, the operator turns the flag back on. New tunnels and edge creates resume auto-provisioning. The flag's own change history records the flip, so operators don't need a separate audit query.
 
 #### Client evaluates flag fail-closed
 
-The Datum desktop app fetches platform flags at session start. If the Milo API is unreachable, auto-create WAF stays off rather than assuming default-on from env vars or a stale cache.
+The Datum desktop app checks platform flags at session start. If Milo is unreachable, auto-create traffic protection stays off rather than assuming on from a stale or local value.
 
 ### Notes/Constraints/Caveats
 
-- `spec.defaultEnabled` documents the bootstrap value when the object is first created. It is not a client-side fallback when the API is unreachable.
-- During rollout, the Datum desktop app may honor `DATUM_CONNECT_CREATE_TRAFFIC_PROTECTION_POLICIES=false` as a local override until the platform flag is everywhere. When both exist, explicit operator off at platform scope wins.
-- Org portal feature flags today (OpenFeature + org `AllowanceBucket`) are read-only evaluation with no `ActivityPolicy` and no operator toggle. `PlatformFeatureFlag` is a separate primitive.
+- A flag's initial `spec.enabled` value sets where it starts when first registered. It is not a client-side fallback when the platform is unreachable; clients still fail closed.
+- During rollout, the Datum desktop app may honor an existing local override until the platform flag is everywhere. When both exist, an explicit operator "off" at platform scope wins.
+- Today's org portal feature flags are read-only evaluation with no audit timeline and no operator toggle. Platform feature flags are a separate primitive for platform-wide operator control.
 
 <<[UNRESOLVED]>>
 - Retired flags: remain readable forever in list/get APIs, or hidden from discovery while preserved in etcd?
@@ -126,13 +126,13 @@ spec:
   key: networking.datumapis.com/auto-create-traffic-protection
   displayName: Auto-create traffic protection on tunnel / edge create
   description: When enabled, clients auto-provision a default TrafficProtectionPolicy on create.
-  defaultEnabled: true
+  enabled: true          # operator toggle; the field operators PATCH
   owner:
     serviceRef:
       name: networking.datumapis.com
   phase: Active
 status:
-  enabled: true
+  enabled: true          # controller mirrors spec.enabled; clients read this
   lastTransition:
     enabled: true
     changedAt: "2026-06-19T14:22:00Z"
@@ -171,11 +171,57 @@ Two names, deliberately: `metadata.name` is the Kubernetes slug; `spec.key` is t
 
 Lifecycle in `spec.phase`: `Draft` → `Active` → `Retired`. Evaluators treat `Draft` and `Retired` as off. Optional `spec.owner.serviceRef` links to a registered `Service` for display and audit lineage only.
 
+Operators write `spec.enabled`. The controller reconciles it into `status.enabled` and records each change in `status.history`. Clients read `status.enabled`, the reconciled value, so the live state always reflects what the controller has accepted.
+
 ### Access control
 
-Platform operators hold RBAC to create, read, update, and patch `PlatformFeatureFlag` on the root Platform API, including `status`. Service owners do not get write access through `spec.owner.serviceRef`.
+Access is modeled with Milo IAM (`iam.miloapis.com/v1alpha1`), the same way the rest of this service handles RBAC. A `ProtectedResource` declares the permissions for `PlatformFeatureFlag` (Platform parent context), and `Role` objects bundle them.
 
-v0 adds a platform-operator role (for example `services.miloapis.com-platformfeatureflag-admin`) with `platformfeatureflags.get`, `list`, `watch`, `update`, and `patch`. Portal operator UI and break-glass kubectl use the same bindings.
+```yaml
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-platformfeatureflag
+spec:
+  serviceRef:
+    name: services.miloapis.com
+  kind: PlatformFeatureFlag
+  plural: platformfeatureflags
+  singular: platformfeatureflag
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus
+```
+
+Operators toggle a flag by writing `spec.enabled`. The controller owns `status`: it reconciles `spec.enabled` into `status.enabled` and appends `status.history`, so operators never write `status` directly (only the controller holds `updateStatus`). Service owners get no write access through `spec.owner.serviceRef`.
+
+Flipping a flag is high blast radius, so v0 adds a dedicated `services.miloapis.com-feature-flag-admin` role kept separate from full services admin. Platform operators can hold it on its own. Matching the existing `-approver` and `-entitlement-admin` precedent, `services.miloapis.com-admin` inherits it, and read access (`get`, `list`, `watch`) folds into `services.miloapis.com-viewer`. The portal operator UI and break-glass kubectl bind to the same role.
+
+```yaml
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-feature-flag-admin
+  annotations:
+    kubernetes.io/display-name: Feature Flag Admin
+    kubernetes.io/description: "Register and toggle platform feature flags"
+spec:
+  launchStage: Alpha
+  includedPermissions:
+    - services.miloapis.com/platformfeatureflags.get
+    - services.miloapis.com/platformfeatureflags.list
+    - services.miloapis.com/platformfeatureflags.watch
+    - services.miloapis.com/platformfeatureflags.create
+    - services.miloapis.com/platformfeatureflags.update
+    - services.miloapis.com/platformfeatureflags.patch
+    - services.miloapis.com/platformfeatureflags.delete
+```
 
 ### Evaluation
 
@@ -238,10 +284,10 @@ spec:
     kind: PlatformFeatureFlag
   auditRules:
     - name: enable
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && has(audit.requestObject.status) && audit.requestObject.status.enabled == true"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && has(audit.requestObject.spec) && audit.requestObject.spec.enabled == true"
       summary: "{{ actor }} enabled platform feature {{ audit.requestObject.spec.key }}"
     - name: disable
-      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && has(audit.requestObject.status) && audit.requestObject.status.enabled == false"
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && has(audit.requestObject.spec) && audit.requestObject.spec.enabled == false"
       summary: "{{ actor }} disabled platform feature {{ audit.requestObject.spec.key }}"
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
@@ -253,7 +299,7 @@ Change reason on write: portal UI or annotation `services.miloapis.com/change-re
 ```mermaid
 flowchart LR
     subgraph write [Operator action]
-        Patch["PATCH status.enabled"]
+        Patch["PATCH spec.enabled"]
         Reason["Optional reason"]
     end
     subgraph record [Audit trail]
@@ -326,21 +372,21 @@ await isPlatformFeatureEnabled(
 #### How can this feature be enabled / disabled in a live cluster?
 
 - [x] Other
-  - Mechanism: PATCH `status.enabled` on the cluster-scoped `PlatformFeatureFlag` object (Platform parent context / root API).
+  - Mechanism: PATCH `spec.enabled` on the cluster-scoped `PlatformFeatureFlag` object (Platform parent context / root API).
   - Control plane downtime: not required.
   - Node downtime / reprovisioning: not required. Clients pick up changes within cache TTL.
 
 #### Does enabling the feature change any default behavior?
 
-Yes for registered flags with `defaultEnabled: true` and initial `status.enabled: true`. The motivating flag turns on auto-create traffic protection on tunnel / edge create when enabled.
+Yes for registered flags created with `spec.enabled: true`. The motivating flag turns on auto-create traffic protection on tunnel / edge create when enabled.
 
 #### Can the feature be disabled once it has been enabled?
 
-Yes. PATCH `status.enabled: false`. Clients stop auto-provisioning on create within cache TTL. Existing resources are not deleted. Optional admission can block new CREATEs when off.
+Yes. PATCH `spec.enabled: false`. Clients stop auto-provisioning on create within cache TTL. Existing resources are not deleted. Optional admission can block new CREATEs when off.
 
 #### What happens if we reenable the feature if it was previously rolled back?
 
-PATCH `status.enabled: true`. New create flows resume auto-provision. No migration of resources created while the flag was off.
+PATCH `spec.enabled: true`. New create flows resume auto-provision. No migration of resources created while the flag was off.
 
 #### Are there any tests for feature enablement/disablement?
 
