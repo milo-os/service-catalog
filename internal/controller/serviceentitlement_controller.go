@@ -32,10 +32,10 @@ import (
 const serviceEntitlementFinalizer = "services.miloapis.com/service-entitlement"
 
 const (
-	reasonEntitlementActive          = "EntitlementActive"
-	reasonEntitlementPendingApproval = "EntitlementPendingApproval"
-	reasonEntitlementRejected        = "EntitlementRejected"
-	reasonServiceNotPublished        = "ServiceNotPublished"
+	reasonEntitlementActive          = servicesv1alpha1.ReasonEntitlementActive
+	reasonEntitlementPendingApproval = servicesv1alpha1.ReasonEntitlementPendingApproval
+	reasonEntitlementRejected        = servicesv1alpha1.ReasonEntitlementRejected
+	reasonServiceNotPublished        = servicesv1alpha1.ReasonServiceNotPublished
 )
 
 // pendingApprovalRequeueInterval bounds the latency between a provider

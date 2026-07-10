@@ -28,7 +28,7 @@ const serviceFinalizer = "services.miloapis.com/service"
 const (
 	// ConditionTypeReady is the condition type used across the
 	// services group to surface overall resource readiness.
-	ConditionTypeReady = "Ready"
+	ConditionTypeReady = servicesv1alpha1.ConditionTypeReady
 
 	// ConditionTypePublished mirrors spec.phase: Status=True when
 	// the resource is in one of the post-Draft phases (Published,
