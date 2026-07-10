@@ -436,6 +436,8 @@ type ServiceConfigurationStatus struct {
 // "compute-miloapis-com") to make the 1:1 relationship between Service
 // and ServiceConfiguration obvious at a glance.
 //
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster

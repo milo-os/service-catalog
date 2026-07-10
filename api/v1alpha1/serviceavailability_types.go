@@ -119,6 +119,8 @@ type ServiceAvailabilityStatus struct {
 // service is deployed and operational at a specific Location, decoupled
 // from the Location's own hardware readiness.
 //
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
