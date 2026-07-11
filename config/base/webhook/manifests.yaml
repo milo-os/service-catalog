@@ -57,6 +57,46 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-services-miloapis-com-v1alpha1-serviceagent
+  failurePolicy: Fail
+  name: vserviceagent.kb.io
+  rules:
+  - apiGroups:
+    - services.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - serviceagents
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-services-miloapis-com-v1alpha1-serviceagentconfiguration
+  failurePolicy: Fail
+  name: vserviceagentconfiguration.kb.io
+  rules:
+  - apiGroups:
+    - services.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - serviceagentconfigurations
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-services-miloapis-com-v1alpha1-serviceconfiguration
   failurePolicy: Fail
   name: vserviceconfiguration.kb.io
