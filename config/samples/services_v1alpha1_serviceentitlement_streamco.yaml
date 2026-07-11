@@ -1,0 +1,13 @@
+# A consumer-project admin creates this in their project's virtual
+# control plane to enable StreamCo Streaming (and, with a Published
+# agent + configuration, receive the projected AgentBinding).
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: streaming-streamco-example
+spec:
+  serviceRef:
+    name: streaming-streamco-example

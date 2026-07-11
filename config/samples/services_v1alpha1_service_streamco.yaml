@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: streaming-streamco-example
+spec:
+  serviceName: streaming.streamco.example
+  phase: Published
+  displayName: StreamCo Streaming
+  description: Managed event-stream pipelines with diagnostics for lag and throughput.
+  owner:
+    producerProjectRef:
+      name: streamco-platform

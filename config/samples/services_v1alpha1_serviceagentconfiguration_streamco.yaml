@@ -1,0 +1,55 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: streamco-streaming-agent-v1
+spec:
+  serviceAgentRef:
+    name: streamco-streaming-agent
+  version: v1
+  phase: Published
+  knowledge:
+    sources:
+      - type: LLMDocs
+        title: StreamCo service overview
+        url: http://127.0.0.1:7810/llms-full.txt
+      - type: Runbook
+        title: Diagnosing stream lag
+        url: http://127.0.0.1:7810/runbooks/lag.md
+    concepts:
+      - gvk:
+          group: streaming.streamco.example
+          kind: Stream
+        summary: >-
+          A managed event stream. Streams report status, requests per
+          second, region, and consumer lag in seconds.
+      - gvk:
+          group: streaming.streamco.example
+          kind: Pipeline
+        summary: >-
+          A processing pipeline attached to a stream. Pipelines can be
+          diagnosed for lag findings and remediation recommendations.
+  tools:
+    mcpServers:
+      - name: streamco
+        endpoint: http://127.0.0.1:7810/mcp
+        toolSelector:
+          include:
+            - streams_list
+            - streams_get
+            - pipeline_diagnose
+        mutating: []
+  authority:
+    reads:
+      - gvk:
+          group: streaming.streamco.example
+          kind: "*"
+    maxTaskDurationSeconds: 120
+  metrics:
+    - name: streaming.streamco.example/agent/tool-invocations
+      displayName: Agent tool invocations
+      description: Number of StreamCo MCP tool calls made by the assistant.
+      kind: Delta
+      unit: "{invocation}"

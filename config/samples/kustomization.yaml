@@ -2,4 +2,8 @@
 resources:
 - services_v1alpha1_service.yaml
 - services_v1alpha1_serviceconfiguration.yaml
+- services_v1alpha1_service_streamco.yaml
+- services_v1alpha1_serviceagent_streamco.yaml
+- services_v1alpha1_serviceagentconfiguration_streamco.yaml
+- services_v1alpha1_serviceentitlement_streamco.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

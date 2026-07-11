@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: streamco-streaming-agent
+spec:
+  serviceRef:
+    name: streaming-streamco-example
+  phase: Published
+  displayName: StreamCo Streaming Agent
+  description: >-
+    Answers questions about StreamCo streams and diagnoses pipeline lag
+    using StreamCo's MCP tools and runbooks.
