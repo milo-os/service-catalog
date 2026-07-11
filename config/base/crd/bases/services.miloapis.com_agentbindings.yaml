@@ -1,0 +1,387 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+    discovery.miloapis.com/parent-contexts: Project
+  name: agentbindings.services.miloapis.com
+spec:
+  group: services.miloapis.com
+  names:
+    kind: AgentBinding
+    listKind: AgentBindingList
+    plural: agentbindings
+    singular: agentbinding
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.serviceName
+      name: Service
+      type: string
+    - jsonPath: .spec.serviceAgentRef.name
+      name: Agent
+      type: string
+    - jsonPath: .spec.configurationVersion
+      name: Version
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AgentBinding is the Schema for the agentbindings API. It is the
+          consumer-project projection of a Published ServiceAgent: everything
+          the assistant runtime needs (knowledge sources, allow-listed MCP
+          tools, authority envelope) denormalized into the consumer's virtual
+          control plane by the services operator.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AgentBindingSpec defines the desired state of an AgentBinding.
+
+              An AgentBinding is the consumer-facing projection of a Published
+              ServiceAgent and its active (latest Published)
+              ServiceAgentConfiguration into an entitled consumer project. The
+              spec is fully denormalized -- knowledge, tools, and authority are
+              copied verbatim from the active configuration -- so consumers never
+              read platform-scoped catalog objects.
+
+              AgentBindings are written exclusively by the services operator when
+              all three gates are open (ServiceEntitlement Active, ServiceAgent
+              Published, at least one Published ServiceAgentConfiguration) and
+              pruned when any gate closes. They carry a controller owner reference
+              to the ServiceEntitlement so garbage collection reclaims them if the
+              operator misses a delete.
+            properties:
+              authority:
+                description: |-
+                  Authority is copied from the active configuration's
+                  spec.authority.
+                properties:
+                  maxTaskDurationSeconds:
+                    description: |-
+                      MaxTaskDurationSeconds bounds how long a single agent task may
+                      run.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  reads:
+                    description: |-
+                      Reads lists the Kubernetes Kinds the agent may read in the
+                      consumer project. Kind may be "*" to allow every Kind in the
+                      group.
+                    items:
+                      description: |-
+                        AgentReadAuthority grants read access to one Kubernetes Kind (or a
+                        whole group via kind "*").
+                      properties:
+                        gvk:
+                          description: |-
+                            GVK identifies the readable Kind. Version is deliberately
+                            omitted; kind may be "*".
+                          properties:
+                            group:
+                              description: |-
+                                Group is the Kubernetes API group of the Kind (e.g.
+                                "compute.miloapis.com").
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            kind:
+                              description: Kind is the Kubernetes Kind (e.g. "Instance").
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - group
+                          - kind
+                          type: object
+                      required:
+                      - gvk
+                      type: object
+                    maxItems: 64
+                    type: array
+                type: object
+              configurationVersion:
+                description: |-
+                  ConfigurationVersion is the spec.version of the active
+                  ServiceAgentConfiguration this binding was projected from.
+                maxLength: 64
+                type: string
+              knowledge:
+                description: |-
+                  Knowledge is copied from the active configuration's
+                  spec.knowledge.
+                properties:
+                  concepts:
+                    description: |-
+                      Concepts lists the Kubernetes Kinds the agent should understand,
+                      each with a short summary.
+                    items:
+                      description: |-
+                        AgentConcept ties a Kubernetes Kind to a short summary the agent can
+                        ground on.
+                      properties:
+                        gvk:
+                          description: |-
+                            GVK pins the concept to a Kubernetes Kind. Version is
+                            deliberately omitted, mirroring MonitoredResourceTypeSpec.
+                          properties:
+                            group:
+                              description: |-
+                                Group is the Kubernetes API group of the Kind (e.g.
+                                "compute.miloapis.com").
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            kind:
+                              description: Kind is the Kubernetes Kind (e.g. "Instance").
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                          required:
+                          - group
+                          - kind
+                          type: object
+                        summary:
+                          description: Summary is a plain-English explanation of the
+                            Kind.
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                      required:
+                      - gvk
+                      - summary
+                      type: object
+                    maxItems: 64
+                    type: array
+                  sources:
+                    description: |-
+                      Sources lists documents the assistant may fetch and append to its
+                      context, labeled with provenance.
+                    items:
+                      description: AgentKnowledgeSource is a single fetchable knowledge
+                        document.
+                      properties:
+                        title:
+                          description: Title is an optional human-readable label for
+                            the document.
+                          maxLength: 128
+                          type: string
+                        type:
+                          description: Type classifies the document.
+                          enum:
+                          - LLMDocs
+                          - Runbook
+                          - Markdown
+                          type: string
+                        url:
+                          description: URL is where the document is served from.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                      required:
+                      - type
+                      - url
+                      type: object
+                    maxItems: 64
+                    type: array
+                type: object
+              serviceAgentRef:
+                description: |-
+                  ServiceAgentRef identifies the projected ServiceAgent by
+                  metadata.name.
+                properties:
+                  name:
+                    description: |-
+                      Name is the metadata.name of the cluster-scoped ServiceAgent
+                      resource.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              serviceName:
+                description: |-
+                  ServiceName is the canonical reverse-DNS identifier of the
+                  service (e.g. "streaming.streamco.example"), denormalized from
+                  Service.spec.serviceName so consumers can attribute usage without
+                  a platform lookup.
+                maxLength: 253
+                minLength: 1
+                type: string
+              serviceRef:
+                description: |-
+                  ServiceRef identifies the Service the binding belongs to, by
+                  metadata.name, mirroring ServiceEntitlement.spec.serviceRef.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              tools:
+                description: Tools is copied from the active configuration's spec.tools.
+                properties:
+                  mcpServers:
+                    description: |-
+                      MCPServers lists the MCP servers the assistant may connect to on
+                      the consumer's behalf. Entries are keyed by .name, which must be
+                      unique within the document.
+                    items:
+                      description: |-
+                        AgentMCPServer declares one MCP server endpoint and the allow-listed
+                        tools it exposes.
+                      properties:
+                        endpoint:
+                          description: Endpoint is the Streamable HTTP endpoint of
+                            the MCP server.
+                          maxLength: 2048
+                          minLength: 1
+                          type: string
+                        mutating:
+                          description: |-
+                            Mutating lists the subset of included tools that mutate state.
+                            Downstream policy may require confirmation before invoking them.
+                          items:
+                            type: string
+                          maxItems: 64
+                          type: array
+                          x-kubernetes-list-type: set
+                        name:
+                          description: |-
+                            Name is a short DNS-label identifier for the server. Downstream
+                            consumers namespace exposed tools as "<name>__<tool>".
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        toolSelector:
+                          description: |-
+                            ToolSelector allow-lists the tools consumers may call. Tools not
+                            in the include list are never exposed, regardless of what the
+                            server advertises.
+                          properties:
+                            include:
+                              description: Include lists the tool names to expose.
+                              items:
+                                type: string
+                              maxItems: 64
+                              type: array
+                              x-kubernetes-list-type: set
+                          type: object
+                      required:
+                      - endpoint
+                      - name
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+            required:
+            - serviceAgentRef
+            - serviceName
+            - serviceRef
+            type: object
+          status:
+            description: AgentBindingStatus defines the observed state of an AgentBinding.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the
+                  binding's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed by the
+                  controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
