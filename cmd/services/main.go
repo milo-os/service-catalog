@@ -158,6 +158,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConfiguration")
 		os.Exit(1)
 	}
+	if err = (&controller.ServiceAgentReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceAgent")
+		os.Exit(1)
+	}
+	if err = (&controller.ServiceAgentConfigurationReconciler{}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceAgentConfiguration")
+		os.Exit(1)
+	}
 
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
 	// planes. We need a multicluster manager backed by the Milo provider so
@@ -191,6 +199,10 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
 		os.Exit(1)
 	}
+	if err = (&controller.AgentBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentBinding")
+		os.Exit(1)
+	}
 
 	if serverConfig.WebhookServer != nil {
 		if err = serviceswebhooks.SetupServiceWebhookWithManager(mgr); err != nil {
@@ -207,6 +219,14 @@ func main() {
 		}
 		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
+			os.Exit(1)
+		}
+		if err = serviceswebhooks.SetupServiceAgentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceAgent")
+			os.Exit(1)
+		}
+		if err = serviceswebhooks.SetupServiceAgentConfigurationWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceAgentConfiguration")
 			os.Exit(1)
 		}
 	}

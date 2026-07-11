@@ -33,6 +33,9 @@ rules:
 - apiGroups:
   - services.miloapis.com
   resources:
+  - agentbindings
+  - serviceagentconfigurations
+  - serviceagents
   - serviceconfigurations
   - serviceconsumers
   - serviceentitlements
@@ -48,14 +51,9 @@ rules:
 - apiGroups:
   - services.miloapis.com
   resources:
-  - serviceconfigurations/finalizers
-  - serviceentitlements/finalizers
-  - services/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - services.miloapis.com
-  resources:
+  - agentbindings/status
+  - serviceagentconfigurations/status
+  - serviceagents/status
   - serviceconfigurations/status
   - serviceconsumers/status
   - serviceentitlements/status
@@ -63,4 +61,13 @@ rules:
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceagents/finalizers
+  - serviceconfigurations/finalizers
+  - serviceentitlements/finalizers
+  - services/finalizers
+  verbs:
   - update
