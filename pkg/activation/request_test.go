@@ -10,7 +10,7 @@ import (
 )
 
 func requesterWith(ec EntitlementClient, io IOStreams) Requester {
-	return Requester{Config: testConfig, Client: ec, IO: io, Project: "datum-cloud"}
+	return Requester{Service: testConfig, Client: ec, IO: io, Project: "datum-cloud"}
 }
 
 func TestRequestSubmitPendingExitsZero(t *testing.T) {

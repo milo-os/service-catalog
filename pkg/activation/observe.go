@@ -11,7 +11,7 @@ import (
 // Observe lists entitlements, selects the one for the configured service, and
 // classifies it. A CatalogUnavailable result is returned as a State, not an
 // error; only genuine transport/API failures come back as err.
-func Observe(ctx context.Context, ec EntitlementClient, cfg Config) (State, *servicesv1alpha1.ServiceEntitlement, error) {
+func Observe(ctx context.Context, ec EntitlementClient, cfg ServiceInfo) (State, *servicesv1alpha1.ServiceEntitlement, error) {
 	list, err := ec.List(ctx)
 	if err != nil {
 		if catalogAbsent(err) {

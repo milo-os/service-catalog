@@ -8,9 +8,9 @@
 // hand-rolling their own copy of the same flow.
 //
 // The package is service-agnostic. Single-service callers (Gate, Requester,
-// Observe) take a Config identifying one service (object name, canonical
-// name, display noun, optional support URL) built from a live Service via
-// ConfigFromService. Catalog-wide callers (JoinCatalog) work directly from a
+// Observe) take a ServiceInfo identifying one service (object name, canonical
+// name, display noun, description, enablement mode) built from a live Service
+// via NewServiceInfo. Catalog-wide callers (JoinCatalog) work from a
 // ServiceList and a ServiceEntitlementList. Everything else — the
 // entitlement state model, prompt/TTY/exit-code conventions, wait mechanics,
 // and the user-facing copy — lives here so consumers converge instead of

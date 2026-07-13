@@ -21,7 +21,7 @@ import (
 //
 // The entitlement is created with the object name in both metadata.name and
 // spec.serviceRef.name — admission rejects the canonical name in the spec.
-func createEntitlement(ctx context.Context, ec EntitlementClient, cfg Config, message string) (created *servicesv1alpha1.ServiceEntitlement, unavailable bool, err error) {
+func createEntitlement(ctx context.Context, ec EntitlementClient, cfg ServiceInfo, message string) (created *servicesv1alpha1.ServiceEntitlement, unavailable bool, err error) {
 	e := &servicesv1alpha1.ServiceEntitlement{
 		ObjectMeta: metav1.ObjectMeta{Name: cfg.ObjectName},
 		Spec: servicesv1alpha1.ServiceEntitlementSpec{

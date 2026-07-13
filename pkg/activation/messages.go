@@ -13,7 +13,7 @@ import (
 // notification promise the platform does not keep.
 
 // pendingNextSteps is the two-line footer offering the status and wait verbs.
-func (c Config) pendingNextSteps() string {
+func (c ServiceInfo) pendingNextSteps() string {
 	return fmt.Sprintf("Check progress with:   %s\nWait for activation:   %s --wait",
 		c.statusCommand(), c.enableCommand())
 }
@@ -22,7 +22,7 @@ func (c Config) pendingNextSteps() string {
 // that landed in PendingApproval. There is deliberately no "Error:" prefix — the
 // one thing the user consented to succeeded — but the gated command did not run,
 // so the exit code is still ExitPending.
-func reportSubmittedPending(io IOStreams, cfg Config, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportSubmittedPending(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", cfg.noun(), project)
 	_, _ = fmt.Fprintf(io.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
 	_, _ = fmt.Fprintf(io.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
@@ -33,7 +33,7 @@ func reportSubmittedPending(io IOStreams, cfg Config, project string, e *service
 // reportSubmittedProcessing prints the "submitted" copy when the platform has
 // not recorded a decision within the bounded wait. Same shape as pending, with a
 // degraded detail line; exit ExitPending.
-func reportSubmittedProcessing(io IOStreams, cfg Config, project string) *Error {
+func reportSubmittedProcessing(io IOStreams, cfg ServiceInfo, project string) *Error {
 	_, _ = fmt.Fprintf(io.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", cfg.noun(), project)
 	_, _ = fmt.Fprintf(io.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n")
 	_, _ = fmt.Fprintf(io.Err, "           This normally takes only a few seconds.\n\n")
@@ -43,7 +43,7 @@ func reportSubmittedProcessing(io IOStreams, cfg Config, project string) *Error 
 
 // reportPendingReentry prints the awaiting-approval copy when a gated command is
 // re-invoked while the request is already pending. Instant: no watch, no wait.
-func reportPendingReentry(io IOStreams, cfg Config, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportPendingReentry(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q is awaiting provider approval (requested %s).\n",
 		cfg.noun(), project, requestedAge(e))
 	_, _ = fmt.Fprintf(io.Err, "  %s\n\n", serverMessage(StatePendingApproval, e))
@@ -54,7 +54,7 @@ func reportPendingReentry(io IOStreams, cfg Config, project string, e *servicesv
 // reportProcessingReentry prints the still-processing copy for an older
 // entitlement whose status the operator has not written. A wedged operator must
 // not tax every invocation with the bounded wait, so this reports immediately.
-func reportProcessingReentry(io IOStreams, cfg Config, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportProcessingReentry(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q is still being processed (requested %s).\n",
 		cfg.noun(), project, requestedAge(e))
 	_, _ = fmt.Fprintf(io.Err, "  This normally takes only a few seconds — if it persists, contact support.\n\n")
@@ -63,7 +63,7 @@ func reportProcessingReentry(io IOStreams, cfg Config, project string, e *servic
 }
 
 // reportDenied prints the provider's denial reason plus the renew recovery path.
-func reportDenied(io IOStreams, cfg Config, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportDenied(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q was denied.\n", cfg.noun(), project)
 	if msg := serverMessage(StateDenied, e); msg != "" {
 		_, _ = fmt.Fprintf(io.Err, "  %s\n", msg)
@@ -73,7 +73,7 @@ func reportDenied(io IOStreams, cfg Config, project string, e *servicesv1alpha1.
 }
 
 // reportRevoked prints the same shape as a denial, framed as a revocation.
-func reportRevoked(io IOStreams, cfg Config, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportRevoked(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q was revoked.\n", cfg.noun(), project)
 	if msg := serverMessage(StateRevoked, e); msg != "" {
 		_, _ = fmt.Fprintf(io.Err, "  %s\n", msg)
@@ -84,30 +84,24 @@ func reportRevoked(io IOStreams, cfg Config, project string, e *servicesv1alpha1
 
 // reportUnavailable prints the not-available-on-this-platform copy. It covers
 // both a Rejected/ServiceNotPublished entitlement and the create-time mapping.
-func reportUnavailable(io IOStreams, cfg Config, e *servicesv1alpha1.ServiceEntitlement) *Error {
+func reportUnavailable(io IOStreams, cfg ServiceInfo, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available on this platform environment.\n", cfg.noun())
 	if msg := serverMessage(StateUnavailable, e); msg != "" {
 		_, _ = fmt.Fprintf(io.Err, "  %s\n", msg)
-	}
-	if cfg.SupportURL != "" {
-		_, _ = fmt.Fprintf(io.Err, "\nFor help, see: %s\n", cfg.SupportURL)
 	}
 	return newError(ExitUnavailable, StateUnavailable, "service unavailable on this platform", nil)
 }
 
 // reportCatalogUnavailable prints the same copy when the enablement API group is
 // absent entirely. Distinguished only by the reported State.
-func reportCatalogUnavailable(io IOStreams, cfg Config) *Error {
+func reportCatalogUnavailable(io IOStreams, cfg ServiceInfo) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available on this platform environment.\n", cfg.noun())
-	if cfg.SupportURL != "" {
-		_, _ = fmt.Fprintf(io.Err, "\nFor help, see: %s\n", cfg.SupportURL)
-	}
 	return newError(ExitUnavailable, StateCatalogUnavailable, "enablement API not served", nil)
 }
 
 // reportNotEnabledNonInteractive prints the deterministic, no-mutation copy for
 // the non-interactive gate path.
-func reportNotEnabledNonInteractive(io IOStreams, cfg Config, project string) *Error {
+func reportNotEnabledNonInteractive(io IOStreams, cfg ServiceInfo, project string) *Error {
 	_, _ = fmt.Fprintf(io.Err, "Error: %s is not enabled for project %q.\n\n", cfg.noun(), project)
 	_, _ = fmt.Fprintf(io.Err, "Request access with: %s\n", cfg.enableCommand())
 	return newError(ExitNotEnabled, StateNotRequested, "service not enabled", nil)
@@ -116,7 +110,7 @@ func reportNotEnabledNonInteractive(io IOStreams, cfg Config, project string) *E
 // reportDeclined prints the copy for a user who declined the interactive prompt.
 // Not an error the user needs "Error:" for — they chose it — but the gated
 // command did not run, so exit ExitDeclined.
-func reportDeclined(io IOStreams, cfg Config) *Error {
+func reportDeclined(io IOStreams, cfg ServiceInfo) *Error {
 	_, _ = fmt.Fprintf(io.Err, "\nNo request was made.\n\n")
 	_, _ = fmt.Fprintf(io.Err, "Request access later with: %s\n", cfg.enableCommand())
 	return newError(ExitDeclined, StateNotRequested, "request declined", nil)

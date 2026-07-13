@@ -16,15 +16,17 @@ import (
 // so automation branches without scraping prose.
 type StatusReport struct {
 	Service     string                               `json:"service"`
+	Description string                               `json:"description,omitempty"`
 	Project     string                               `json:"project"`
 	State       State                                `json:"state"`
 	Entitlement *servicesv1alpha1.ServiceEntitlement `json:"entitlement,omitempty"`
 }
 
 // NewStatusReport assembles a StatusReport from a classification result.
-func NewStatusReport(cfg Config, project string, state State, e *servicesv1alpha1.ServiceEntitlement) StatusReport {
+func NewStatusReport(cfg ServiceInfo, project string, state State, e *servicesv1alpha1.ServiceEntitlement) StatusReport {
 	return StatusReport{
 		Service:     cfg.CanonicalName,
+		Description: cfg.Description,
 		Project:     project,
 		State:       state,
 		Entitlement: e,
@@ -33,8 +35,11 @@ func NewStatusReport(cfg Config, project string, state State, e *servicesv1alpha
 
 // RenderStatus writes the human-readable status block for the access verb to w.
 // It never returns an error and never exits; state is data, not a failure.
-func RenderStatus(w io.Writer, cfg Config, project string, state State, e *servicesv1alpha1.ServiceEntitlement) {
+func RenderStatus(w io.Writer, cfg ServiceInfo, project string, state State, e *servicesv1alpha1.ServiceEntitlement) {
 	_, _ = fmt.Fprintf(w, "Service:  %s (%s)\n", cfg.DisplayName, cfg.CanonicalName)
+	if cfg.Description != "" {
+		_, _ = fmt.Fprintf(w, "          %s\n", cfg.Description)
+	}
 	_, _ = fmt.Fprintf(w, "Project:  %s\n", project)
 	_, _ = fmt.Fprintf(w, "Status:   %s\n", statusLine(cfg, state, e))
 	if msg := serverMessage(state, e); msg != "" {
@@ -58,8 +63,7 @@ type CatalogReport struct {
 func NewCatalogReport(project string, entries []CatalogEntry) CatalogReport {
 	reports := make([]StatusReport, 0, len(entries))
 	for _, entry := range entries {
-		cfg := ConfigFromService(entry.Service)
-		reports = append(reports, NewStatusReport(cfg, project, entry.State, entry.Entitlement))
+		reports = append(reports, NewStatusReport(entry.Service, project, entry.State, entry.Entitlement))
 	}
 	return CatalogReport{Project: project, Services: reports}
 }
@@ -87,7 +91,7 @@ func listSince(e *servicesv1alpha1.ServiceEntitlement) string {
 
 // statusLine is the one-line derived-state summary, with an age suffix where a
 // timestamp gives one meaning.
-func statusLine(cfg Config, state State, e *servicesv1alpha1.ServiceEntitlement) string {
+func statusLine(cfg ServiceInfo, state State, e *servicesv1alpha1.ServiceEntitlement) string {
 	switch state {
 	case StateActive:
 		if e != nil && e.Status.EntitledAt != nil {
@@ -116,7 +120,7 @@ func statusLine(cfg Config, state State, e *servicesv1alpha1.ServiceEntitlement)
 // nextStepHint is the single copy-pasteable command suggested for a state in the
 // status view, or "" when none applies. It references only the enable/status
 // verbs computed from the service's own identity.
-func nextStepHint(cfg Config, state State) string {
+func nextStepHint(cfg ServiceInfo, state State) string {
 	switch state {
 	case StateNotRequested:
 		return "Request access with: " + cfg.enableCommand()

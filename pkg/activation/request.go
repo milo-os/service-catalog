@@ -15,7 +15,7 @@ import (
 // scripts. Its exit-code contract differs from the gate: a submitted request
 // that stands pending exits 0 here, because the request itself succeeded.
 type Requester struct {
-	Config  Config
+	Service ServiceInfo
 	Client  EntitlementClient
 	IO      IOStreams
 	Project string
@@ -39,30 +39,30 @@ const tombstoneDrainBudget = 30 * time.Second
 
 // Request runs the idempotent request/renew/wait flow.
 func (r Requester) Request(ctx context.Context, opts RequestOptions) error {
-	if err := r.Config.Validate(); err != nil {
+	if err := r.Service.Validate(); err != nil {
 		return err
 	}
 	if r.Project == "" {
 		return reportGeneric(r.IO, nil, "no project set — pass --project or select one with datumctl")
 	}
 
-	state, e, err := Observe(ctx, r.Client, r.Config)
+	state, e, err := Observe(ctx, r.Client, r.Service)
 	if err != nil {
-		return reportGeneric(r.IO, err, "checking %s access: %v", r.Config.noun(), err)
+		return reportGeneric(r.IO, err, "checking %s access: %v", r.Service.noun(), err)
 	}
 
 	switch state {
 	case StateCatalogUnavailable:
-		return reportCatalogUnavailable(r.IO, r.Config)
+		return reportCatalogUnavailable(r.IO, r.Service)
 	case StateUnavailable:
-		return reportUnavailable(r.IO, r.Config, e)
+		return reportUnavailable(r.IO, r.Service, e)
 
 	case StateDenied, StateRevoked:
 		if !opts.Renew {
 			if state == StateRevoked {
-				return reportRevoked(r.IO, r.Config, r.Project, e)
+				return reportRevoked(r.IO, r.Service, r.Project, e)
 			}
-			return reportDenied(r.IO, r.Config, r.Project, e)
+			return reportDenied(r.IO, r.Service, r.Project, e)
 		}
 		if derr := r.renewDelete(ctx, e); derr != nil {
 			return derr
@@ -86,21 +86,21 @@ func (r Requester) Request(ctx context.Context, opts RequestOptions) error {
 		return nil
 
 	default:
-		return reportGeneric(r.IO, nil, "%s access is in an unexpected state (%s)", r.Config.noun(), state)
+		return reportGeneric(r.IO, nil, "%s access is in an unexpected state (%s)", r.Service.noun(), state)
 	}
 }
 
 // create submits a new entitlement (retrying past a draining tombstone when
 // renewing), then either waits or does the bounded first-status wait.
 func (r Requester) create(ctx context.Context, opts RequestOptions, renewing bool) error {
-	_, _ = fmt.Fprintf(r.IO.Err, "Requesting access to %s for project %q...\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "Requesting access to %s for project %q...\n", r.Service.noun(), r.Project)
 
 	created, unavailable, cerr := r.submit(ctx, opts.Message, renewing)
 	if cerr != nil {
-		return reportGeneric(r.IO, cerr, "requesting %s access: %v", r.Config.noun(), cerr)
+		return reportGeneric(r.IO, cerr, "requesting %s access: %v", r.Service.noun(), cerr)
 	}
 	if unavailable {
-		return reportUnavailable(r.IO, r.Config, nil)
+		return reportUnavailable(r.IO, r.Service, nil)
 	}
 
 	if opts.Wait {
@@ -109,7 +109,7 @@ func (r Requester) create(ctx context.Context, opts RequestOptions, renewing boo
 
 	state, ent, werr := r.waitFirstStatus(ctx, resourceVersionOf(created))
 	if werr != nil {
-		return reportGeneric(r.IO, werr, "waiting for %s status: %v", r.Config.noun(), werr)
+		return reportGeneric(r.IO, werr, "waiting for %s status: %v", r.Service.noun(), werr)
 	}
 	switch state {
 	case StateActive:
@@ -120,11 +120,11 @@ func (r Requester) create(ctx context.Context, opts RequestOptions, renewing boo
 		r.printSubmitted(state, ent)
 		return nil
 	case StateDenied:
-		return reportDenied(r.IO, r.Config, r.Project, ent)
+		return reportDenied(r.IO, r.Service, r.Project, ent)
 	case StateRevoked:
-		return reportRevoked(r.IO, r.Config, r.Project, ent)
+		return reportRevoked(r.IO, r.Service, r.Project, ent)
 	case StateUnavailable:
-		return reportUnavailable(r.IO, r.Config, ent)
+		return reportUnavailable(r.IO, r.Service, ent)
 	default:
 		r.printSubmitted(StateProcessing, ent)
 		return nil
@@ -136,12 +136,12 @@ func (r Requester) create(ctx context.Context, opts RequestOptions, renewing boo
 // terminal error if the teardown wedges.
 func (r Requester) submit(ctx context.Context, message string, renewing bool) (*servicesv1alpha1.ServiceEntitlement, bool, error) {
 	if !renewing {
-		return createEntitlement(ctx, r.Client, r.Config, message)
+		return createEntitlement(ctx, r.Client, r.Service, message)
 	}
 
 	deadline := time.Now().Add(tombstoneDrainBudget)
 	for {
-		created, unavailable, err := createEntitlement(ctx, r.Client, r.Config, message)
+		created, unavailable, err := createEntitlement(ctx, r.Client, r.Service, message)
 		if err != nil {
 			return nil, false, err
 		}
@@ -165,17 +165,17 @@ func (r Requester) submit(ctx context.Context, message string, renewing bool) (*
 // renewDelete confirms (on a TTY) and deletes a rejected entitlement.
 func (r Requester) renewDelete(ctx context.Context, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	if r.IO.IsInputTTY() {
-		ok, err := r.IO.promptYesNo(fmt.Sprintf("This deletes the rejected %s request and submits a new one. Continue?", r.Config.noun()))
+		ok, err := r.IO.promptYesNo(fmt.Sprintf("This deletes the rejected %s request and submits a new one. Continue?", r.Service.noun()))
 		if err != nil {
 			return reportGeneric(r.IO, err, "reading prompt response: %v", err)
 		}
 		if !ok {
-			return reportDeclined(r.IO, r.Config)
+			return reportDeclined(r.IO, r.Service)
 		}
 	}
 	if e != nil {
 		if err := r.Client.Delete(ctx, e); err != nil && !apierrors.IsNotFound(err) {
-			return reportGeneric(r.IO, err, "removing the rejected %s request: %v", r.Config.noun(), err)
+			return reportGeneric(r.IO, err, "removing the rejected %s request: %v", r.Service.noun(), err)
 		}
 	}
 	return nil
@@ -187,7 +187,7 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = defaultApprovalTimeout
 	}
-	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Service.noun(), r.Project)
 	_, _ = fmt.Fprintf(r.IO.Err, "Approval is a manual step by the service provider with no time bound; press Ctrl-C to stop waiting.\n")
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -200,15 +200,15 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 	)
 	err := r.IO.progress(waitCtx, r.IO.IsInputTTY(), "Waiting for provider approval...", func(c context.Context) error {
 		var werr error
-		state, ent, timedOut, werr = waitUntilResolved(c, r.Client, r.Config.ObjectName)
+		state, ent, timedOut, werr = waitUntilResolved(c, r.Client, r.Service.ObjectName)
 		return werr
 	})
 	if err != nil {
-		return reportGeneric(r.IO, err, "waiting for %s access: %v", r.Config.noun(), err)
+		return reportGeneric(r.IO, err, "waiting for %s access: %v", r.Service.noun(), err)
 	}
 	if timedOut {
 		_, _ = fmt.Fprintf(r.IO.Err, "\nStill awaiting provider approval after %s. Safe to re-run.\n", timeout)
-		_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
+		_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Service.pendingNextSteps())
 		return newError(ExitPending, StatePendingApproval, "timed out while pending", nil)
 	}
 	switch state {
@@ -216,11 +216,11 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		r.printActive()
 		return nil
 	case StateDenied:
-		return reportDenied(r.IO, r.Config, r.Project, ent)
+		return reportDenied(r.IO, r.Service, r.Project, ent)
 	case StateRevoked:
-		return reportRevoked(r.IO, r.Config, r.Project, ent)
+		return reportRevoked(r.IO, r.Service, r.Project, ent)
 	case StateUnavailable:
-		return reportUnavailable(r.IO, r.Config, ent)
+		return reportUnavailable(r.IO, r.Service, ent)
 	default:
 		r.printStanding(state, ent)
 		return nil
@@ -235,29 +235,29 @@ func (r Requester) waitFirstStatus(ctx context.Context, resourceVersion string) 
 	)
 	err := r.IO.progress(ctx, r.IO.IsInputTTY(), "Waiting for the platform to process the request...", func(c context.Context) error {
 		var e error
-		state, ent, e = waitForFirstStatus(c, r.Client, r.Config.ObjectName, resourceVersion)
+		state, ent, e = waitForFirstStatus(c, r.Client, r.Service.ObjectName, resourceVersion)
 		return e
 	})
 	return state, ent, err
 }
 
 func (r Requester) printActive() {
-	_, _ = fmt.Fprintf(r.IO.Err, "\n%s is now enabled for project %q.\n", r.Config.DisplayName, r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "\n%s is now enabled for project %q.\n", r.Service.DisplayName, r.Project)
 }
 
 func (r Requester) printSubmitted(state State, e *servicesv1alpha1.ServiceEntitlement) {
-	_, _ = fmt.Fprintf(r.IO.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", r.Service.noun(), r.Project)
 	if state == StatePendingApproval {
 		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
 		_, _ = fmt.Fprintf(r.IO.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
 	} else {
 		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n\n")
 	}
-	_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
+	_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Service.pendingNextSteps())
 }
 
 func (r Requester) printStanding(state State, e *servicesv1alpha1.ServiceEntitlement) {
-	RenderStatus(r.IO.Err, r.Config, r.Project, state, e)
+	RenderStatus(r.IO.Err, r.Service, r.Project, state, e)
 }
 
 // sleepCtx sleeps for d unless ctx is cancelled first.

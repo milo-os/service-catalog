@@ -13,7 +13,7 @@ import (
 // it never prompts and never mutates. Run returns nil to let the command
 // proceed (the service is usable), or an *Error carrying the exit code.
 type Gate struct {
-	Config  Config
+	Service ServiceInfo
 	Client  EntitlementClient
 	IO      IOStreams
 	Project string
@@ -25,13 +25,13 @@ func (g Gate) Run(ctx context.Context) error {
 	if g.Project == "" {
 		return nil
 	}
-	if err := g.Config.Validate(); err != nil {
+	if err := g.Service.Validate(); err != nil {
 		return err
 	}
 
-	state, e, err := Observe(ctx, g.Client, g.Config)
+	state, e, err := Observe(ctx, g.Client, g.Service)
 	if err != nil {
-		return reportGeneric(g.IO, err, "checking %s access: %v", g.Config.noun(), err)
+		return reportGeneric(g.IO, err, "checking %s access: %v", g.Service.noun(), err)
 	}
 	return g.handle(ctx, state, e)
 }
@@ -45,17 +45,17 @@ func (g Gate) handle(ctx context.Context, state State, e *servicesv1alpha1.Servi
 	case StateProcessing:
 		return g.handleProcessing(ctx, e)
 	case StatePendingApproval:
-		return reportPendingReentry(g.IO, g.Config, g.Project, e)
+		return reportPendingReentry(g.IO, g.Service, g.Project, e)
 	case StateDenied:
-		return reportDenied(g.IO, g.Config, g.Project, e)
+		return reportDenied(g.IO, g.Service, g.Project, e)
 	case StateRevoked:
-		return reportRevoked(g.IO, g.Config, g.Project, e)
+		return reportRevoked(g.IO, g.Service, g.Project, e)
 	case StateUnavailable:
-		return reportUnavailable(g.IO, g.Config, e)
+		return reportUnavailable(g.IO, g.Service, e)
 	case StateCatalogUnavailable:
-		return reportCatalogUnavailable(g.IO, g.Config)
+		return reportCatalogUnavailable(g.IO, g.Service)
 	default:
-		return reportGeneric(g.IO, nil, "%s access is in an unexpected state (%s)", g.Config.noun(), state)
+		return reportGeneric(g.IO, nil, "%s access is in an unexpected state (%s)", g.Service.noun(), state)
 	}
 }
 
@@ -63,17 +63,21 @@ func (g Gate) handle(ctx context.Context, state State, e *servicesv1alpha1.Servi
 // mutating.
 func (g Gate) handleNotRequested(ctx context.Context) error {
 	if !g.IO.IsInputTTY() {
-		return reportNotEnabledNonInteractive(g.IO, g.Config, g.Project)
+		return reportNotEnabledNonInteractive(g.IO, g.Service, g.Project)
 	}
 
-	_, _ = fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Config.DisplayName, g.Project)
-	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
+	_, _ = fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Service.DisplayName, g.Project)
+	if g.Service.EnablementMode == servicesv1alpha1.EnablementModeGatedByProvider {
+		_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
+	} else {
+		_, _ = fmt.Fprintf(g.IO.Err, "Requesting access will enable %s for this project immediately.\n", g.Service.noun())
+	}
 	ok, err := g.IO.promptYesNo("Would you like to request access?")
 	if err != nil {
 		return reportGeneric(g.IO, err, "reading prompt response: %v", err)
 	}
 	if !ok {
-		return reportDeclined(g.IO, g.Config)
+		return reportDeclined(g.IO, g.Service)
 	}
 	return g.submitAndWait(ctx, "")
 }
@@ -83,26 +87,26 @@ func (g Gate) handleNotRequested(ctx context.Context) error {
 // not tax every invocation.
 func (g Gate) handleProcessing(ctx context.Context, e *servicesv1alpha1.ServiceEntitlement) error {
 	if e != nil && time.Since(e.CreationTimestamp.Time) > reentryWaitWindow {
-		return reportProcessingReentry(g.IO, g.Config, g.Project, e)
+		return reportProcessingReentry(g.IO, g.Service, g.Project, e)
 	}
 
 	state, ent, err := g.waitFirstStatus(ctx, resourceVersionOf(e))
 	if err != nil {
-		return reportGeneric(g.IO, err, "waiting for %s status: %v", g.Config.noun(), err)
+		return reportGeneric(g.IO, err, "waiting for %s status: %v", g.Service.noun(), err)
 	}
 	switch state {
 	case StateActive:
 		return nil
 	case StatePendingApproval:
-		return reportPendingReentry(g.IO, g.Config, g.Project, ent)
+		return reportPendingReentry(g.IO, g.Service, g.Project, ent)
 	case StateDenied:
-		return reportDenied(g.IO, g.Config, g.Project, ent)
+		return reportDenied(g.IO, g.Service, g.Project, ent)
 	case StateRevoked:
-		return reportRevoked(g.IO, g.Config, g.Project, ent)
+		return reportRevoked(g.IO, g.Service, g.Project, ent)
 	case StateUnavailable:
-		return reportUnavailable(g.IO, g.Config, ent)
+		return reportUnavailable(g.IO, g.Service, ent)
 	default:
-		return reportProcessingReentry(g.IO, g.Config, g.Project, ent)
+		return reportProcessingReentry(g.IO, g.Service, g.Project, ent)
 	}
 }
 
@@ -110,34 +114,34 @@ func (g Gate) handleProcessing(ctx context.Context, e *servicesv1alpha1.ServiceE
 // with visible progress, and branches on the result. On Active it prints the
 // enabled line and returns nil so the original command runs.
 func (g Gate) submitAndWait(ctx context.Context, message string) error {
-	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Config.noun(), g.Project)
+	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Service.noun(), g.Project)
 
-	created, unavailable, cerr := createEntitlement(ctx, g.Client, g.Config, message)
+	created, unavailable, cerr := createEntitlement(ctx, g.Client, g.Service, message)
 	if cerr != nil {
-		return reportGeneric(g.IO, cerr, "requesting %s access: %v", g.Config.noun(), cerr)
+		return reportGeneric(g.IO, cerr, "requesting %s access: %v", g.Service.noun(), cerr)
 	}
 	if unavailable {
-		return reportUnavailable(g.IO, g.Config, nil)
+		return reportUnavailable(g.IO, g.Service, nil)
 	}
 
 	state, ent, werr := g.waitFirstStatus(ctx, resourceVersionOf(created))
 	if werr != nil {
-		return reportGeneric(g.IO, werr, "waiting for %s status: %v", g.Config.noun(), werr)
+		return reportGeneric(g.IO, werr, "waiting for %s status: %v", g.Service.noun(), werr)
 	}
 	switch state {
 	case StateActive:
-		_, _ = fmt.Fprintf(g.IO.Err, "\n%s is now enabled for project %q.\n", g.Config.DisplayName, g.Project)
+		_, _ = fmt.Fprintf(g.IO.Err, "\n%s is now enabled for project %q.\n", g.Service.DisplayName, g.Project)
 		return nil
 	case StatePendingApproval:
-		return reportSubmittedPending(g.IO, g.Config, g.Project, ent)
+		return reportSubmittedPending(g.IO, g.Service, g.Project, ent)
 	case StateDenied:
-		return reportDenied(g.IO, g.Config, g.Project, ent)
+		return reportDenied(g.IO, g.Service, g.Project, ent)
 	case StateRevoked:
-		return reportRevoked(g.IO, g.Config, g.Project, ent)
+		return reportRevoked(g.IO, g.Service, g.Project, ent)
 	case StateUnavailable:
-		return reportUnavailable(g.IO, g.Config, ent)
+		return reportUnavailable(g.IO, g.Service, ent)
 	default:
-		return reportSubmittedProcessing(g.IO, g.Config, g.Project)
+		return reportSubmittedProcessing(g.IO, g.Service, g.Project)
 	}
 }
 
@@ -150,7 +154,7 @@ func (g Gate) waitFirstStatus(ctx context.Context, resourceVersion string) (Stat
 	)
 	err := g.IO.progress(ctx, g.IO.IsInputTTY(), "Waiting for the platform to process the request...", func(c context.Context) error {
 		var e error
-		state, ent, e = waitForFirstStatus(c, g.Client, g.Config.ObjectName, resourceVersion)
+		state, ent, e = waitForFirstStatus(c, g.Client, g.Service.ObjectName, resourceVersion)
 		return e
 	})
 	return state, ent, err

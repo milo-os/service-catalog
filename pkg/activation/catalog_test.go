@@ -54,24 +54,14 @@ func TestNewServiceInfo(t *testing.T) {
 	})
 }
 
-func TestConfigFromService(t *testing.T) {
+func TestServiceInfoValidate(t *testing.T) {
 	info := ServiceInfo{
 		ObjectName:    "compute",
 		CanonicalName: "compute.datumapis.com",
 		DisplayName:   "Compute",
 		Description:   "Run workloads on Datum Cloud.",
 	}
-
-	cfg := ConfigFromService(info)
-	want := Config{
-		ObjectName:    "compute",
-		CanonicalName: "compute.datumapis.com",
-		DisplayName:   "Compute",
-	}
-	if cfg != want {
-		t.Fatalf("ConfigFromService() = %+v, want %+v", cfg, want)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("ConfigFromService() produced an invalid Config: %v", err)
+	if err := info.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (identity fields are set)", err)
 	}
 }

@@ -10,11 +10,13 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// testConfig mirrors the compute plugin's configuration.
-var testConfig = Config{
-	ObjectName:    "compute",
-	CanonicalName: "compute.datumapis.com",
-	DisplayName:   "Compute",
+// testConfig mirrors the compute plugin's configuration: a provider-gated
+// service, so the gate's not-requested copy promises provider approval.
+var testConfig = ServiceInfo{
+	ObjectName:     "compute",
+	CanonicalName:  "compute.datumapis.com",
+	DisplayName:    "Compute",
+	EnablementMode: servicesv1alpha1.EnablementModeGatedByProvider,
 }
 
 // reasonConsumerDenied is a transient ServiceConsumer-relay Ready reason no

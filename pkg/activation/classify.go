@@ -67,7 +67,7 @@ func Classify(obs Observation) State {
 // SelectEntitlement picks the entitlement representing the configured service
 // from a list, preferring a canonical-name match over the object-name fallback.
 // It returns nil when none matches.
-func SelectEntitlement(list *servicesv1alpha1.ServiceEntitlementList, cfg Config) *servicesv1alpha1.ServiceEntitlement {
+func SelectEntitlement(list *servicesv1alpha1.ServiceEntitlementList, cfg ServiceInfo) *servicesv1alpha1.ServiceEntitlement {
 	return selectEntitlementByName(list, cfg.CanonicalName, cfg.ObjectName)
 }
 

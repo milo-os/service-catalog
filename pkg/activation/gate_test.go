@@ -13,7 +13,7 @@ import (
 
 func gateWith(t *testing.T, ec EntitlementClient, io IOStreams) Gate {
 	t.Helper()
-	return Gate{Config: testConfig, Client: ec, IO: io, Project: "datum-cloud"}
+	return Gate{Service: testConfig, Client: ec, IO: io, Project: "datum-cloud"}
 }
 
 // wantExit asserts err is an *Error with the expected code and state.
@@ -69,6 +69,9 @@ func TestGateInteractiveSubmitLandsPending(t *testing.T) {
 		t.Fatalf("expected exactly 1 create, got %d", got)
 	}
 	out := errb.String()
+	if !strings.Contains(out, "sends an enablement request to the service provider for approval") {
+		t.Fatalf("gated service must promise provider approval in the prompt:\n%s", out)
+	}
 	if !strings.Contains(out, "has been submitted") {
 		t.Fatalf("missing submitted copy:\n%s", out)
 	}
@@ -80,6 +83,32 @@ func TestGateInteractiveSubmitLandsPending(t *testing.T) {
 	}
 	if !strings.Contains(out, "datumctl services enable compute.datumapis.com") {
 		t.Fatalf("missing next-step verb:\n%s", out)
+	}
+}
+
+func TestGateInteractiveSelfServicePromptIsImmediate(t *testing.T) {
+	// A self-service service enables on request with no provider approval step,
+	// so the prompt must not promise one.
+	selfService := ServiceInfo{
+		ObjectName:     "compute",
+		CanonicalName:  "compute.datumapis.com",
+		DisplayName:    "Compute",
+		EnablementMode: servicesv1alpha1.EnablementModeSelfService,
+	}
+	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "This service is enabled and ready to use.", ptrNow())
+	ec, _ := newFake(withWatch(modifiedEvent(active)))
+	io, _, errb := testIO("y\n", true)
+
+	g := Gate{Service: selfService, Client: ec, IO: io, Project: "datum-cloud"}
+	if err := g.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v, want nil once Active", err)
+	}
+	out := errb.String()
+	if !strings.Contains(out, "will enable compute for this project immediately") {
+		t.Fatalf("self-service service must promise immediate enablement in the prompt:\n%s", out)
+	}
+	if strings.Contains(out, "service provider for approval") {
+		t.Fatalf("self-service prompt must not promise provider approval:\n%s", out)
 	}
 }
 
@@ -168,7 +197,7 @@ func TestGateCatalogUnavailable(t *testing.T) {
 func TestGateEmptyProjectIsNoop(t *testing.T) {
 	ec, _ := newFake(withListErr(catalogAbsentErr()))
 	io, _, _ := testIO("", false)
-	g := Gate{Config: testConfig, Client: ec, IO: io, Project: ""}
+	g := Gate{Service: testConfig, Client: ec, IO: io, Project: ""}
 	if err := g.Run(context.Background()); err != nil {
 		t.Fatalf("empty project should be a no-op, got %v", err)
 	}
