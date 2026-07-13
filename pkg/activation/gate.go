@@ -66,8 +66,8 @@ func (g Gate) handleNotRequested(ctx context.Context) error {
 		return reportNotEnabledNonInteractive(g.IO, g.Config, g.Project)
 	}
 
-	fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Config.DisplayName, g.Project)
-	fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
+	_, _ = fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Config.DisplayName, g.Project)
+	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
 	ok, err := g.IO.promptYesNo("Would you like to request access?")
 	if err != nil {
 		return reportGeneric(g.IO, err, "reading prompt response: %v", err)
@@ -110,7 +110,7 @@ func (g Gate) handleProcessing(ctx context.Context, e *servicesv1alpha1.ServiceE
 // with visible progress, and branches on the result. On Active it prints the
 // enabled line and returns nil so the original command runs.
 func (g Gate) submitAndWait(ctx context.Context, message string) error {
-	fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Config.noun(), g.Project)
+	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Config.noun(), g.Project)
 
 	created, unavailable, cerr := createEntitlement(ctx, g.Client, g.Config, message)
 	if cerr != nil {
@@ -126,7 +126,7 @@ func (g Gate) submitAndWait(ctx context.Context, message string) error {
 	}
 	switch state {
 	case StateActive:
-		fmt.Fprintf(g.IO.Err, "\n%s is now enabled for project %q.\n", g.Config.DisplayName, g.Project)
+		_, _ = fmt.Fprintf(g.IO.Err, "\n%s is now enabled for project %q.\n", g.Config.DisplayName, g.Project)
 		return nil
 	case StatePendingApproval:
 		return reportSubmittedPending(g.IO, g.Config, g.Project, ent)

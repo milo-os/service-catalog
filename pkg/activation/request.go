@@ -93,7 +93,7 @@ func (r Requester) Request(ctx context.Context, opts RequestOptions) error {
 // create submits a new entitlement (retrying past a draining tombstone when
 // renewing), then either waits or does the bounded first-status wait.
 func (r Requester) create(ctx context.Context, opts RequestOptions, renewing bool) error {
-	fmt.Fprintf(r.IO.Err, "Requesting access to %s for project %q...\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "Requesting access to %s for project %q...\n", r.Config.noun(), r.Project)
 
 	created, unavailable, cerr := r.submit(ctx, opts.Message, renewing)
 	if cerr != nil {
@@ -187,8 +187,8 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = defaultApprovalTimeout
 	}
-	fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Config.noun(), r.Project)
-	fmt.Fprintf(r.IO.Err, "Approval is a manual step by the service provider with no time bound; press Ctrl-C to stop waiting.\n")
+	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "Approval is a manual step by the service provider with no time bound; press Ctrl-C to stop waiting.\n")
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -207,8 +207,8 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		return reportGeneric(r.IO, err, "waiting for %s access: %v", r.Config.noun(), err)
 	}
 	if timedOut {
-		fmt.Fprintf(r.IO.Err, "\nStill awaiting provider approval after %s. Safe to re-run.\n", timeout)
-		fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
+		_, _ = fmt.Fprintf(r.IO.Err, "\nStill awaiting provider approval after %s. Safe to re-run.\n", timeout)
+		_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
 		return newError(ExitPending, StatePendingApproval, "timed out while pending", nil)
 	}
 	switch state {
@@ -242,18 +242,18 @@ func (r Requester) waitFirstStatus(ctx context.Context, resourceVersion string) 
 }
 
 func (r Requester) printActive() {
-	fmt.Fprintf(r.IO.Err, "\n%s is now enabled for project %q.\n", r.Config.DisplayName, r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "\n%s is now enabled for project %q.\n", r.Config.DisplayName, r.Project)
 }
 
 func (r Requester) printSubmitted(state State, e *servicesv1alpha1.ServiceEntitlement) {
-	fmt.Fprintf(r.IO.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", r.Config.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", r.Config.noun(), r.Project)
 	if state == StatePendingApproval {
-		fmt.Fprintf(r.IO.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
-		fmt.Fprintf(r.IO.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
+		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
+		_, _ = fmt.Fprintf(r.IO.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
 	} else {
-		fmt.Fprintf(r.IO.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n\n")
+		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n\n")
 	}
-	fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
+	_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Config.pendingNextSteps())
 }
 
 func (r Requester) printStanding(state State, e *servicesv1alpha1.ServiceEntitlement) {

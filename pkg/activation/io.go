@@ -54,7 +54,7 @@ func (s IOStreams) IsInputTTY() bool {
 // promptYesNo asks a yes/no question on stderr and reads the answer from stdin.
 // The default is No; only "y"/"yes" (case-insensitive) confirms.
 func (s IOStreams) promptYesNo(question string) (bool, error) {
-	fmt.Fprintf(s.Err, "%s [y/N]: ", question)
+	_, _ = fmt.Fprintf(s.Err, "%s [y/N]: ", question)
 	scanner := bufio.NewScanner(s.In)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -90,11 +90,11 @@ func (s IOStreams) progress(ctx context.Context, tty bool, label string, fn func
 		for {
 			select {
 			case err := <-done:
-				fmt.Fprint(s.Err, "\r\033[K") // clear the spinner line
+				_, _ = fmt.Fprint(s.Err, "\r\033[K") // clear the spinner line
 				return err
 			case <-ticker.C:
 				elapsed := int(time.Since(start).Seconds())
-				fmt.Fprintf(s.Err, "\r\033[K%c %s (%ds)", spinnerFrames[frame%len(spinnerFrames)], label, elapsed)
+				_, _ = fmt.Fprintf(s.Err, "\r\033[K%c %s (%ds)", spinnerFrames[frame%len(spinnerFrames)], label, elapsed)
 				frame++
 			}
 		}
@@ -108,7 +108,7 @@ func (s IOStreams) progress(ctx context.Context, tty bool, label string, fn func
 			return err
 		case <-ticker.C:
 			elapsed := int(time.Since(start).Seconds())
-			fmt.Fprintf(s.Err, "%s (%ds)\n", label, elapsed)
+			_, _ = fmt.Fprintf(s.Err, "%s (%ds)\n", label, elapsed)
 		}
 	}
 }

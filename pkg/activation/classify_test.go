@@ -285,8 +285,7 @@ func TestJoinCatalog(t *testing.T) {
 		active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "ok", ptrNow())
 		active.Name = "compute"
 
-		cs := buildFakeClientset(withServices(compute), withObjects(active))
-		cc := NewCatalogClient(cs)
+		cc, cs := newCatalogFake(withServices(compute), withObjects(active))
 		ec := NewClient(cs)
 
 		services, err := cc.ListServices(context.Background())

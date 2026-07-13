@@ -34,14 +34,14 @@ func NewStatusReport(cfg Config, project string, state State, e *servicesv1alpha
 // RenderStatus writes the human-readable status block for the access verb to w.
 // It never returns an error and never exits; state is data, not a failure.
 func RenderStatus(w io.Writer, cfg Config, project string, state State, e *servicesv1alpha1.ServiceEntitlement) {
-	fmt.Fprintf(w, "Service:  %s (%s)\n", cfg.DisplayName, cfg.CanonicalName)
-	fmt.Fprintf(w, "Project:  %s\n", project)
-	fmt.Fprintf(w, "Status:   %s\n", statusLine(cfg, state, e))
+	_, _ = fmt.Fprintf(w, "Service:  %s (%s)\n", cfg.DisplayName, cfg.CanonicalName)
+	_, _ = fmt.Fprintf(w, "Project:  %s\n", project)
+	_, _ = fmt.Fprintf(w, "Status:   %s\n", statusLine(cfg, state, e))
 	if msg := serverMessage(state, e); msg != "" {
-		fmt.Fprintf(w, "          %s\n", msg)
+		_, _ = fmt.Fprintf(w, "          %s\n", msg)
 	}
 	if hint := nextStepHint(cfg, state); hint != "" {
-		fmt.Fprintf(w, "\n%s\n", hint)
+		_, _ = fmt.Fprintf(w, "\n%s\n", hint)
 	}
 }
 
@@ -69,11 +69,11 @@ func NewCatalogReport(project string, entries []CatalogEntry) CatalogReport {
 // state for the active project.
 func RenderList(w io.Writer, entries []CatalogEntry) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATE\tSINCE")
+	_, _ = fmt.Fprintln(tw, "NAME\tSTATE\tSINCE")
 	for _, entry := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", entry.Service.DisplayName, entry.State, listSince(entry.Entitlement))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", entry.Service.DisplayName, entry.State, listSince(entry.Entitlement))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // listSince returns the age of the entitlement backing a catalog row, or ""
