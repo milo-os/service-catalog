@@ -10,6 +10,7 @@ require (
 	github.com/onsi/gomega v1.36.1
 	go.miloapis.com/billing v0.0.0-20260416220423-385a1b369d72
 	go.miloapis.com/milo v0.26.1-0.20260527023322-a78982bd81f2
+	golang.org/x/term v0.32.0
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.2
 	k8s.io/client-go v0.33.1
@@ -82,7 +83,6 @@ require (
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
-	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.33.0 // indirect
