@@ -30,17 +30,16 @@ tasks:
 
   # Code generation
   generate:
-    desc: Run code generation (deepcopy, defaults)
+    desc: Run code generation (deepcopy, defaults, typed clientset)
     cmds:
-      - |
-        set -e
-        echo "Running code generation..."
-        {{.TOOL_DIR}}/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
-        {{.TOOL_DIR}}/defaulter-gen ./internal/config --output-file=zz_generated.defaults.go
-        echo "Code generation complete!"
-    deps:
-      - install-tools
+      - bash hack/update-codegen.sh
     silent: true
+
+  verify:
+    desc: Verify committed generated code is up to date (used by CI)
+    cmds:
+      - bash hack/verify-codegen.sh
+    silent: false
 
   manifests:
     desc: Generate CRD, RBAC, and webhook manifests

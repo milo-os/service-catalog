@@ -143,6 +143,8 @@ type ServiceStatus struct {
 // future consumers (quota, marketplace, entitlements) reference a
 // Service by its spec.serviceName.
 //
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster

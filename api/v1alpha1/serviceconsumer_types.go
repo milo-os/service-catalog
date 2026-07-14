@@ -116,6 +116,8 @@ type ServiceConsumerStatus struct {
 // never create these directly; they only write the spec.approval field to
 // approve or deny GatedByProvider requests.
 //
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster

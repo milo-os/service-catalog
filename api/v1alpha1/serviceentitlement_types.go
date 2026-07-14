@@ -25,6 +25,32 @@ const (
 	EntitlementPhaseRejected EntitlementPhase = "Rejected"
 )
 
+// Condition types and reasons written to a ServiceEntitlement's status. They are
+// exported so clients (CLIs, SDKs) branch on named constants instead of
+// string-matching the controller's output.
+const (
+	// ConditionTypeReady is the single condition type written on a
+	// ServiceEntitlement. It is True only while the entitlement is Active.
+	ConditionTypeReady = "Ready"
+
+	// ReasonEntitlementActive is the Ready reason when the entitlement is active
+	// and usable.
+	ReasonEntitlementActive = "EntitlementActive"
+
+	// ReasonEntitlementPendingApproval is the Ready reason while the request
+	// awaits a provider approval decision.
+	ReasonEntitlementPendingApproval = "EntitlementPendingApproval"
+
+	// ReasonEntitlementRejected is the Ready reason when the provider denied the
+	// request.
+	ReasonEntitlementRejected = "EntitlementRejected"
+
+	// ReasonServiceNotPublished is the Ready reason when the referenced service
+	// is missing or not yet published. Clients treat it as "unavailable" rather
+	// than a denial.
+	ReasonServiceNotPublished = "ServiceNotPublished"
+)
+
 // EntitlementOrigin describes how a ServiceEntitlement was created.
 //
 // +kubebuilder:validation:Enum=Direct;Dependency
@@ -107,6 +133,8 @@ type ServiceEntitlementStatus struct {
 // The object is written into the consumer project's virtual control plane and
 // the services operator reconciles it into the provider project.
 //
+// +genclient
+// +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
