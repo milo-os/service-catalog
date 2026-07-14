@@ -47,7 +47,8 @@ until the platform reaches an answer, or check back later with
 // *activation.Error carrying a process exit code — see NewServicesCommand's
 // doc comment for who is responsible for mapping that to os.Exit.
 func runEnable(cmd *cobra.Command, opts ServicesCommandOptions, name string, ropts activation.RequestOptions) error {
-	if err := requireProject(opts); err != nil {
+	project, err := resolveProject(opts)
+	if err != nil {
 		return err
 	}
 	ctx := cmd.Context()
@@ -74,7 +75,7 @@ func runEnable(cmd *cobra.Command, opts ServicesCommandOptions, name string, rop
 		Service: info,
 		Client:  ec,
 		IO:      activationIO(opts.IOStreams),
-		Project: opts.Project,
+		Project: project,
 	}
 	return requester.Request(ctx, ropts)
 }

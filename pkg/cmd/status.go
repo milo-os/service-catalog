@@ -25,7 +25,8 @@ not yet requested for the current project.`,
 }
 
 func runStatus(cmd *cobra.Command, opts ServicesCommandOptions, name string) error {
-	if err := requireProject(opts); err != nil {
+	project, err := resolveProject(opts)
+	if err != nil {
 		return err
 	}
 	ctx := cmd.Context()
@@ -53,6 +54,6 @@ func runStatus(cmd *cobra.Command, opts ServicesCommandOptions, name string) err
 		return fmt.Errorf("checking %s access: %w", info.DisplayName, err)
 	}
 
-	activation.RenderStatus(opts.IOStreams.Out, info, opts.Project, state, entitlement)
+	activation.RenderStatus(opts.IOStreams.Out, info, project, state, entitlement)
 	return nil
 }

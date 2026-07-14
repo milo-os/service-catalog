@@ -37,10 +37,14 @@ type ServicesCommandOptions struct {
 	// even when the rest of the subcommand's work is project-scoped.
 	ProjectRESTConfig func() (*rest.Config, error)
 
-	// Project is the resolved project ID/name the entitlement client is scoped
-	// to, used for display and for validating a project is actually in scope
-	// (ServiceEntitlement does not exist at user/org scope).
-	Project string
+	// Project resolves the project ID/name the entitlement client is scoped to,
+	// used for display and for validating a project is actually in scope
+	// (ServiceEntitlement does not exist at user/org scope). It is a resolver
+	// func rather than an eager string for the same reason as CatalogRESTConfig:
+	// it must run at RunE time so a --project flag the host CLI parses on the
+	// actual invocation is visible, rather than being captured once when the
+	// command tree is constructed, before any flags are parsed.
+	Project func() (string, error)
 }
 
 // NewServicesCommand creates the root `services` command with the provided

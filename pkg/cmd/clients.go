@@ -6,14 +6,23 @@ import (
 	"go.miloapis.com/service-catalog/pkg/activation"
 )
 
-// requireProject reports an error when no project is in scope.
-// ServiceEntitlement only exists inside a project's own virtual control
-// plane, so every subcommand here needs one to do anything project-scoped.
-func requireProject(opts ServicesCommandOptions) error {
-	if opts.Project == "" {
-		return fmt.Errorf("no project set — pass --project or select one with datumctl")
+// resolveProject runs the Project resolver and reports an error when no
+// project is in scope. ServiceEntitlement only exists inside a project's own
+// virtual control plane, so every subcommand here needs one to do anything
+// project-scoped. The resolver runs here, at RunE time, so a host CLI's
+// --project flag is reflected rather than a value captured at construction.
+func resolveProject(opts ServicesCommandOptions) (string, error) {
+	if opts.Project == nil {
+		return "", fmt.Errorf("services: Project is not configured")
 	}
-	return nil
+	project, err := opts.Project()
+	if err != nil {
+		return "", err
+	}
+	if project == "" {
+		return "", fmt.Errorf("no project set — pass --project or select one with datumctl")
+	}
+	return project, nil
 }
 
 // newCatalogClient resolves opts.CatalogRESTConfig and builds a CatalogClient

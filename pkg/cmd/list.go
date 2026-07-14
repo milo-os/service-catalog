@@ -33,7 +33,8 @@ for the current project: enabled, pending approval, not requested, or denied.`,
 }
 
 func runList(cmd *cobra.Command, opts ServicesCommandOptions, output string) error {
-	if err := requireProject(opts); err != nil {
+	project, err := resolveProject(opts)
+	if err != nil {
 		return err
 	}
 	ctx := cmd.Context()
@@ -60,9 +61,9 @@ func runList(cmd *cobra.Command, opts ServicesCommandOptions, output string) err
 
 	switch output {
 	case "json":
-		return printJSON(opts.IOStreams.Out, activation.NewCatalogReport(opts.Project, entries))
+		return printJSON(opts.IOStreams.Out, activation.NewCatalogReport(project, entries))
 	case "yaml":
-		return printYAML(opts.IOStreams.Out, activation.NewCatalogReport(opts.Project, entries))
+		return printYAML(opts.IOStreams.Out, activation.NewCatalogReport(project, entries))
 	case "", "table":
 		activation.RenderList(opts.IOStreams.Out, entries)
 		return nil
