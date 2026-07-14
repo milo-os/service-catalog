@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -118,16 +119,17 @@ type fakeCluster struct {
 	cache  *fakeCache
 }
 
-func (c *fakeCluster) GetClient() client.Client                        { return c.client }
-func (c *fakeCluster) GetCache() cache.Cache                           { return c.cache }
-func (c *fakeCluster) GetScheme() *runtime.Scheme                      { return nil }
-func (c *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
-func (c *fakeCluster) GetConfig() *rest.Config                         { return nil }
-func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return c.cache }
-func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
-func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                  { return nil }
-func (c *fakeCluster) GetAPIReader() client.Reader                     { return nil }
-func (c *fakeCluster) Start(context.Context) error                     { return nil }
+func (c *fakeCluster) GetClient() client.Client                          { return c.client }
+func (c *fakeCluster) GetCache() cache.Cache                             { return c.cache }
+func (c *fakeCluster) GetScheme() *runtime.Scheme                        { return nil }
+func (c *fakeCluster) GetHTTPClient() *http.Client                       { return nil }
+func (c *fakeCluster) GetConfig() *rest.Config                           { return nil }
+func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer              { return c.cache }
+func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder   { return nil }
+func (c *fakeCluster) GetEventRecorder(string) events.EventRecorder      { return nil }
+func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                    { return nil }
+func (c *fakeCluster) GetAPIReader() client.Reader                       { return nil }
+func (c *fakeCluster) Start(context.Context) error                       { return nil }
 
 // fakeMCMgr satisfies mcmanager.Manager. Only Engage is exercised; it records
 // the context each engagement was started with so tests can assert the
@@ -143,11 +145,11 @@ func newFakeMCMgr() *fakeMCMgr {
 	return &fakeMCMgr{engaged: map[string]context.Context{}}
 }
 
-func (m *fakeMCMgr) Engage(ctx context.Context, name string, _ cluster.Cluster) error {
+func (m *fakeMCMgr) Engage(ctx context.Context, name multicluster.ClusterName, _ cluster.Cluster) error {
 	if m.engageErr != nil {
 		return m.engageErr
 	}
-	m.engaged[name] = ctx
+	m.engaged[string(name)] = ctx
 	return nil
 }
 

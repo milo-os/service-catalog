@@ -13,6 +13,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -60,7 +61,7 @@ func newEntitlement(name, serviceRef string) *servicesv1alpha1.ServiceEntitlemen
 func entitlementRequest(cluster, name string) mcreconcile.Request {
 	return mcreconcile.Request{
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: name}},
-		ClusterName: cluster,
+		ClusterName: multicluster.ClusterName(cluster),
 	}
 }
 

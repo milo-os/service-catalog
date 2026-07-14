@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -93,7 +94,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !entitlement.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, consumerProject, consumerClient, &entitlement)
+		return r.reconcileDelete(ctx, string(consumerProject), consumerClient, &entitlement)
 	}
 
 	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
@@ -121,7 +122,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	providerProject := svc.Spec.Owner.ProducerProjectRef.Name
-	providerCluster, err := r.Manager.GetCluster(ctx, providerProject)
+	providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(providerProject))
 	if err != nil {
 		// Provider project may not be engaged yet; requeue.
 		logger.Info("provider cluster not yet available, requeuing", "providerProject", providerProject, "err", err)
@@ -131,7 +132,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 
 	gated := svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider
 
-	consumerName := serviceConsumerName(svc.Spec.ServiceName, consumerProject)
+	consumerName := serviceConsumerName(svc.Spec.ServiceName, string(consumerProject))
 	consumer := &servicesv1alpha1.ServiceConsumer{
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
@@ -142,7 +143,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		// only set them on create.
 		if consumer.CreationTimestamp.IsZero() {
 			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
-			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
+			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
 		}
 		return nil
 	})
@@ -183,7 +184,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		if err := r.ensureDependencies(ctx, consumerClient, svc, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.ensureQuotaGrants(ctx, consumerClient, consumerProject, &entitlement, svc); err != nil {
+		if err := r.ensureQuotaGrants(ctx, consumerClient, string(consumerProject), &entitlement, svc); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -367,7 +368,7 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	}
 
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
-		providerCluster, err := r.Manager.GetCluster(ctx, svc.Spec.Owner.ProducerProjectRef.Name)
+		providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name))
 		if err != nil {
 			logger.Info("provider cluster unavailable during finalize, requeuing", "err", err)
 			return ctrl.Result{Requeue: true}, nil

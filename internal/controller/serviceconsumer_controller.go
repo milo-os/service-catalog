@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -116,7 +117,7 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	if consumerProject == "" {
 		return ctrl.Result{}, nil
 	}
-	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
+	consumerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(consumerProject))
 	if err != nil {
 		logger.Info("consumer cluster unavailable, requeuing", "consumerProject", consumerProject, "err", err)
 		return ctrl.Result{Requeue: true}, nil

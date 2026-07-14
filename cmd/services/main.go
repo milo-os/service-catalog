@@ -379,7 +379,7 @@ func main() {
 		}
 	}()
 	go func() {
-		if err := provider.Run(ctx, mcMgr); err != nil {
+		if err := provider.Start(ctx, mcMgr); err != nil {
 			setupLog.Error(err, "Milo multicluster provider failed")
 			os.Exit(1)
 		}

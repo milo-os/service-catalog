@@ -199,7 +199,8 @@ func consumerEventPredicate() predicate.Predicate {
 // that is mid-teardown (in tearingDown) reports not-engaged even though it is
 // still tracked as a retry marker — its cache is cancelled, so handing back the
 // cluster would only yield failing reads.
-func (p *Provider) Get(_ context.Context, consumerProject string) (cluster.Cluster, error) {
+func (p *Provider) Get(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
+	consumerProject := string(name)
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if _, tearing := p.tearingDown[consumerProject]; !tearing {
@@ -414,7 +415,7 @@ func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	if err := p.mcMgr.Engage(clusterCtx, consumerProject, cl); err != nil {
+	if err := p.mcMgr.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
 		cancel()
 		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
 	}

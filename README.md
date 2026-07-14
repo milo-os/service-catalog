@@ -9,7 +9,7 @@ Milo's central registry for managed services — the authoritative source of tru
 
 ## Development
 
-Prerequisites: Go 1.24+, [Task](https://taskfile.dev), and a Kubernetes cluster (local or remote).
+Prerequisites: Go 1.25+, [Task](https://taskfile.dev), and a Kubernetes cluster (local or remote).
 
 ```bash
 task build       # Build the binary
