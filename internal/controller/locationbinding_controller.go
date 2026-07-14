@@ -422,7 +422,7 @@ func (r *LocationBindingReconciler) cleanupBindings(
 	var list unstructured.UnstructuredList
 	list.SetGroupVersionKind(locationBindingGVK.GroupVersion().WithKind("LocationBindingList"))
 	if err := consumerClient.List(ctx, &list,
-		client.MatchingLabels{labelManagedBy: labelManagedByValue},
+		client.MatchingLabelsSelector{Selector: managedByFanoutSelector},
 	); err != nil {
 		if apimeta.IsNoMatchError(err) {
 			// The LocationBinding CRD is not installed in this project cluster;

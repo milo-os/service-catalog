@@ -12,10 +12,13 @@ import (
 
 // canManage mirrors the boolean the webhook derives from a SubjectAccessReview
 // for the serviceconsumers.manage permission: true for the services controller,
-// false for provider callers.
+// false for provider callers. canApprove mirrors the equivalent boolean for the
+// serviceconsumers.approve permission held by approver callers.
 const (
-	canManage    = true
-	cannotManage = false
+	canManage     = true
+	cannotManage  = false
+	canApprove    = true
+	cannotApprove = false
 )
 
 func newConsumer(name string, approval *servicesv1alpha1.ProviderApproval) *servicesv1alpha1.ServiceConsumer {
@@ -43,14 +46,54 @@ func TestValidateServiceConsumerCreate_RejectsNonManager(t *testing.T) {
 	}
 }
 
-func TestValidateServiceConsumerUpdate_ProviderAccessOnApproval(t *testing.T) {
+func TestValidateServiceConsumerUpdate_ApproverCanSetApproval(t *testing.T) {
+	// (a) approver (canApprove=true, canManage=false) CAN set approval.
 	oldSC := newConsumer("sc-x", nil)
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionApproved,
 	})
-	errs := ValidateServiceConsumerUpdate(cannotManage, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(cannotManage, canApprove, oldSC, newSC)
 	if len(errs) != 0 {
-		t.Fatalf("provider update of spec.approval should be allowed, got %v", errs)
+		t.Fatalf("approver update of spec.approval should be allowed, got %v", errs)
+	}
+}
+
+func TestValidateServiceConsumerUpdate_NeitherCannotSetApproval(t *testing.T) {
+	// (b) caller with neither manage nor approve CANNOT set approval.
+	oldSC := newConsumer("sc-x", nil)
+	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	errs := ValidateServiceConsumerUpdate(cannotManage, cannotApprove, oldSC, newSC)
+	if len(errs) == 0 {
+		t.Fatal("expected error when caller without manage or approve sets spec.approval")
+	}
+}
+
+func TestValidateServiceConsumerUpdate_ManagerCanSetApproval(t *testing.T) {
+	// (c) manage caller can still set approval without needing approve.
+	oldSC := newConsumer("sc-x", nil)
+	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	errs := ValidateServiceConsumerUpdate(canManage, cannotApprove, oldSC, newSC)
+	if len(errs) != 0 {
+		t.Fatalf("manage-capable update of spec.approval should be allowed, got %v", errs)
+	}
+}
+
+func TestValidateServiceConsumerUpdate_NonApprovalUpdateUnaffected(t *testing.T) {
+	// (d) a non-approval update by a permitted caller is unaffected. A manage
+	// caller updating only status/no-op spec changes succeeds.
+	oldSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	errs := ValidateServiceConsumerUpdate(canManage, cannotApprove, oldSC, newSC)
+	if len(errs) != 0 {
+		t.Fatalf("non-approval no-op update should be allowed, got %v", errs)
 	}
 }
 
@@ -58,19 +101,31 @@ func TestValidateServiceConsumerUpdate_ProviderRejectedOnServiceRef(t *testing.T
 	oldSC := newConsumer("sc-x", nil)
 	newSC := newConsumer("sc-x", nil)
 	newSC.Spec.ServiceRef.Name = "other"
-	errs := ValidateServiceConsumerUpdate(cannotManage, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(cannotManage, cannotApprove, oldSC, newSC)
 	if len(errs) == 0 {
 		t.Fatal("expected error when provider mutates spec.serviceRef")
 	}
 }
 
-func TestValidateServiceConsumerUpdate_ManagerAccessOnServiceRef(t *testing.T) {
+func TestValidateServiceConsumerUpdate_ManagerRejectedOnServiceRef(t *testing.T) {
+	// serviceRef is the record's identity and is immutable even for manage holders.
 	oldSC := newConsumer("sc-x", nil)
 	newSC := newConsumer("sc-x", nil)
 	newSC.Spec.ServiceRef.Name = "other"
-	errs := ValidateServiceConsumerUpdate(canManage, oldSC, newSC)
-	if len(errs) != 0 {
-		t.Fatalf("manage-capable update of spec.serviceRef should be allowed, got %v", errs)
+	errs := ValidateServiceConsumerUpdate(canManage, cannotApprove, oldSC, newSC)
+	if len(errs) == 0 {
+		t.Fatal("expected error when manage caller mutates spec.serviceRef")
+	}
+}
+
+func TestValidateServiceConsumerUpdate_ManagerRejectedOnConsumerProjectRef(t *testing.T) {
+	// consumerProjectRef is the record's identity and is immutable even for manage holders.
+	oldSC := newConsumer("sc-x", nil)
+	newSC := newConsumer("sc-x", nil)
+	newSC.Spec.ConsumerProjectRef.Name = "other-proj"
+	errs := ValidateServiceConsumerUpdate(canManage, cannotApprove, oldSC, newSC)
+	if len(errs) == 0 {
+		t.Fatal("expected error when manage caller mutates spec.consumerProjectRef")
 	}
 }
 
@@ -81,9 +136,22 @@ func TestValidateServiceConsumerUpdate_DeniedImmutable(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionApproved,
 	})
-	errs := ValidateServiceConsumerUpdate(cannotManage, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(cannotManage, canApprove, oldSC, newSC)
 	if len(errs) == 0 {
 		t.Fatal("expected error flipping Denied -> Approved")
+	}
+}
+
+func TestValidateServiceConsumerUpdate_DeniedImmutableEvenForPrivileged(t *testing.T) {
+	oldSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionDenied,
+	})
+	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
+		Decision: servicesv1alpha1.ApprovalDecisionApproved,
+	})
+	errs := ValidateServiceConsumerUpdate(canManage, cannotApprove, oldSC, newSC)
+	if len(errs) == 0 {
+		t.Fatal("expected error flipping Denied -> Approved even for manage-capable caller")
 	}
 }
 
@@ -95,7 +163,7 @@ func TestValidateServiceConsumerUpdate_DeniedNoOp(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionDenied,
 	})
-	errs := ValidateServiceConsumerUpdate(cannotManage, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(cannotManage, cannotApprove, oldSC, newSC)
 	if len(errs) != 0 {
 		t.Fatalf("Denied -> Denied should be allowed, got %v", errs)
 	}
@@ -107,7 +175,7 @@ func TestValidateServiceConsumerUpdate_FirstTimeDenied(t *testing.T) {
 	newSC := newConsumer("sc-x", &servicesv1alpha1.ProviderApproval{
 		Decision: servicesv1alpha1.ApprovalDecisionDenied,
 	})
-	errs := ValidateServiceConsumerUpdate(cannotManage, oldSC, newSC)
+	errs := ValidateServiceConsumerUpdate(cannotManage, canApprove, oldSC, newSC)
 	if len(errs) != 0 {
 		t.Fatalf("first-time Denied should be allowed, got %v", errs)
 	}

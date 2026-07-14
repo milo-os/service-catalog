@@ -5,6 +5,16 @@ resources:
   - ../../base/crd
   - ../../base/manager
   - ../../base/certmanager
+  # Dependency CRDs owned by other repos, pulled from upstream pinned to the
+  # exact commits in go.mod (milo a78982bd, billing 385a1b36). Keep these refs
+  # in sync with go.mod when the modules are bumped.
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/quota/quota.miloapis.com_resourcegrants.yaml
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/quota/quota.miloapis.com_resourceregistrations.yaml
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/quota/quota.miloapis.com_resourceclaims.yaml
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/resourcemanager/resourcemanager.miloapis.com_projects.yaml
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/infrastructure/infrastructure.miloapis.com_projectcontrolplanes.yaml
+  - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_meterdefinitions.yaml
+  - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_monitoredresourcetypes.yaml
 
 
 components:

@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +38,14 @@ const (
 	reasonServiceNotPublished        = "ServiceNotPublished"
 )
 
+// pendingApprovalRequeueInterval bounds the latency between a provider
+// recording an approval decision and the entitlement reflecting it. The
+// decision lives on a ServiceConsumer in the provider project's control
+// plane, which this controller doesn't watch; the consumer controller
+// normally propagates it, but if that write is missed the only other
+// trigger is the multi-hour cache resync.
+const pendingApprovalRequeueInterval = 2 * time.Minute
+
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
 // reconciler reads the referenced Service from the root cluster, resolves the
@@ -57,6 +67,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourcegrants,verbs=get;list;create;update;patch;delete
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -93,8 +104,8 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, nil
 	}
 
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: entitlement.Spec.ServiceRef.Name}, &svc); err != nil {
+	svc, err := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, r.setRejectedStatus(ctx, consumerClient, &entitlement,
 				reasonServiceNotPublished, "The requested service could not be found.")
@@ -125,8 +136,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
 	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
-		consumer.Spec.ServiceRef = servicesv1alpha1.ServiceRef{Name: svc.Name}
-		consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
+		// Mirror the caller's ref verbatim; the canonical name lives on
+		// status.serviceName. Both fields are immutable after creation — the
+		// webhook enforces this for everyone, including this controller — so
+		// only set them on create.
+		if consumer.CreationTimestamp.IsZero() {
+			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
+			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: consumerProject}
+		}
 		return nil
 	})
 	if err != nil {
@@ -134,7 +151,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated); err != nil {
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -155,25 +172,33 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		message = "The service provider denied this request."
 	}
 
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message); err != nil {
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Only enroll dependencies once the parent is Active. Dependency
-	// entitlements created earlier (while gated) would race the parent
-	// approval; defer creation until the parent is unblocked.
+	// Only enroll dependencies and provision quota once the parent is Active.
+	// Dependency entitlements created earlier (while gated) would race the
+	// parent approval; defer creation until the parent is unblocked.
 	if desiredPhase == servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.ensureDependencies(ctx, consumerClient, &svc, &entitlement); err != nil {
+		if err := r.ensureDependencies(ctx, consumerClient, svc, &entitlement); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.ensureQuotaGrants(ctx, consumerClient, consumerProject, &entitlement, svc); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
+	// Bound approval latency while waiting on the provider's decision.
+	if desiredPhase == servicesv1alpha1.EntitlementPhasePendingApproval {
+		return ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}, nil
+	}
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool) error {
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string) error {
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
+	consumer.Status.ServiceName = canonicalServiceName
 
 	desired := servicesv1alpha1.ConsumerPhaseActive
 	switch {
@@ -191,7 +216,7 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 		consumer.Status.EntitledAt = &now
 	}
 
-	if equalConsumerStatus(original, &consumer.Status) {
+	if apiequality.Semantic.DeepEqual(original, &consumer.Status) {
 		return nil
 	}
 	if err := providerClient.Status().Update(ctx, consumer); err != nil {
@@ -200,24 +225,14 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 	return nil
 }
 
-func equalConsumerStatus(a, b *servicesv1alpha1.ServiceConsumerStatus) bool {
-	if a.Phase != b.Phase {
-		return false
-	}
-	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {
-		return false
-	}
-	if a.ObservedGeneration != b.ObservedGeneration {
-		return false
-	}
-	return true
-}
-
-func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message string) error {
+func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
 	original := entitlement.Status.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
 	entitlement.Status.Phase = phase
+	if canonicalServiceName != "" {
+		entitlement.Status.ServiceName = canonicalServiceName
+	}
 	if entitlement.Status.Origin == "" {
 		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDirect
 	}
@@ -248,11 +263,11 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 }
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
-	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message)
+	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "")
 }
 
 func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {
-	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf {
+	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf || a.ServiceName != b.ServiceName {
 		return false
 	}
 	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {
@@ -280,36 +295,55 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	}
 
 	for _, dep := range svc.Spec.Dependencies {
-		depName := dep.ServiceRef.Name
+		depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
+		if err != nil {
+			return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+		}
+		depCanonical := depSvc.Spec.ServiceName
+		depEntitlementName := dep.ServiceRef.Name
+
 		var existing servicesv1alpha1.ServiceEntitlement
-		err := consumerClient.Get(ctx, types.NamespacedName{Name: depName}, &existing)
+		err = consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, &existing)
 		if err == nil {
 			continue
 		}
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depName, err)
+			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
+		}
+
+		// The Get returned NotFound, but an entitlement for the same dependency
+		// service may exist under a different metadata.name (e.g. created by the
+		// user directly using the canonical service name). Check by the stamped
+		// canonical name via the field index to avoid creating a duplicate.
+		var existingByCanonical servicesv1alpha1.ServiceEntitlementList
+		if err := consumerClient.List(ctx, &existingByCanonical,
+			client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
+			return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
+		}
+		if len(existingByCanonical.Items) > 0 {
+			continue
 		}
 
 		depEntitlement := &servicesv1alpha1.ServiceEntitlement{
-			ObjectMeta: metav1.ObjectMeta{Name: depName},
+			ObjectMeta: metav1.ObjectMeta{Name: depEntitlementName},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
-				ServiceRef: servicesv1alpha1.ServiceRef{Name: depName},
+				ServiceRef: servicesv1alpha1.ServiceRef{Name: depCanonical},
 			},
 		}
 		if err := consumerClient.Create(ctx, depEntitlement); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create dependency entitlement %q: %w", depName, err)
+			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
 		}
 
 		// Stamp Origin/DependencyOf on status so deletion logic can find this
 		// entitlement as a child of the parent.
 		fresh := &servicesv1alpha1.ServiceEntitlement{}
-		if err := consumerClient.Get(ctx, types.NamespacedName{Name: depName}, fresh); err != nil {
-			return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depName, err)
+		if err := consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, fresh); err != nil {
+			return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depEntitlementName, err)
 		}
 		fresh.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
 		fresh.Status.DependencyOf = parent.Name
 		if err := consumerClient.Status().Update(ctx, fresh); err != nil {
-			return fmt.Errorf("failed to stamp dependency origin on %q: %w", depName, err)
+			return fmt.Errorf("failed to stamp dependency origin on %q: %w", depEntitlementName, err)
 		}
 	}
 	return nil
@@ -324,9 +358,12 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 
 	// Resolve the provider project. The Service may have moved phase (or been
 	// deleted) in the meantime; if so we still want to clean up the consumer.
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: entitlement.Spec.ServiceRef.Name}, &svc); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get Service during finalize: %w", err)
+	svc, svcErr := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
+	if svcErr != nil && !apierrors.IsNotFound(svcErr) {
+		return ctrl.Result{}, fmt.Errorf("failed to get Service during finalize: %w", svcErr)
+	}
+	if svc == nil {
+		svc = &servicesv1alpha1.Service{}
 	}
 
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
@@ -401,12 +438,39 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 		}
 	}
 
+	// Clean up any ResourceGrants that were provisioned for this entitlement.
+	if err := r.pruneQuotaGrants(ctx, consumerClient, entitlement); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to prune quota grants: %w", err)
+	}
+
 	controllerutil.RemoveFinalizer(entitlement, serviceEntitlementFinalizer)
 	if err := consumerClient.Update(ctx, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
 	logger.Info("finalized ServiceEntitlement", "name", entitlement.Name)
 	return ctrl.Result{}, nil
+}
+
+// resolveService looks up a Service by canonical name (spec.serviceName) first,
+// falling back to Kubernetes object name for backward-compatibility with
+// entitlements created before the canonical-name convention was enforced.
+func (r *ServiceEntitlementReconciler) resolveService(ctx context.Context, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
+	var list servicesv1alpha1.ServiceList
+	if err := r.rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err != nil {
+		// Propagate transient errors (cache not synced, API unavailable, etc.)
+		// rather than silently falling through to the name-based Get, which
+		// could return the wrong Service or a misleading NotFound.
+		return nil, fmt.Errorf("failed to list Services by spec.serviceName %q: %w", nameOrCanonical, err)
+	}
+	if len(list.Items) > 0 {
+		return &list.Items[0], nil
+	}
+	// Backward-compat: try by Kubernetes object name.
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: nameOrCanonical}, &svc); err != nil {
+		return nil, err
+	}
+	return &svc, nil
 }
 
 // serviceConsumerName derives a deterministic, DNS-safe name for the
@@ -422,10 +486,59 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 // WithEngageWithProviderClusters(true) — and *not* WithEngageWithLocalCluster —
 // because ServiceEntitlements live in project virtual control planes, never
 // the root cluster.
-func (r *ServiceEntitlementReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
-	r.rootClient = rootClient
-	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
+	r.rootClient = rootMgr.GetClient()
+	r.Manager = mcMgr
+
+	// Index ServiceEntitlement objects by the canonical service name stamped
+	// on status.serviceName. The multicluster manager propagates the index to
+	// every engaged project cluster. Registered once here; the ServiceConsumer
+	// reconciler relies on this index too.
+	if err := mcMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.ServiceEntitlement{},
+		entitlementServiceNameIndex,
+		entitlementServiceNameIndexer,
+	); err != nil {
+		return fmt.Errorf("failed to index ServiceEntitlement by %s: %w", entitlementServiceNameIndex, err)
+	}
+
+	// Index Service objects by spec.serviceName so entitlements can resolve
+	// their serviceRef by canonical name without a full list scan.
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.Service{},
+		"spec.serviceName",
+		func(obj client.Object) []string {
+			svc := obj.(*servicesv1alpha1.Service)
+			if svc.Spec.ServiceName == "" {
+				return nil
+			}
+			return []string{svc.Spec.ServiceName}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index Service by spec.serviceName: %w", err)
+	}
+
+	// Index ServiceConfiguration objects by spec.serviceRef.name so
+	// ensureQuotaGrants can efficiently find the configuration for a given
+	// Service without a full list scan.
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&servicesv1alpha1.ServiceConfiguration{},
+		"spec.serviceRef.name",
+		func(obj client.Object) []string {
+			sc := obj.(*servicesv1alpha1.ServiceConfiguration)
+			if sc.Spec.ServiceRef.Name == "" {
+				return nil
+			}
+			return []string{sc.Spec.ServiceRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index ServiceConfiguration by spec.serviceRef.name: %w", err)
+	}
+
+	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
 		Complete(r)

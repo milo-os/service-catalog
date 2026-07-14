@@ -168,6 +168,20 @@ spec:
                         the metric measures.
                       maxLength: 1024
                       type: string
+                    dimensions:
+                      description: |-
+                        Dimensions is an ordered list of attribute keys that downstream
+                        systems may group, filter, or price by (e.g. "model", "region",
+                        "tier"). Each key must be declared here for a producer to attach it
+                        to a usage event; the billing validator quarantines events carrying
+                        undeclared dimension keys. Adding a dimension is additive; removing
+                        one is a breaking change and must ship as a new meter. Fans out to
+                        MeterDefinition.spec.measurement.dimensions.
+                      items:
+                        type: string
+                      maxItems: 32
+                      type: array
+                      x-kubernetes-list-type: atomic
                     displayName:
                       description: DisplayName is a human-readable label shown in
                         portals and invoices.
@@ -352,6 +366,20 @@ spec:
                           format: int64
                           minimum: 0
                           type: integer
+                        description:
+                          description: |-
+                            Description is a plain-English explanation of what this quota limits
+                            (e.g. "Maximum number of compute instances per project"). Propagated to
+                            the generated ResourceRegistration's kubernetes.io/description annotation.
+                          maxLength: 1024
+                          type: string
+                        displayName:
+                          description: |-
+                            DisplayName is a human-readable name for this quota surfaced in portals
+                            and dashboards (e.g. "Instances"). Propagated to the generated
+                            ResourceRegistration's kubernetes.io/display-name annotation.
+                          maxLength: 128
+                          type: string
                         maxLimit:
                           description: MaxLimit is the maximum quota any override
                             may grant. Zero means no cap.
