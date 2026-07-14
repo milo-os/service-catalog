@@ -158,6 +158,7 @@ func (f *QuotaFanOut) applyResourceRegistrations(
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("set controller ref on ResourceRegistration %q: %w", name, err)
 		}
+		//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
 		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(quotaFieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply ResourceRegistration %q: %w", name, err)
 		}
@@ -229,6 +230,7 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("set controller ref on ClaimCreationPolicy %q: %w", name, err)
 		}
+		//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
 		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(quotaFieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply ClaimCreationPolicy %q: %w", name, err)
 		}

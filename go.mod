@@ -1,6 +1,6 @@
 module go.miloapis.com/service-catalog
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/go-logr/logr v1.4.3
@@ -22,7 +22,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0
 )
 
-replace go.miloapis.com/billing => github.com/milo-os/billing v0.0.0-20260416220423-385a1b369d72
+replace go.miloapis.com/billing => github.com/milo-os/billing v0.2.15-0.20260714133713-363518336863
 
 require (
 	cel.dev/expr v0.24.0 // indirect

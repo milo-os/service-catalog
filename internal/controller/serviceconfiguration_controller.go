@@ -293,7 +293,6 @@ func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	if r.BillingFanOut == nil {
 		r.BillingFanOut = &BillingFanOut{
 			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
 		}
 	}
 	if r.QuotaFanOut == nil {

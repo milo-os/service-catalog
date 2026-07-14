@@ -154,6 +154,7 @@ func (r *OrganizationDefaultsReconciler) Reconcile(ctx context.Context, req reco
 					},
 				}
 
+				//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
 				if err := r.Patch(ctx, grant, client.Apply,
 					client.FieldOwner(orgDefaultsFieldManager),
 					client.ForceOwnership,
