@@ -254,6 +254,9 @@ func main() {
 		}
 
 		consumerOpts := consumer.Options{
+			// mgr.GetClient() is pointed at the base Milo URL where cluster-scoped
+			// Service objects live; providerMgr is project-scoped and cannot serve them.
+			RootClient: mgr.GetClient(),
 			// Canonical Service.spec.serviceName values the catalog owns.
 			ServiceNames: csp.ServiceNames,
 			// Engaged consumer clusters must use our scheme; without it their

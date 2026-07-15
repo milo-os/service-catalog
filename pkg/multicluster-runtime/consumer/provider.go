@@ -81,6 +81,7 @@ type index struct {
 type Provider struct {
 	opts               Options
 	log                logr.Logger
+	rootClient      client.Client
 	providerClient     client.Client
 	providerRestConfig *rest.Config
 	resyncInterval     time.Duration
@@ -109,6 +110,9 @@ type Provider struct {
 // that manager's rest.Config to the matching consumer project when engaging each
 // one — there is no separate ProviderProject field that could disagree.
 func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
+	if opts.RootClient == nil {
+		return nil, fmt.Errorf("consumer.Options.RootClient must be set")
+	}
 	if len(opts.ServiceNames) == 0 {
 		return nil, fmt.Errorf("consumer.Options.ServiceNames must be non-empty")
 	}
@@ -130,6 +134,7 @@ func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
 	p := &Provider{
 		opts:               opts,
 		log:                log.Log.WithName("consumer-provider"),
+		rootClient:      opts.RootClient,
 		providerClient:     providerMgr.GetClient(),
 		providerRestConfig: providerMgr.GetConfig(),
 		resyncInterval:     opts.ResyncInterval,
@@ -332,8 +337,8 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 // while any sibling service still keeps it active.
 func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[string]struct{}, err error) {
 	var services servicesv1alpha1.ServiceList
-	if err := p.providerClient.List(ctx, &services); err != nil {
-		return nil, nil, fmt.Errorf("failed to list Services in provider project: %w", err)
+	if err := p.rootClient.List(ctx, &services); err != nil {
+		return nil, nil, fmt.Errorf("failed to list Services: %w", err)
 	}
 
 	// Resolve our canonical service names to Service object names. serviceRef.name

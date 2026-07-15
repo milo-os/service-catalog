@@ -20,6 +20,10 @@ const DefaultResyncInterval = 5 * time.Minute
 
 // Options configures a Provider.
 type Options struct {
+	// RootClient must point at the base Milo cluster (not a project control
+	// plane). Used to list cluster-scoped Service objects. Required.
+	RootClient client.Client
+
 	// ServiceNames is the set of CANONICAL service names (Service.spec.serviceName,
 	// e.g. "compute.miloapis.com") this operator owns. Only ServiceConsumers whose
 	// spec.serviceRef.name resolves to one of these canonical names are watched,

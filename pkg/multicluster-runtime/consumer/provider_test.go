@@ -157,6 +157,8 @@ type providerOpt func(*Provider)
 
 func withMCMgr(m multicluster.Aware) providerOpt { return func(p *Provider) { p.aware = m } }
 
+func withRootClient(c client.Client) providerOpt { return func(p *Provider) { p.rootClient = c } }
+
 func withNewCluster(fn func(*rest.Config, ...cluster.Option) (cluster.Cluster, error)) providerOpt {
 	return func(p *Provider) { p.newCluster = fn }
 }
@@ -181,6 +183,7 @@ func newTestProvider(providerClient client.Client, serviceNames []string, opts .
 	p := &Provider{
 		opts:               Options{ServiceNames: serviceNames},
 		log:                logr.Discard(),
+		rootClient:         providerClient,
 		providerClient:     providerClient,
 		providerRestConfig: &rest.Config{Host: "https://localhost"},
 		resyncInterval:     DefaultResyncInterval,
@@ -295,6 +298,32 @@ func TestComputeActiveSet_NoOwnedServices(t *testing.T) {
 	}
 	if len(revoked) != 0 {
 		t.Errorf("expected empty revoked set, got %v", keys(revoked))
+	}
+}
+
+func TestComputeActiveSet_ReadsServicesFromBaseClient(t *testing.T) {
+	// Service is cluster-scoped and lives in the base Milo cluster, not the
+	// provider project. Put each type on the client that would serve it in
+	// production; if computeActiveSet reads Services from the wrong client it
+	// finds nothing and the active set is empty.
+	serviceClient := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(newService(computeObject, computeCanonical)).
+		Build()
+	providerClient := newProviderClient(t,
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	)
+
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withRootClient(serviceClient),
+	)
+
+	active, _, err := p.computeActiveSet(context.Background())
+	if err != nil {
+		t.Fatalf("computeActiveSet: %v", err)
+	}
+	if _, ok := active["proj-a"]; !ok {
+		t.Errorf("expected proj-a in active set (got %v); Service is cluster-scoped and must be read from the base Milo client, not the provider-project client", keys(active))
 	}
 }
 
