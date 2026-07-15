@@ -23,7 +23,7 @@ spec:
     sources:
       - type: LLMDocs
         title: StreamCo service overview (llms-full)
-        url: http://streamco.agent-framework-playground.svc:7810/llms-full.txt
+        url: http://streamco.patch-playground.svc.cluster.local:7810/llms-full.txt
     concepts:
       - gvk:
           group: streaming.streamco.example
@@ -35,7 +35,7 @@ spec:
   tools:
     mcpServers:
       - name: streamco
-        endpoint: http://streamco.agent-framework-playground.svc:7810/mcp
+        endpoint: http://streamco.patch-playground.svc.cluster.local:7810/mcp
         toolSelector:
           include:
             - streams_list

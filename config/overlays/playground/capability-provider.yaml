@@ -27,14 +27,18 @@ spec:
               value: ":8080"
             - name: CONSUMER_PROJECT
               value: "demo-project"
-            # The Envoy AI Gateway MCPRoute base URL. Every provider MCP
-            # endpoint on an AgentBinding is rewritten onto this so tool calls
-            # are metered and project-attributed. Set by pg-infra to the
-            # cluster's real MCPRoute URL; the default is a placeholder.
+            # Envoy AI Gateway MCPRoute integration. The gateway federates all
+            # MCP backends under a SINGLE /mcp endpoint (no per-server suffix)
+            # and namespaces tools by a backend prefix. catalog-up.sh resolves
+            # the dynamically-named Envoy Service and sets MCP_GATEWAY_BASE_URL
+            # (…/mcp) at deploy time; these are the defaults when it does not.
+            # Empty base = pass-through (direct endpoints, no gateway).
             - name: MCP_GATEWAY_BASE_URL
-              value: "http://ai-gateway.envoy-gateway-system.svc:80/mcp"
+              value: ""
             - name: MCP_GATEWAY_APPEND_SERVER_NAME
-              value: "true"
+              value: "false"
+            - name: MCP_GATEWAY_TOOL_PREFIX
+              value: ""
           ports:
             - containerPort: 8080
               name: http

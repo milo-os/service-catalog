@@ -70,9 +70,40 @@ fi
 log "Applying catalog overlay (CRDs + manager + webhooks + adapter)"
 kubectl apply -k "${OVERLAY}"
 
+# Resolve the Envoy AI Gateway MCPRoute endpoint. The gateway federates all MCP
+# backends under one /mcp path and namespaces tools by a backend prefix, so we
+# disable per-server URL suffixing and prefix tool names. The Envoy Service name
+# is generated (hash suffix), so resolve it by owning-gateway label rather than
+# hardcoding. All three are env-overridable.
+GATEWAY_NS="${GATEWAY_NS:-envoy-gateway-system}"
+GATEWAY_NAME="${GATEWAY_NAME:-patch-playground}"
+MCP_GATEWAY_TOOL_PREFIX="${MCP_GATEWAY_TOOL_PREFIX:-streamco-backend__}"
+
+if [[ -z "${MCP_GATEWAY_BASE_URL:-}" ]]; then
+  gw_svc="$(kubectl -n "${GATEWAY_NS}" get svc \
+    -l "gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -n "${gw_svc}" ]]; then
+    MCP_GATEWAY_BASE_URL="http://${gw_svc}.${GATEWAY_NS}.svc.cluster.local:80/mcp"
+    note "resolved Envoy AI Gateway: ${MCP_GATEWAY_BASE_URL}"
+  else
+    note "no Envoy AI Gateway found (label owning-gateway-name=${GATEWAY_NAME} in ${GATEWAY_NS}) — adapter runs in pass-through mode; set MCP_GATEWAY_BASE_URL to enable rewriting"
+  fi
+fi
+
 if [[ -n "${MCP_GATEWAY_BASE_URL:-}" ]]; then
-  log "Overriding MCP_GATEWAY_BASE_URL=${MCP_GATEWAY_BASE_URL}"
-  kubectl -n "${NS}" set env deployment/capability-provider "MCP_GATEWAY_BASE_URL=${MCP_GATEWAY_BASE_URL}"
+  log "Configuring adapter for the gateway"
+  kubectl -n "${NS}" set env deployment/capability-provider \
+    "MCP_GATEWAY_BASE_URL=${MCP_GATEWAY_BASE_URL}" \
+    "MCP_GATEWAY_APPEND_SERVER_NAME=false" \
+    "MCP_GATEWAY_TOOL_PREFIX=${MCP_GATEWAY_TOOL_PREFIX}"
+fi
+
+# Images use a fixed :dev tag, so a rebuild is not observed by apply/set-env
+# (identical spec). Force new pods onto the freshly kind-loaded image.
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  log "Restarting deployments onto the rebuilt images"
+  kubectl -n "${NS}" rollout restart deployment/services-controller-manager deployment/capability-provider
 fi
 
 log "Waiting for CRDs to establish"

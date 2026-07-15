@@ -47,6 +47,8 @@ func main() {
 		"Envoy AI Gateway MCPRoute base URL to rewrite provider MCP endpoints onto (empty = pass through)")
 	appendServerName := flagBoolOrEnv("mcp-gateway-append-name", "MCP_GATEWAY_APPEND_SERVER_NAME", true,
 		"append /<serverName> to the gateway base URL per MCP server")
+	toolPrefix := flagOrEnv("mcp-gateway-tool-prefix", "MCP_GATEWAY_TOOL_PREFIX", "",
+		"prefix prepended to every tool name for the gateway's federated namespace (e.g. streamco-backend__)")
 	flag.Parse()
 
 	scheme := runtime.NewScheme()
@@ -69,7 +71,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	rw := rewriteConfig{GatewayBaseURL: *gatewayBaseURL, AppendServerName: *appendServerName}
+	rw := rewriteConfig{GatewayBaseURL: *gatewayBaseURL, AppendServerName: *appendServerName, ToolPrefix: *toolPrefix}
 	h := newHandler(&clientLister{client: c}, *consumerProject, rw, logger)
 
 	srv := &http.Server{
@@ -83,6 +85,7 @@ func main() {
 		"consumerProject", *consumerProject,
 		"gatewayBaseURL", *gatewayBaseURL,
 		"appendServerName", *appendServerName,
+		"toolPrefix", *toolPrefix,
 	)
 
 	go func() {

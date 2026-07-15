@@ -114,6 +114,46 @@ func TestTranslateBinding_EndpointRewrite(t *testing.T) {
 	}
 }
 
+// The Envoy AI Gateway convention: a single federated /mcp endpoint (no
+// per-server suffix) and tools namespaced by a backend prefix. The capability
+// document must carry the federated tool names the assistant will ask for.
+func TestTranslateBinding_EnvoyGatewayConvention(t *testing.T) {
+	b := streamcoBinding()
+	b.Spec.Tools.MCPServers[0].Mutating = []string{"streams_get"}
+	rw := rewriteConfig{
+		GatewayBaseURL:   "http://envoy-abc123.envoy-gateway-system.svc.cluster.local:80/mcp",
+		AppendServerName: false,
+		ToolPrefix:       "streamco-backend__",
+	}
+	doc := translateBinding(b, "demo-project", rw)
+	srv := doc.Spec.Tools.MCPServers[0]
+
+	if srv.Endpoint != "http://envoy-abc123.envoy-gateway-system.svc.cluster.local:80/mcp" {
+		t.Errorf("endpoint = %q (want single /mcp, no suffix)", srv.Endpoint)
+	}
+	want := []string{"streamco-backend__streams_list", "streamco-backend__pipeline_diagnose"}
+	if len(srv.ToolSelector.Include) != len(want) {
+		t.Fatalf("include = %v", srv.ToolSelector.Include)
+	}
+	for i, w := range want {
+		if srv.ToolSelector.Include[i] != w {
+			t.Errorf("include[%d] = %q, want %q", i, srv.ToolSelector.Include[i], w)
+		}
+	}
+	if len(srv.Mutating) != 1 || srv.Mutating[0] != "streamco-backend__streams_get" {
+		t.Errorf("mutating = %v (want prefixed)", srv.Mutating)
+	}
+}
+
+// With no prefix configured, tool names pass through unchanged (direct path).
+func TestTranslateBinding_NoPrefixPassThrough(t *testing.T) {
+	doc := translateBinding(streamcoBinding(), "demo-project", rewriteConfig{})
+	got := doc.Spec.Tools.MCPServers[0].ToolSelector.Include
+	if len(got) != 2 || got[0] != "streams_list" || got[1] != "pipeline_diagnose" {
+		t.Errorf("include = %v, want raw names", got)
+	}
+}
+
 // The assistant's MCPServer.toolSelector has no omitempty, so it must always
 // serialize as an object even when the provider declared no selector.
 func TestTranslateTools_ToolSelectorAlwaysPresent(t *testing.T) {

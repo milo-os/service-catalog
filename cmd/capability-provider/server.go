@@ -53,15 +53,12 @@ func (h *handler) routes() *http.ServeMux {
 	return mux
 }
 
-func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
-	// Readiness proves the apiserver connection works: a bad kubeconfig or a
-	// missing AgentBinding CRD surfaces here rather than as an empty 200 on
-	// the documents endpoint.
-	if _, err := h.lister.ListBindings(r.Context()); err != nil {
-		h.logger.Warn("capability.readyz.list_failed", "error", err.Error())
-		http.Error(w, "not ready: "+err.Error(), http.StatusServiceUnavailable)
-		return
-	}
+func (h *handler) readyz(w http.ResponseWriter, _ *http.Request) {
+	// Readiness means "the HTTP server is listening and can serve". We
+	// deliberately do NOT list AgentBindings here: an uncached apiserver List
+	// on every probe is heavy and flaps readiness whenever the List runs long,
+	// which needlessly stalls rollouts. A genuine apiserver/CRD failure is
+	// surfaced per-request as a 502 from the documents endpoint instead.
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }

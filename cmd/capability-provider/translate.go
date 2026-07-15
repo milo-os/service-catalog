@@ -21,12 +21,29 @@ type rewriteConfig struct {
 	// gateway-less smoke test.
 	GatewayBaseURL string
 
-	// AppendServerName controls the per-server path convention. When true
-	// (the default), the rewritten endpoint is "<base>/<server.Name>", so a
-	// single MCPRoute can fan out to several named servers by path. When
-	// false, every server maps to GatewayBaseURL verbatim (single-endpoint
-	// gateway).
+	// AppendServerName controls the per-server path convention. When true,
+	// the rewritten endpoint is "<base>/<server.Name>", so a single MCPRoute
+	// can fan out to several named servers by path. When false (the Envoy AI
+	// Gateway convention), every server maps to GatewayBaseURL verbatim: the
+	// gateway federates all backends under one endpoint and distinguishes
+	// tools by a name prefix (see ToolPrefix) rather than a URL suffix.
 	AppendServerName bool
+
+	// ToolPrefix, when non-empty, is prepended to every allow-listed and
+	// mutating tool name during translation (e.g. "streamco-backend__"). The
+	// Envoy AI Gateway federates several MCP backends behind one endpoint and
+	// namespaces their tools as "<backend>__<tool>"; the assistant must ask
+	// for the federated names, so the capability document has to carry them.
+	// Empty leaves tool names untouched (direct/pass-through, no gateway).
+	ToolPrefix string
+}
+
+// prefixTool applies the configured gateway tool-name prefix.
+func (c rewriteConfig) prefixTool(tool string) string {
+	if c.ToolPrefix == "" {
+		return tool
+	}
+	return c.ToolPrefix + tool
 }
 
 // rewriteEndpoint returns the gateway URL a given provider MCP server should
@@ -107,14 +124,21 @@ func translateTools(t *servicesv1alpha1.AgentTools, rw rewriteConfig) *tools {
 
 		var include []string
 		if srv.ToolSelector != nil {
-			include = append(include, srv.ToolSelector.Include...)
+			for _, t := range srv.ToolSelector.Include {
+				include = append(include, rw.prefixTool(t))
+			}
+		}
+
+		var mutating []string
+		for _, t := range srv.Mutating {
+			mutating = append(mutating, rw.prefixTool(t))
 		}
 
 		out.MCPServers = append(out.MCPServers, mcpServer{
 			Name:         srv.Name,
 			Endpoint:     endpoint,
 			ToolSelector: toolSelector{Include: include},
-			Mutating:     append([]string(nil), srv.Mutating...),
+			Mutating:     mutating,
 		})
 	}
 	return out

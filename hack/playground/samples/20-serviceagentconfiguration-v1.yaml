@@ -21,10 +21,10 @@ spec:
     sources:
       - type: LLMDocs
         title: StreamCo service overview (llms-full)
-        url: http://streamco.agent-framework-playground.svc:7810/llms-full.txt
+        url: http://streamco.patch-playground.svc.cluster.local:7810/llms-full.txt
       - type: Runbook
         title: Pipeline consumer-lag runbook
-        url: http://streamco.agent-framework-playground.svc:7810/runbooks/lag.md
+        url: http://streamco.patch-playground.svc.cluster.local:7810/runbooks/lag.md
     concepts:
       - gvk:
           group: streaming.streamco.example
@@ -43,7 +43,7 @@ spec:
   tools:
     mcpServers:
       - name: streamco
-        endpoint: http://streamco.agent-framework-playground.svc:7810/mcp
+        endpoint: http://streamco.patch-playground.svc.cluster.local:7810/mcp
         toolSelector:
           include:
             - streams_list
@@ -52,7 +52,7 @@ spec:
         mutating: []
   delegation:
     a2a:
-      agentCardUrl: http://streamco.agent-framework-playground.svc:7810/.well-known/agent-card.json
+      agentCardUrl: http://streamco.patch-playground.svc.cluster.local:7810/.well-known/agent-card.json
       skills:
         - pipeline-diagnosis
   authority:
