@@ -296,11 +296,13 @@ func main() {
 			os.Exit(1)
 		}
 
-		// The provider watch (gated on provider-project readiness), the consumer
-		// provider Run, and the consumer multicluster manager each block and
-		// depend on one another, so each runs in its own goroutine — mirroring
-		// the mcMgr wiring below. The consumer manager engages no local "" cluster:
-		// its membership is exclusively the consumer projects the provider hands it.
+		// The provider watch (gated on provider-project readiness) and the consumer
+		// multicluster manager each block, so each runs in its own goroutine —
+		// mirroring the mcMgr wiring below. consumerProvider implements
+		// multicluster.ProviderRunnable, so consumerMcMgr.Start calls
+		// consumerProvider.Start automatically; no separate goroutine needed.
+		// The consumer manager engages no local "" cluster: its membership is
+		// exclusively the consumer projects the provider hands it.
 		go func() {
 			if err := consumer.WaitProviderProjectReady(ctx, cfg, csp.ProviderProject); err != nil {
 				setupLog.Error(err, "provider project did not become ready")
@@ -308,12 +310,6 @@ func main() {
 			}
 			if err := providerMgr.Start(ctx); err != nil {
 				setupLog.Error(err, "provider-project manager failed")
-				os.Exit(1)
-			}
-		}()
-		go func() {
-			if err := consumerProvider.Run(ctx, consumerMcMgr); err != nil {
-				setupLog.Error(err, "consumer provider failed")
 				os.Exit(1)
 			}
 		}()

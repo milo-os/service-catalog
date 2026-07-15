@@ -28,13 +28,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
 var _ multicluster.Provider = &Provider{}
+var _ multicluster.ProviderRunnable = &Provider{}
 
 const (
 	// serviceRefNameField is the cache field index on
@@ -42,9 +42,9 @@ const (
 	// without scanning every ServiceConsumer in the provider project.
 	serviceRefNameField = "spec.serviceRef.name"
 
-	// mcMgrUnboundRequeue is how long to requeue when Run has not yet bound the
-	// multicluster manager. With two independently-started managers this window
-	// is wider than Milo's single-manager case, so the guard is retained.
+	// mcMgrUnboundRequeue is how long to requeue when Start has not yet bound
+	// the Aware. With two independently-started managers this window is wider
+	// than Milo's single-manager case, so the guard is retained.
 	mcMgrUnboundRequeue = 2 * time.Second
 
 	// cacheSyncTimeout bounds WaitForCacheSync for a single engagement so one
@@ -90,9 +90,9 @@ type Provider struct {
 	// serviceNames is the canonical Service.spec.serviceName set, for O(1) match.
 	serviceNames map[string]struct{}
 
-	lock      sync.Mutex
-	mcMgr     mcmanager.Manager
-	clusters  map[string]cluster.Cluster
+	lock     sync.Mutex
+	aware    multicluster.Aware
+	clusters map[string]cluster.Cluster
 	cancelFns map[string]context.CancelFunc
 	indexers  []index
 
@@ -211,13 +211,13 @@ func (p *Provider) Get(_ context.Context, name multicluster.ClusterName) (cluste
 	return nil, fmt.Errorf("consumer project %q not engaged: %w", consumerProject, multicluster.ErrClusterNotFound)
 }
 
-// Run binds the consumer multicluster manager to the provider, then blocks until
-// ctx is done. Launch it in a goroutine alongside providerMgr.Start and
-// consumerMcMgr.Start.
-func (p *Provider) Run(ctx context.Context, mcMgr mcmanager.Manager) error {
+// Start implements multicluster.ProviderRunnable. It binds the Aware and blocks
+// until ctx is done. The multicluster manager calls this automatically when it
+// detects the ProviderRunnable interface on Start.
+func (p *Provider) Start(ctx context.Context, aware multicluster.Aware) error {
 	p.log.Info("starting consumer provider")
 	p.lock.Lock()
-	p.mcMgr = mcMgr
+	p.aware = aware
 	p.lock.Unlock()
 
 	<-ctx.Done()
@@ -246,12 +246,12 @@ func (p *Provider) IndexField(ctx context.Context, obj client.Object, field stri
 // recompute, not from the individual event.
 func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	p.lock.Lock()
-	mcMgr := p.mcMgr
+	aware := p.aware
 	p.lock.Unlock()
 
-	// Run binds mcMgr after the manager starts; with two independently-started
+	// Start binds aware after the manager starts; with two independently-started
 	// managers the unbound window is wide, so requeue rather than nil-panic.
-	if mcMgr == nil {
+	if aware == nil {
 		p.log.Info("multicluster manager not yet bound, requeueing")
 		return ctrl.Result{RequeueAfter: mcMgrUnboundRequeue}, nil
 	}
@@ -415,7 +415,7 @@ func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	if err := p.mcMgr.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
+	if err := p.aware.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
 		cancel()
 		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
 	}

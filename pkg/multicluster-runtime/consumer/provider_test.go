@@ -26,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -131,12 +130,11 @@ func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                    { retur
 func (c *fakeCluster) GetAPIReader() client.Reader                       { return nil }
 func (c *fakeCluster) Start(context.Context) error                       { return nil }
 
-// fakeMCMgr satisfies mcmanager.Manager. Only Engage is exercised; it records
+// fakeMCMgr satisfies multicluster.Aware. Only Engage is exercised; it records
 // the context each engagement was started with so tests can assert the
 // per-cluster context is cancelled on disengage. engageErr, when set, forces
 // Engage to fail (exercising engage's cleanup path).
 type fakeMCMgr struct {
-	mcmanager.Manager
 	engaged   map[string]context.Context
 	engageErr error
 }
@@ -157,7 +155,7 @@ func (m *fakeMCMgr) Engage(ctx context.Context, name multicluster.ClusterName, _
 
 type providerOpt func(*Provider)
 
-func withMCMgr(m mcmanager.Manager) providerOpt { return func(p *Provider) { p.mcMgr = m } }
+func withMCMgr(m multicluster.Aware) providerOpt { return func(p *Provider) { p.aware = m } }
 
 func withNewCluster(fn func(*rest.Config, ...cluster.Option) (cluster.Cluster, error)) providerOpt {
 	return func(p *Provider) { p.newCluster = fn }
@@ -500,14 +498,14 @@ func TestReconcile_CacheSyncFailureDoesNotEngage(t *testing.T) {
 	}
 }
 
-// --- Reconcile: mcMgr==nil requeue guard -------------------------------------
+// --- Reconcile: aware==nil requeue guard -------------------------------------
 
 func TestReconcile_RequeuesWhenMcMgrUnbound(t *testing.T) {
-	// No withMCMgr -> mcMgr is nil (Run not yet called). Provider client is given
+	// No withMCMgr -> aware is nil (Start not yet called). Provider client is given
 	// but must not be consulted before the guard fires.
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical})
-	if p.mcMgr != nil {
-		t.Fatalf("precondition: mcMgr must be nil")
+	if p.aware != nil {
+		t.Fatalf("precondition: aware must be nil")
 	}
 
 	res, err := p.Reconcile(context.Background(), ctrl.Request{})
@@ -522,26 +520,26 @@ func TestReconcile_RequeuesWhenMcMgrUnbound(t *testing.T) {
 	}
 }
 
-// --- Run binds mcMgr ----------------------------------------------------------
+// --- Start binds aware --------------------------------------------------------
 
-func TestRun_BindsMcMgrThenReturnsOnContextCancel(t *testing.T) {
+func TestStart_BindsAwareThenReturnsOnContextCancel(t *testing.T) {
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical})
 	mcMgr := newFakeMCMgr()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- p.Run(ctx, mcMgr) }()
+	go func() { done <- p.Start(ctx, mcMgr) }()
 
-	// Cancel and confirm Run returns; mcMgr must be bound by then.
+	// Cancel and confirm Start returns; aware must be bound by then.
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Errorf("Run returned %v, want context.Canceled", err)
+		t.Errorf("Start returned %v, want context.Canceled", err)
 	}
 	p.lock.Lock()
-	bound := p.mcMgr
+	bound := p.aware
 	p.lock.Unlock()
 	if bound == nil {
-		t.Errorf("Run must bind mcMgr")
+		t.Errorf("Start must bind aware")
 	}
 }
 
