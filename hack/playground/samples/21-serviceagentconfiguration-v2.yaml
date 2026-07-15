@@ -1,0 +1,54 @@
+# StreamCo ServiceAgentConfiguration v2 (Published) — the live-reconfiguration
+# proof (P3). Applied mid-demo: because the AgentBinding projects the LATEST
+# Published configuration, applying this narrows the agent's tool surface from
+# three tools to one (streams_list only) and drops the A2A delegation. The
+# capability-provider then serves the narrowed document, and the next chat turn
+# can no longer call pipeline_diagnose / streams_get.
+#
+# Deprecating this document (spec.phase: Deprecated) falls the binding back to
+# v1; deleting the ServiceEntitlement removes the binding entirely (unpublish
+# proof).
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  name: streamco-streaming-agent-v2
+  labels:
+    app.kubernetes.io/part-of: agent-framework-playground
+spec:
+  serviceAgentRef:
+    name: streamco-streaming-agent
+  version: "2.0.0"
+  phase: Published
+  knowledge:
+    sources:
+      - type: LLMDocs
+        title: StreamCo service overview (llms-full)
+        url: http://streamco.agent-framework-playground.svc:7810/llms-full.txt
+    concepts:
+      - gvk:
+          group: streaming.streamco.example
+          kind: Stream
+        summary: >-
+          A named, partitioned event stream ingesting records at some rate
+          (rps). Streams can be healthy or degraded; degraded streams report
+          non-zero lagSeconds.
+  tools:
+    mcpServers:
+      - name: streamco
+        endpoint: http://streamco.agent-framework-playground.svc:7810/mcp
+        toolSelector:
+          include:
+            - streams_list
+        mutating: []
+  authority:
+    reads:
+      - gvk:
+          group: streaming.streamco.example
+          kind: Stream
+    maxTaskDurationSeconds: 60
+  metrics:
+    - name: streaming.streamco.example/tool-invocations
+      displayName: Tool invocations
+      description: Number of provider MCP tool invocations executed on behalf of the consumer.
+      kind: Delta
+      unit: "{invocation}"

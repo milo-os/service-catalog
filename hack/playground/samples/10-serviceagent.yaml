@@ -1,0 +1,16 @@
+# StreamCo demo provider — ServiceAgent (agent identity record).
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  name: streamco-streaming-agent
+  labels:
+    app.kubernetes.io/part-of: agent-framework-playground
+spec:
+  serviceRef:
+    name: streaming-streamco-example
+  displayName: StreamCo Streaming Agent
+  description: >-
+    Provider-supplied agent surface for StreamCo streaming: knowledge about
+    streams and pipelines plus MCP tools to list streams and diagnose
+    pipeline health.
+  phase: Published

@@ -1,0 +1,14 @@
+# The base/webhook bundle deliberately pins the webhook clientConfig namespace
+# to `services-system` and omits the namespace field from its nameReference
+# config. The playground lives in `agent-framework-playground`, so teach the
+# namespace transformer these field paths here — it then rewrites every
+# webhook's clientConfig.service.namespace to this overlay's namespace.
+namespace:
+  - path: webhooks/clientConfig/service/namespace
+    kind: ValidatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    create: true
+  - path: webhooks/clientConfig/service/namespace
+    kind: MutatingWebhookConfiguration
+    group: admissionregistration.k8s.io
+    create: true

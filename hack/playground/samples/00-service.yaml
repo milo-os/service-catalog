@@ -1,0 +1,19 @@
+# StreamCo demo provider — Service identity record.
+# serviceName is the reverse-DNS join key used by AgentBinding.spec.serviceName
+# and the gateway's per-service usage attribution dimension.
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: streaming-streamco-example
+  labels:
+    app.kubernetes.io/part-of: agent-framework-playground
+spec:
+  serviceName: streaming.streamco.example
+  phase: Published
+  displayName: StreamCo Streaming
+  description: Managed event streaming and pipeline processing by StreamCo.
+  owner:
+    producerProjectRef:
+      name: streamco-platform
+  enablementPolicy:
+    mode: SelfService

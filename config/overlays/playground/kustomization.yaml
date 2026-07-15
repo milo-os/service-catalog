@@ -1,0 +1,90 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-framework-playground
+
+# Everything the playground installs carries part-of=agent-framework-playground
+# so playground-down.sh can select exactly our resources (proof P8).
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: agent-framework-playground
+
+resources:
+  - namespace.yaml
+  # All seven catalog CRDs, including the three agent-framework kinds now
+  # registered in base/crd/kustomization.yaml.
+  - ../../base/crd
+  - ../../base/certmanager
+  - manager.yaml
+  - capability-provider.yaml
+  - capability-provider-rbac.yaml
+
+components:
+  - ../../base/webhook
+  - ../../components/controller_rbac
+
+images:
+  - name: ghcr.io/milo-os/service-catalog
+    newName: ghcr.io/milo-os/service-catalog-playground-manager
+    newTag: dev
+  - name: ghcr.io/milo-os/capability-provider
+    newTag: dev
+
+# Rewrite the webhook clientConfig namespace to this overlay's namespace.
+configurations:
+  - webhook_namespace_config.yaml
+
+transformers:
+  - cert_dnsnames_patch.yaml
+  - webhook_service_name_patch.yaml
+
+# cert-manager CA injection: point each webhook configuration's
+# inject-ca-from annotation at the serving Certificate (namespace/name).
+replacements:
+  - source:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: services-serving-cert
+      fieldPath: .metadata.namespace
+    targets:
+      - select:
+          kind: ValidatingWebhookConfiguration
+        fieldPaths:
+          - .metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: '/'
+          index: 0
+          create: true
+      - select:
+          kind: MutatingWebhookConfiguration
+        fieldPaths:
+          - .metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: '/'
+          index: 0
+          create: true
+  - source:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: services-serving-cert
+      fieldPath: .metadata.name
+    targets:
+      - select:
+          kind: ValidatingWebhookConfiguration
+        fieldPaths:
+          - .metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: '/'
+          index: 1
+          create: true
+      - select:
+          kind: MutatingWebhookConfiguration
+        fieldPaths:
+          - .metadata.annotations.[cert-manager.io/inject-ca-from]
+        options:
+          delimiter: '/'
+          index: 1
+          create: true

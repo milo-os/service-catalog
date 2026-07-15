@@ -1,0 +1,43 @@
+# The controller-gen manifests name every webhook's backend Service
+# `webhook-service`, and the base/webhook component only rewrites the first two
+# validating webhooks to `services-webhook`. Point ALL of them at the Service
+# this overlay ships (services-webhook), so admission actually reaches the
+# manager. The ValidatingWebhookConfiguration carries six webhooks (service,
+# serviceagent, serviceagentconfiguration, serviceconfiguration,
+# serviceconsumer, serviceentitlement); the MutatingWebhookConfiguration one.
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: validating-webhook-service-name
+patch: |-
+  - op: replace
+    path: /webhooks/0/clientConfig/service/name
+    value: services-webhook
+  - op: replace
+    path: /webhooks/1/clientConfig/service/name
+    value: services-webhook
+  - op: replace
+    path: /webhooks/2/clientConfig/service/name
+    value: services-webhook
+  - op: replace
+    path: /webhooks/3/clientConfig/service/name
+    value: services-webhook
+  - op: replace
+    path: /webhooks/4/clientConfig/service/name
+    value: services-webhook
+  - op: replace
+    path: /webhooks/5/clientConfig/service/name
+    value: services-webhook
+target:
+  kind: ValidatingWebhookConfiguration
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: mutating-webhook-service-name
+patch: |-
+  - op: replace
+    path: /webhooks/0/clientConfig/service/name
+    value: services-webhook
+target:
+  kind: MutatingWebhookConfiguration

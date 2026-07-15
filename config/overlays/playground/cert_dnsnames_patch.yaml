@@ -1,0 +1,18 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: cert-dnsnames-patch
+patch: |-
+  - op: replace
+    path: /spec/dnsNames
+    value:
+      - services-webhook.agent-framework-playground.svc
+      - services-webhook.agent-framework-playground.svc.cluster.local
+  - op: replace
+    path: /spec/secretName
+    value: services-webhook-cert
+target:
+  kind: Certificate
+  group: cert-manager.io
+  version: v1
+  name: services-serving-cert

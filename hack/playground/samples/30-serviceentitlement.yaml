@@ -1,0 +1,19 @@
+# The demo consumer project enables StreamCo streaming. The playground manager
+# engages the kind cluster under the consumer project name "demo-project", so
+# this entitlement (cluster-scoped, in that engaged cluster) models
+# demo-project's entitlement. A SelfService Service auto-activates, opening
+# gate 1 for the AgentBinding projection.
+#
+# There is deliberately NO entitlement for any other project name: a request to
+# the capability-provider for a different project returns an empty document set
+# (isolation proof P5).
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: streaming-streamco-example
+  labels:
+    app.kubernetes.io/part-of: agent-framework-playground
+spec:
+  serviceRef:
+    name: streaming-streamco-example
+  requestMessage: Enable StreamCo streaming for the agent-framework demo project.

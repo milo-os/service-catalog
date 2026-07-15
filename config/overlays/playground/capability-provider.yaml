@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capability-provider
+  labels:
+    app.kubernetes.io/name: capability-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: capability-provider
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: capability-provider
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      serviceAccountName: capability-provider
+      containers:
+        - name: capability-provider
+          image: ghcr.io/milo-os/capability-provider:dev
+          command:
+            - /capability-provider
+          env:
+            - name: LISTEN_ADDR
+              value: ":8080"
+            - name: CONSUMER_PROJECT
+              value: "demo-project"
+            # The Envoy AI Gateway MCPRoute base URL. Every provider MCP
+            # endpoint on an AgentBinding is rewritten onto this so tool calls
+            # are metered and project-attributed. Set by pg-infra to the
+            # cluster's real MCPRoute URL; the default is a placeholder.
+            - name: MCP_GATEWAY_BASE_URL
+              value: "http://ai-gateway.envoy-gateway-system.svc:80/mcp"
+            - name: MCP_GATEWAY_APPEND_SERVER_NAME
+              value: "true"
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capability-provider
+  labels:
+    app.kubernetes.io/name: capability-provider
+spec:
+  selector:
+    app.kubernetes.io/name: capability-provider
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http

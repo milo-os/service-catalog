@@ -1,0 +1,69 @@
+# StreamCo ServiceAgentConfiguration v1 (Published) — the active configuration.
+#
+# Knowledge/tool URLs point at the in-cluster StreamCo Service that pg-infra
+# containerizes (component 3). Knowledge URLs are fetched by the assistant
+# directly, so they must resolve in-cluster. The MCP endpoint is the provider's
+# declared endpoint; the capability-provider adapter REWRITES it onto the Envoy
+# AI Gateway MCPRoute before the assistant ever sees it, so tool calls are
+# metered and project-attributed (it is never dialed directly).
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  name: streamco-streaming-agent-v1
+  labels:
+    app.kubernetes.io/part-of: agent-framework-playground
+spec:
+  serviceAgentRef:
+    name: streamco-streaming-agent
+  version: "1.0.0"
+  phase: Published
+  knowledge:
+    sources:
+      - type: LLMDocs
+        title: StreamCo service overview (llms-full)
+        url: http://streamco.agent-framework-playground.svc:7810/llms-full.txt
+      - type: Runbook
+        title: Pipeline consumer-lag runbook
+        url: http://streamco.agent-framework-playground.svc:7810/runbooks/lag.md
+    concepts:
+      - gvk:
+          group: streaming.streamco.example
+          kind: Stream
+        summary: >-
+          A named, partitioned event stream ingesting records at some rate
+          (rps). Streams can be healthy or degraded; degraded streams report
+          non-zero lagSeconds.
+      - gvk:
+          group: streaming.streamco.example
+          kind: Pipeline
+        summary: >-
+          A processing pipeline consuming one or more streams. Pipelines are
+          the unit of diagnosis: pipeline_diagnose returns findings and a
+          recommendation.
+  tools:
+    mcpServers:
+      - name: streamco
+        endpoint: http://streamco.agent-framework-playground.svc:7810/mcp
+        toolSelector:
+          include:
+            - streams_list
+            - streams_get
+            - pipeline_diagnose
+        mutating: []
+  delegation:
+    a2a:
+      agentCardUrl: http://streamco.agent-framework-playground.svc:7810/.well-known/agent-card.json
+      skills:
+        - pipeline-diagnosis
+  authority:
+    reads:
+      - gvk:
+          group: streaming.streamco.example
+          kind: "*"
+    maxTaskDurationSeconds: 120
+  metrics:
+    - name: streaming.streamco.example/tool-invocations
+      displayName: Tool invocations
+      description: Number of provider MCP tool invocations executed on behalf of the consumer.
+      kind: Delta
+      unit: "{invocation}"
