@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -58,32 +59,88 @@ func (p *Provider) teardownConsumer(ctx context.Context, consumerProject string)
 }
 
 // deleteManagedResources deletes every object of each declared ManagedResources
-// GVK that carries labelServiceName equal to one of the operator's ServiceNames,
-// via DeleteAllOf across all namespaces. The objects are addressed as
-// unstructured so the consumer cluster's RESTMapper resolves GVK→resource without
-// the type being registered in a scheme (LocationBinding belongs to an external
-// API group). It is idempotent: DeleteAllOf with no matching objects is a no-op,
-// so re-running after a partial failure is safe.
+// GVK that carries labelServiceName equal to one of the operator's ServiceNames.
+// Objects are addressed as unstructured so the consumer cluster's RESTMapper
+// resolves GVK→resource without the type being registered in a scheme.
+//
+// Cluster-scoped GVKs use a single DeleteAllOf. Namespace-scoped GVKs require
+// per-namespace DeleteAllOf because Milo's aggregated API server does not support
+// all-namespaces collection deletes (DELETE /apis/group/version/resources). The
+// namespace list is fetched lazily and only when at least one namespace-scoped
+// GVK is present.
 //
 // A missing type is treated as "nothing to clean up", not a failure: a RESTMapper
 // no-match (the GVK's CRD is not installed in this consumer project) or a NotFound
-// is tolerated and skipped. Otherwise a consumer project that never had the type
-// would wedge disengage in a permanent backoff retry it can never satisfy. This
-// mirrors LocationBindingReconciler.cleanupBindings. Only real errors (forbidden,
-// conflict, transient API) abort and drive the retry-marker path.
+// is tolerated and skipped.
 func (p *Provider) deleteManagedResources(ctx context.Context, direct client.Client, consumerProject string) error {
+	var nsList *unstructured.UnstructuredList
+
 	for _, gvk := range p.opts.ManagedResources {
-		for _, serviceName := range p.opts.ServiceNames {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+
+		namespaced, err := direct.IsObjectNamespaced(u)
+		if err != nil {
+			if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("checking scope of %s in consumer project %q: %w", gvk.Kind, consumerProject, err)
+		}
+
+		if !namespaced {
+			if err := p.deleteClusterScopedGVK(ctx, direct, gvk, consumerProject); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if nsList == nil {
+			nsList = &unstructured.UnstructuredList{}
+			nsList.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "NamespaceList"})
+			if err := direct.List(ctx, nsList); err != nil {
+				return fmt.Errorf("listing namespaces in consumer project %q: %w", consumerProject, err)
+			}
+		}
+		if err := p.deleteNamespacedGVK(ctx, direct, gvk, nsList, consumerProject); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteClusterScopedGVK issues a single label-scoped DeleteAllOf for a
+// cluster-scoped GVK across all service names.
+func (p *Provider) deleteClusterScopedGVK(ctx context.Context, direct client.Client, gvk schema.GroupVersionKind, consumerProject string) error {
+	for _, serviceName := range p.opts.ServiceNames {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		if err := direct.DeleteAllOf(ctx, u, client.MatchingLabels{labelServiceName: serviceName}); err != nil {
+			if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("failed to delete %s objects labelled %s=%s in consumer project %q: %w",
+				gvk.Kind, labelServiceName, serviceName, consumerProject, err)
+		}
+	}
+	return nil
+}
+
+// deleteNamespacedGVK issues a label-scoped DeleteAllOf per namespace for a
+// namespace-scoped GVK across all service names.
+func (p *Provider) deleteNamespacedGVK(ctx context.Context, direct client.Client, gvk schema.GroupVersionKind, nsList *unstructured.UnstructuredList, consumerProject string) error {
+	for _, serviceName := range p.opts.ServiceNames {
+		for _, ns := range nsList.Items {
 			u := &unstructured.Unstructured{}
 			u.SetGroupVersionKind(gvk)
-			if err := direct.DeleteAllOf(ctx, u, client.MatchingLabels{labelServiceName: serviceName}); err != nil {
+			if err := direct.DeleteAllOf(ctx, u,
+				client.InNamespace(ns.GetName()),
+				client.MatchingLabels{labelServiceName: serviceName},
+			); err != nil {
 				if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
-					// The type's CRD is not installed in this consumer project (or
-					// the collection is already gone); nothing of this GVK to delete.
 					continue
 				}
-				return fmt.Errorf("failed to delete %s objects labelled %s=%s in consumer project %q: %w",
-					gvk.Kind, labelServiceName, serviceName, consumerProject, err)
+				return fmt.Errorf("failed to delete %s objects labelled %s=%s in namespace %s of consumer project %q: %w",
+					gvk.Kind, labelServiceName, serviceName, ns.GetName(), consumerProject, err)
 			}
 		}
 	}

@@ -5,6 +5,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
@@ -641,27 +643,59 @@ var locationBindingGVK = schema.GroupVersionKind{
 	Kind:    "LocationBinding",
 }
 
-// recordedDelete captures one DeleteAllOf call: the addressed GVK, the label
-// selector string, and whether the per-cluster context was already cancelled at
-// call time (so tests can prove cancel-precedes-delete ordering).
+// recordedDelete captures one DeleteAllOf call: the addressed GVK, namespace,
+// label selector string, and whether the per-cluster context was already
+// cancelled at call time (so tests can prove cancel-precedes-delete ordering).
 type recordedDelete struct {
-	gvk      schema.GroupVersionKind
-	selector string
-	ctxDone  bool
+	gvk       schema.GroupVersionKind
+	namespace string
+	selector  string
+	ctxDone   bool
 }
 
 // recordingClient is the non-cached "direct" client the teardown path uses. It
-// implements client.Client by embedding the interface (nil) and overrides only
-// DeleteAllOf — every other method panics if unexpectedly called, which is a
-// useful guard that teardown touches nothing else. LocationBinding is an
-// external unstructured GVK absent from our scheme, so recording the requests
-// (rather than a real fake client) is the cleanest way to assert label-scoping.
+// implements client.Client by embedding the interface (nil) and overrides
+// DeleteAllOf and List (namespace enumeration) — every other method panics if
+// unexpectedly called, which is a useful guard that teardown touches nothing
+// else. LocationBinding is an external unstructured GVK absent from our scheme,
+// so recording the requests (rather than a real fake client) is the cleanest
+// way to assert label-scoping.
 type recordingClient struct {
 	client.Client
-	mu       sync.Mutex
-	deletes  []recordedDelete
-	err      error                  // when set, DeleteAllOf returns it
-	watchCtx func() context.Context // the per-cluster engage ctx, for ordering checks
+	mu           sync.Mutex
+	deletes      []recordedDelete
+	err          error                  // when set, DeleteAllOf returns it
+	listErr      error                  // when set, List returns it
+	namespaces   []string               // namespaces returned by List; defaults to ["default"]
+	clusterScope bool                   // when true, IsObjectNamespaced returns false
+	watchCtx     func() context.Context // the per-cluster engage ctx, for ordering checks
+}
+
+func (c *recordingClient) IsObjectNamespaced(_ runtime.Object) (bool, error) {
+	return !c.clusterScope, nil
+}
+
+// List handles the namespace enumeration call deleteManagedResources issues
+// before scoping DeleteAllOf per namespace.
+func (c *recordingClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+	if c.listErr != nil {
+		return c.listErr
+	}
+	ul, ok := list.(*unstructured.UnstructuredList)
+	if !ok || ul.GetKind() != "NamespaceList" {
+		panic(fmt.Sprintf("recordingClient.List: unexpected call with %T / kind %q", list, ul.GetKind()))
+	}
+	ns := c.namespaces
+	if len(ns) == 0 {
+		ns = []string{"default"}
+	}
+	ul.Items = nil
+	for _, name := range ns {
+		item := unstructured.Unstructured{}
+		item.SetName(name)
+		ul.Items = append(ul.Items, item)
+	}
+	return nil
 }
 
 func (c *recordingClient) DeleteAllOf(_ context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
@@ -682,9 +716,10 @@ func (c *recordingClient) DeleteAllOf(_ context.Context, obj client.Object, opts
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deletes = append(c.deletes, recordedDelete{
-		gvk:      obj.GetObjectKind().GroupVersionKind(),
-		selector: sel,
-		ctxDone:  done,
+		gvk:       obj.GetObjectKind().GroupVersionKind(),
+		namespace: o.Namespace,
+		selector:  sel,
+		ctxDone:   done,
 	})
 	return c.err
 }
@@ -747,6 +782,9 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 	d := rec.deletes[0]
 	if d.gvk != locationBindingGVK {
 		t.Errorf("delete gvk = %v, want %v", d.gvk, locationBindingGVK)
+	}
+	if d.namespace != "default" {
+		t.Errorf("delete namespace = %q, want \"default\" (per-namespace scoping required by Milo)", d.namespace)
 	}
 	wantSel := labelServiceName + "=" + computeCanonical
 	if d.selector != wantSel {
