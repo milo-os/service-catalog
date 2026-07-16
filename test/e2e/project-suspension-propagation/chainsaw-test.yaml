@@ -1,0 +1,100 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: project-suspension-propagation
+spec:
+  description: |
+    Real functional coverage of ProjectSuspensionPropagationReconciler,
+    end to end through ServiceEntitlement -> ServiceConsumer.
+
+    This cluster has no real Milo control plane, so Project objects never
+    get engaged as separate project virtual control planes here (see
+    config/overlays/e2e/config.yaml). To exercise the multicluster-shaped
+    reconcilers anyway, the e2e Deployment runs with
+    --enable-single-cluster-for-e2e-tests=true (see cmd/services/main.go
+    and pkg/multicluster-runtime/e2esingle), which resolves every project
+    name — consumer and provider alike — to this one real cluster. That
+    collapses the production isolation between projects, but it means the
+    reconcilers run their real Reconcile loop against a real apiserver:
+    creating the Service/Project/ServiceEntitlement below actually drives
+    ServiceEntitlementReconciler to create a real ServiceConsumer, and
+    flipping the Project's ProjectSuspended condition actually drives
+    ProjectSuspensionPropagationReconciler to patch that ServiceConsumer.
+
+    Unlike the milo repo's multicluster e2e tests, this does NOT need
+    per-project kubeconfigs / a `clusters:` block: every object here lives
+    in the one apiserver this chainsaw test already talks to.
+
+  steps:
+    - name: create-service
+      description: Publish the Service the entitlement will reference.
+      try:
+        - apply:
+            file: 01-create-service.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-service-created.yaml
+
+    - name: create-project
+      description: |
+        Create the Project. Its name must equal e2esingle.ClusterName so
+        the consumer project name the entitlement controller derives from
+        req.ClusterName matches the one the suspension reconciler derives
+        from this object's own name (see comment in 02-create-project.yaml).
+      try:
+        - apply:
+            file: 02-create-project.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: resourcemanager.miloapis.com/v1alpha1
+              kind: Project
+              metadata:
+                name: e2e-single-cluster
+
+    - name: create-entitlement-and-verify-consumer
+      description: |
+        Creating the ServiceEntitlement should drive
+        ServiceEntitlementReconciler to create a ServiceConsumer, unsuspended.
+      try:
+        - apply:
+            file: 03-create-entitlement.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-entitlement-active.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-consumer-unsuspended.yaml
+
+    - name: suspend-project-and-verify-consumer-suspended
+      description: |
+        Flip status.conditions[Suspended] to True via the status
+        subresource — there is no real Milo controller in this cluster to
+        set it for us. This fires the watch that drives
+        ProjectSuspensionPropagationReconciler.Reconcile, which should
+        patch the ServiceConsumer to Suspended=true.
+      try:
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              kubectl patch project e2e-single-cluster \
+                --type=merge --subresource=status \
+                -p '{"status":{"conditions":[{"type":"Suspended","status":"True","reason":"Requested","message":"e2e suspension propagation test","lastTransitionTime":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}]}}'
+        - assert:
+            timeout: 30s
+            file: assertions/assert-consumer-suspended.yaml
+
+    - name: reinstate-project-and-verify-consumer-unsuspended
+      description: Flip status.conditions[Suspended] back to False.
+      try:
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              kubectl patch project e2e-single-cluster \
+                --type=merge --subresource=status \
+                -p '{"status":{"conditions":[{"type":"Suspended","status":"False","reason":"Reinstated","message":"e2e suspension propagation test","lastTransitionTime":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}]}}'
+        - assert:
+            timeout: 30s
+            file: assertions/assert-consumer-unsuspended.yaml

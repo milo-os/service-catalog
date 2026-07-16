@@ -1,0 +1,6 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConsumer
+metadata:
+  name: sc-3a3b33b41eedde31
+spec:
+  suspended: true

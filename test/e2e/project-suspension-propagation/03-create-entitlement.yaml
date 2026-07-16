@@ -1,0 +1,7 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-suspension-compute-miloapis-com
+spec:
+  serviceRef:
+    name: e2e-suspension-compute-miloapis-com
