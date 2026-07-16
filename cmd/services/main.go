@@ -23,6 +23,7 @@ import (
 
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
@@ -34,8 +35,17 @@ import (
 	"go.miloapis.com/service-catalog/internal/controller"
 	serviceswebhooks "go.miloapis.com/service-catalog/internal/webhook/v1alpha1"
 	consumer "go.miloapis.com/service-catalog/pkg/multicluster-runtime/consumer"
+	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/e2esingle"
 	// +kubebuilder:scaffold:imports
 )
+
+// mcProvider is the subset of the Milo and e2esingle providers' capabilities
+// main needs: resolving cluster names (multicluster.Provider) and running the
+// provider's background engagement loop (multicluster.ProviderRunnable).
+type mcProvider interface {
+	multicluster.Provider
+	multicluster.ProviderRunnable
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -67,6 +77,7 @@ func main() {
 	var leaderElectionNamespace string
 	var probeAddr string
 	var serverConfigFile string
+	var enableSingleClusterForE2ETests bool
 
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -74,6 +85,11 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
+	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
+		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
+			"project name (consumer and provider alike) to this single cluster, so ServiceEntitlement/"+
+			"ServiceConsumer/ProjectSuspensionPropagation can be exercised without a real Milo control "+
+			"plane. Collapses project isolation entirely — must never be set outside the e2e chainsaw suite.")
 
 	opts := zap.Options{
 		Development: true,
@@ -179,21 +195,29 @@ func main() {
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
 	// planes. We need a multicluster manager backed by the Milo provider so
 	// reconcilers run inside every engaged project's cluster context.
-	provider, err := miloprovider.New(mgr, miloprovider.Options{
-		InternalServiceDiscovery: false,
-		ProjectRestConfig:        cfg,
-		// Engaged project clusters must use our scheme; without it their cache
-		// falls back to the client-go global scheme, which lacks the
-		// services.miloapis.com types, and every ServiceEntitlement /
-		// ServiceConsumer / LocationBinding watch fails with "kind must be
-		// registered to the Scheme".
-		ClusterOptions: []cluster.Option{
-			func(o *cluster.Options) { o.Scheme = scheme },
-		},
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to create Milo multicluster provider")
-		os.Exit(1)
+	var provider mcProvider
+	if enableSingleClusterForE2ETests {
+		setupLog.Info("enable-single-cluster-for-e2e-tests is set: using e2esingle provider, " +
+			"NOT the Milo multicluster provider — project isolation is disabled")
+		provider = e2esingle.New(mgr)
+	} else {
+		miloProvider, err := miloprovider.New(mgr, miloprovider.Options{
+			InternalServiceDiscovery: false,
+			ProjectRestConfig:        cfg,
+			// Engaged project clusters must use our scheme; without it their cache
+			// falls back to the client-go global scheme, which lacks the
+			// services.miloapis.com types, and every ServiceEntitlement /
+			// ServiceConsumer / LocationBinding watch fails with "kind must be
+			// registered to the Scheme".
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) { o.Scheme = scheme },
+			},
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create Milo multicluster provider")
+			os.Exit(1)
+		}
+		provider = miloProvider
 	}
 
 	mcMgr, err := mcmanager.New(cfg, provider, mcmanager.Options{
@@ -214,6 +238,10 @@ func main() {
 	}
 	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
+		os.Exit(1)
+	}
+	if err = (&controller.ProjectSuspensionPropagationReconciler{Scheme: scheme}).SetupWithManager(mgr, mcMgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ProjectSuspensionPropagation")
 		os.Exit(1)
 	}
 	// LocationBinding projection runs either on the all-projects manager
@@ -345,7 +373,19 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceEntitlement")
 			os.Exit(1)
 		}
-		if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr, mcMgr); err != nil {
+		if enableSingleClusterForE2ETests {
+			// The ServiceConsumer webhook authorizes callers via a
+			// SubjectAccessReview against "which project this request
+			// targets", resolved from context milowebhook.ClusterAwareServer
+			// injects from the admission request's UserInfo.Extra — stamped
+			// in production by Milo's per-project aggregated-apiserver proxy.
+			// e2esingle has no such proxy in front of it, so that context
+			// never resolves and every write would be denied. Skip
+			// registering it here rather than weaken its authorization
+			// model; e2e exercises the reconciler/propagation path, not
+			// this webhook's authorization logic.
+			setupLog.Info("enable-single-cluster-for-e2e-tests is set: skipping ServiceConsumer webhook registration")
+		} else if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr, mcMgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
 			os.Exit(1)
 		}
@@ -371,12 +411,22 @@ func main() {
 	// the other to make progress, so neither can be Start()ed in the
 	// foreground. This mirrors the wiring used by the quota controllers in
 	// the Milo controller manager.
-	go func() {
-		if err := mcMgr.Engage(ctx, "", mcMgr.GetLocalManager()); err != nil {
-			setupLog.Error(err, "unable to engage local cluster on multicluster manager")
-			os.Exit(1)
-		}
-	}()
+	//
+	// Skipped under e2esingle: it engages the SAME underlying mgr under its
+	// own fixed name already. The multicluster coordinator tracks engagement
+	// by name, not cluster identity, so engaging that same cluster under ""
+	// too would start a second, duplicate informer for every mcbuilder-based
+	// watch (ServiceEntitlement, LocationBinding) — each create/update then
+	// fires twice, once per name, and the ""-tagged copy is rejected by
+	// reconcilers that require a non-empty cluster name.
+	if !enableSingleClusterForE2ETests {
+		go func() {
+			if err := mcMgr.Engage(ctx, "", mcMgr.GetLocalManager()); err != nil {
+				setupLog.Error(err, "unable to engage local cluster on multicluster manager")
+				os.Exit(1)
+			}
+		}()
+	}
 	go func() {
 		if err := provider.Start(ctx, mcMgr); err != nil {
 			setupLog.Error(err, "Milo multicluster provider failed")
