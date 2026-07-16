@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +24,12 @@ type Options struct {
 	// RootClient must point at the base Milo cluster (not a project control
 	// plane). Used to list cluster-scoped Service objects. Required.
 	RootClient client.Client
+
+	// Scheme is registered on the direct (non-cached) client built for teardown.
+	// Must include every type a Teardown implementation lists or patches. When nil
+	// the direct client uses only the client-go global scheme, which excludes
+	// operator-specific types and causes "no kind registered" errors at teardown.
+	Scheme *runtime.Scheme
 
 	// ServiceNames is the set of CANONICAL service names (Service.spec.serviceName,
 	// e.g. "compute.miloapis.com") this operator owns. Only ServiceConsumers whose

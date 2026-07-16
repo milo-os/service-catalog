@@ -46,7 +46,7 @@ func (p *Provider) teardownConsumer(ctx context.Context, consumerProject string)
 	if err != nil {
 		return err
 	}
-	direct, err := p.newClient(cfg, client.Options{})
+	direct, err := p.newClient(cfg, client.Options{Scheme: p.opts.Scheme})
 	if err != nil {
 		return fmt.Errorf("failed to build direct client for consumer project %q: %w", consumerProject, err)
 	}
