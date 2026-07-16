@@ -81,7 +81,7 @@ type index struct {
 type Provider struct {
 	opts               Options
 	log                logr.Logger
-	rootClient      client.Client
+	rootClient         client.Client
 	providerClient     client.Client
 	providerRestConfig *rest.Config
 	resyncInterval     time.Duration
@@ -91,9 +91,9 @@ type Provider struct {
 	// serviceNames is the canonical Service.spec.serviceName set, for O(1) match.
 	serviceNames map[string]struct{}
 
-	lock     sync.Mutex
-	aware    multicluster.Aware
-	clusters map[string]cluster.Cluster
+	lock      sync.Mutex
+	aware     multicluster.Aware
+	clusters  map[string]cluster.Cluster
 	cancelFns map[string]context.CancelFunc
 	indexers  []index
 
@@ -134,7 +134,7 @@ func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
 	p := &Provider{
 		opts:               opts,
 		log:                log.Log.WithName("consumer-provider"),
-		rootClient:      opts.RootClient,
+		rootClient:         opts.RootClient,
 		providerClient:     providerMgr.GetClient(),
 		providerRestConfig: providerMgr.GetConfig(),
 		resyncInterval:     opts.ResyncInterval,

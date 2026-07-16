@@ -118,17 +118,17 @@ type fakeCluster struct {
 	cache  *fakeCache
 }
 
-func (c *fakeCluster) GetClient() client.Client                          { return c.client }
-func (c *fakeCluster) GetCache() cache.Cache                             { return c.cache }
-func (c *fakeCluster) GetScheme() *runtime.Scheme                        { return nil }
-func (c *fakeCluster) GetHTTPClient() *http.Client                       { return nil }
-func (c *fakeCluster) GetConfig() *rest.Config                           { return nil }
-func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer              { return c.cache }
-func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder   { return nil }
-func (c *fakeCluster) GetEventRecorder(string) events.EventRecorder      { return nil }
-func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                    { return nil }
-func (c *fakeCluster) GetAPIReader() client.Reader                       { return nil }
-func (c *fakeCluster) Start(context.Context) error                       { return nil }
+func (c *fakeCluster) GetClient() client.Client                        { return c.client }
+func (c *fakeCluster) GetCache() cache.Cache                           { return c.cache }
+func (c *fakeCluster) GetScheme() *runtime.Scheme                      { return nil }
+func (c *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
+func (c *fakeCluster) GetConfig() *rest.Config                         { return nil }
+func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return c.cache }
+func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
+func (c *fakeCluster) GetEventRecorder(string) events.EventRecorder    { return nil }
+func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                  { return nil }
+func (c *fakeCluster) GetAPIReader() client.Reader                     { return nil }
+func (c *fakeCluster) Start(context.Context) error                     { return nil }
 
 // fakeMCMgr satisfies multicluster.Aware. Only Engage is exercised; it records
 // the context each engagement was started with so tests can assert the
