@@ -75,6 +75,12 @@ type ServiceConsumerSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Approval *ProviderApproval `json:"approval,omitempty"`
+
+	// Suspended indicates whether the consumer has been suspended.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=false
+	Suspended bool `json:"suspended"`
 }
 
 // ServiceConsumerStatus defines the observed state of a ServiceConsumer.

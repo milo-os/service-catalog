@@ -103,6 +103,10 @@ spec:
                 required:
                 - name
                 type: object
+              suspended:
+                default: false
+                description: Suspended indicates whether the consumer has been suspended.
+                type: boolean
             required:
             - consumerProjectRef
             - serviceRef
