@@ -29,12 +29,13 @@ spec:
               value: "demo-project"
             # Envoy AI Gateway MCPRoute integration. The gateway federates all
             # MCP backends under a SINGLE /mcp endpoint (no per-server suffix)
-            # and namespaces tools by a backend prefix. catalog-up.sh resolves
-            # the dynamically-named Envoy Service and sets MCP_GATEWAY_BASE_URL
-            # (…/mcp) at deploy time; these are the defaults when it does not.
-            # Empty base = pass-through (direct endpoints, no gateway).
+            # and namespaces tools by a backend prefix. The assistant's dev
+            # environment pins the managed Envoy Service name (EnvoyProxy
+            # envoyService.name), so the gateway URL is static; catalog-up.sh
+            # can still override via MCP_GATEWAY_BASE_URL. Empty base =
+            # pass-through (direct endpoints, no gateway).
             - name: MCP_GATEWAY_BASE_URL
-              value: ""
+              value: "http://patch-ai-gateway.envoy-gateway-system.svc.cluster.local:80/mcp"
             - name: MCP_GATEWAY_APPEND_SERVER_NAME
               value: "false"
             - name: MCP_GATEWAY_TOOL_PREFIX
