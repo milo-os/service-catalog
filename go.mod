@@ -9,7 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.0
-	go.miloapis.com/billing v0.2.10
+	go.miloapis.com/billing v0.2.15
 	go.miloapis.com/milo v0.30.3
 	golang.org/x/term v0.42.0
 	k8s.io/api v0.35.0
@@ -21,8 +21,6 @@ require (
 	sigs.k8s.io/multicluster-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )
-
-replace go.miloapis.com/billing => github.com/milo-os/billing v0.2.15-0.20260714133713-363518336863
 
 require (
 	cel.dev/expr v0.24.0 // indirect
