@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -13,6 +14,13 @@ import (
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
+
+// isSuspended reports whether the Suspended condition (mirroring the owning
+// Project's own condition, written by ProjectSuspensionPropagationReconciler
+// and ServiceEntitlementReconciler) is currently True.
+func isSuspended(conditions []metav1.Condition) bool {
+	return apimeta.IsStatusConditionTrue(conditions, servicesv1alpha1.ConditionTypeSuspended)
+}
 
 func TestProjectSuspensionPropagationReconciler(t *testing.T) {
 	const (
@@ -109,7 +117,9 @@ func TestProjectSuspensionPropagationReconciler(t *testing.T) {
 				Spec: servicesv1alpha1.ServiceConsumerSpec{
 					ServiceRef:         servicesv1alpha1.ServiceRef{Name: "compute"},
 					ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: consumerProject},
-					Suspended:          tt.initialStatus,
+				},
+				Status: servicesv1alpha1.ServiceConsumerStatus{
+					Conditions: []metav1.Condition{suspendedCondition(projectSuspension{Suspended: tt.initialStatus}, 0)},
 				},
 			}
 
@@ -140,8 +150,8 @@ func TestProjectSuspensionPropagationReconciler(t *testing.T) {
 				t.Fatalf("Failed to fetch ServiceConsumer: %v", err)
 			}
 
-			if gotConsumer.Spec.Suspended != tt.wantSuspended {
-				t.Errorf("got Suspended = %v, want %v", gotConsumer.Spec.Suspended, tt.wantSuspended)
+			if isSuspended(gotConsumer.Status.Conditions) != tt.wantSuspended {
+				t.Errorf("got Suspended = %v, want %v", isSuspended(gotConsumer.Status.Conditions), tt.wantSuspended)
 			}
 		})
 	}
@@ -224,8 +234,8 @@ func TestServiceEntitlementProjectSuspension(t *testing.T) {
 				t.Fatalf("failed to get ServiceConsumer: %v", err)
 			}
 
-			if consumer.Spec.Suspended != tt.wantSuspended {
-				t.Errorf("got Suspended = %v, want %v", consumer.Spec.Suspended, tt.wantSuspended)
+			if isSuspended(consumer.Status.Conditions) != tt.wantSuspended {
+				t.Errorf("got Suspended = %v, want %v", isSuspended(consumer.Status.Conditions), tt.wantSuspended)
 			}
 		})
 	}
@@ -284,7 +294,7 @@ func TestProjectSuspensionPropagationAndEntitlementLifecycle(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &consumer); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if consumer.Spec.Suspended {
+	if isSuspended(consumer.Status.Conditions) {
 		t.Fatalf("expected ServiceConsumer to be unsuspended initially")
 	}
 
@@ -306,7 +316,7 @@ func TestProjectSuspensionPropagationAndEntitlementLifecycle(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &consumer); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if !consumer.Spec.Suspended {
+	if !isSuspended(consumer.Status.Conditions) {
 		t.Fatalf("expected ServiceConsumer to be suspended after project suspension")
 	}
 
@@ -328,7 +338,7 @@ func TestProjectSuspensionPropagationAndEntitlementLifecycle(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &consumer); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if consumer.Spec.Suspended {
+	if isSuspended(consumer.Status.Conditions) {
 		t.Fatalf("expected ServiceConsumer to be unsuspended after project reinstatement")
 	}
 }
@@ -357,7 +367,9 @@ func newServiceConsumerFixture(name, serviceRef, consumerProject string, suspend
 		Spec: servicesv1alpha1.ServiceConsumerSpec{
 			ServiceRef:         servicesv1alpha1.ServiceRef{Name: serviceRef},
 			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: consumerProject},
-			Suspended:          suspended,
+		},
+		Status: servicesv1alpha1.ServiceConsumerStatus{
+			Conditions: []metav1.Condition{suspendedCondition(projectSuspension{Suspended: suspended}, 0)},
 		},
 	}
 }
@@ -485,7 +497,7 @@ func TestProjectSuspensionPropagation_PropagatesAcrossEntitlementPhases(t *testi
 			if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
 				t.Fatalf("failed to get ServiceConsumer: %v", err)
 			}
-			if !got.Spec.Suspended {
+			if !isSuspended(got.Status.Conditions) {
 				t.Errorf("phase %q: expected ServiceConsumer to be suspended, got Suspended=false", phase)
 			}
 		})
@@ -530,7 +542,7 @@ func TestProjectSuspensionPropagation_ResolvesServiceByCanonicalName(t *testing.
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if !got.Spec.Suspended {
+	if !isSuspended(got.Status.Conditions) {
 		t.Errorf("expected ServiceConsumer resolved via canonical service name to be suspended")
 	}
 }
@@ -573,7 +585,7 @@ func TestProjectSuspensionPropagation_ServiceNotFoundSkipsGracefully(t *testing.
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if !got.Spec.Suspended {
+	if !isSuspended(got.Status.Conditions) {
 		t.Errorf("expected the valid entitlement's ServiceConsumer to still be suspended despite a sibling orphaned entitlement")
 	}
 }
@@ -615,7 +627,7 @@ func TestProjectSuspensionPropagation_DraftServiceSkipped(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if got.Spec.Suspended {
+	if isSuspended(got.Status.Conditions) {
 		t.Errorf("expected ServiceConsumer for a Draft service to be left untouched (Suspended=false)")
 	}
 }
@@ -661,7 +673,7 @@ func TestProjectSuspensionPropagation_ProviderClusterNotEngagedSkipsGracefully(t
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: engagedConsumerName}, &got); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if !got.Spec.Suspended {
+	if !isSuspended(got.Status.Conditions) {
 		t.Errorf("expected the engaged provider's ServiceConsumer to be suspended despite a sibling unengaged provider")
 	}
 }
@@ -775,7 +787,7 @@ func TestProjectSuspensionPropagation_NoConditionDefaultsToUnsuspended(t *testin
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
 		t.Fatalf("failed to get ServiceConsumer: %v", err)
 	}
-	if got.Spec.Suspended {
+	if isSuspended(got.Status.Conditions) {
 		t.Errorf("expected a missing ProjectSuspended condition to reinstate the consumer, got Suspended=true")
 	}
 }
@@ -827,10 +839,66 @@ func TestProjectSuspensionPropagation_IsolatesPerProject(t *testing.T) {
 	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerNameB}, &gotB); err != nil {
 		t.Fatalf("failed to get ServiceConsumer B: %v", err)
 	}
-	if !gotA.Spec.Suspended {
+	if !isSuspended(gotA.Status.Conditions) {
 		t.Errorf("expected project A's ServiceConsumer to be suspended")
 	}
-	if gotB.Spec.Suspended {
+	if isSuspended(gotB.Status.Conditions) {
 		t.Errorf("expected project B's ServiceConsumer to be untouched by project A's reconcile, got Suspended=true")
+	}
+}
+
+// TestProjectSuspensionPropagation_PreservesProjectSuspendedMessage ensures
+// the human-readable reason on the Project's own Suspended condition (e.g.
+// "Project is suspended due to active suspensions: nonpayment") is carried
+// through verbatim onto both the ServiceConsumer and the ServiceEntitlement,
+// rather than being replaced with a generic message.
+func TestProjectSuspensionPropagation_PreservesProjectSuspendedMessage(t *testing.T) {
+	const (
+		consumerProject = "consumer-proj"
+		providerProject = "provider-proj"
+		serviceName     = "compute.miloapis.com"
+		wantMessage     = "Project is suspended due to active suspensions: nonpayment"
+	)
+
+	project := newProjectFixture(consumerProject, []metav1.Condition{{
+		Type:               resourcemanagerv1alpha1.ProjectSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             resourcemanagerv1alpha1.ProjectSuspendedReason,
+		Message:            wantMessage,
+		ObservedGeneration: 1,
+	}})
+	svc := newPublishedService("compute", serviceName, providerProject, "")
+	ent := newEntitlementWithPhase("compute-entitlement", "compute", servicesv1alpha1.EntitlementPhaseActive)
+	consumerName := serviceConsumerName(serviceName, consumerProject)
+	consumer := newServiceConsumerFixture(consumerName, "compute", consumerProject, false)
+
+	rootClient := newFakeClient(project, svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient(consumer)
+
+	mgr := newTestManager()
+	mgr.add(consumerProject, consumerClient)
+	mgr.add(providerProject, providerClient)
+
+	r := &ProjectSuspensionPropagationReconciler{client: rootClient, Manager: mgr}
+
+	if _, err := r.Reconcile(context.Background(), projectSuspensionRequest(consumerProject)); err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	var gotConsumer servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &gotConsumer); err != nil {
+		t.Fatalf("failed to get ServiceConsumer: %v", err)
+	}
+	if cond := apimeta.FindStatusCondition(gotConsumer.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended); cond == nil || cond.Message != wantMessage {
+		t.Errorf("ServiceConsumer Suspended message = %+v, want message %q", cond, wantMessage)
+	}
+
+	var gotEntitlement servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: "compute-entitlement"}, &gotEntitlement); err != nil {
+		t.Fatalf("failed to get ServiceEntitlement: %v", err)
+	}
+	if cond := apimeta.FindStatusCondition(gotEntitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended); cond == nil || cond.Message != wantMessage {
+		t.Errorf("ServiceEntitlement Suspended message = %+v, want message %q", cond, wantMessage)
 	}
 }

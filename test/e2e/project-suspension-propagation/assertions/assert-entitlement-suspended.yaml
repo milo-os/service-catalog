@@ -1,7 +1,7 @@
 apiVersion: services.miloapis.com/v1alpha1
-kind: ServiceConsumer
+kind: ServiceEntitlement
 metadata:
-  name: sc-3a3b33b41eedde31
+  name: e2e-suspension-compute-miloapis-com
 status:
   (conditions[?type == 'Suspended']):
     - status: "True"

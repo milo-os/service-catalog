@@ -55,7 +55,8 @@ spec:
     - name: create-entitlement-and-verify-consumer
       description: |
         Creating the ServiceEntitlement should drive
-        ServiceEntitlementReconciler to create a ServiceConsumer, unsuspended.
+        ServiceEntitlementReconciler to create a ServiceConsumer, unsuspended,
+        and stamp the same Suspended=false condition on the entitlement itself.
       try:
         - apply:
             file: 03-create-entitlement.yaml
@@ -65,14 +66,19 @@ spec:
         - assert:
             timeout: 30s
             file: assertions/assert-consumer-unsuspended.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-entitlement-unsuspended.yaml
 
     - name: suspend-project-and-verify-consumer-suspended
       description: |
         Flip status.conditions[Suspended] to True via the status
         subresource — there is no real Milo controller in this cluster to
         set it for us. This fires the watch that drives
-        ProjectSuspensionPropagationReconciler.Reconcile, which should
-        patch the ServiceConsumer to Suspended=true.
+        ProjectSuspensionPropagationReconciler.Reconcile, which should patch
+        the ServiceConsumer's Suspended condition to True, and also patch the
+        ServiceEntitlement's own Suspended condition so the consumer project
+        can see it's suspended without reading the provider's ServiceConsumer.
       try:
         - script:
             timeout: 30s
@@ -84,6 +90,9 @@ spec:
         - assert:
             timeout: 30s
             file: assertions/assert-consumer-suspended.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-entitlement-suspended.yaml
 
     - name: reinstate-project-and-verify-consumer-unsuspended
       description: Flip status.conditions[Suspended] back to False.
@@ -98,3 +107,6 @@ spec:
         - assert:
             timeout: 30s
             file: assertions/assert-consumer-unsuspended.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-entitlement-unsuspended.yaml

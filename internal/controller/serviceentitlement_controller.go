@@ -132,11 +132,9 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	providerClient := providerCluster.GetClient()
 
 	var project resourcemanagerv1alpha1.Project
-	projectSuspended := false
+	var projectSuspended projectSuspension
 	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: string(consumerProject)}, &project); err == nil {
-		if cond := apimeta.FindStatusCondition(project.Status.Conditions, resourcemanagerv1alpha1.ProjectSuspended); cond != nil {
-			projectSuspended = cond.Status == metav1.ConditionTrue
-		}
+		projectSuspended = suspensionFromProject(&project)
 	} else if !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("failed to get project: %w", err)
 	}
@@ -156,7 +154,6 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
 			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
 		}
-		consumer.Spec.Suspended = projectSuspended
 		return nil
 	})
 	if err != nil {
@@ -164,7 +161,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName); err != nil {
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -185,7 +182,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		message = "The service provider denied this request."
 	}
 
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName); err != nil {
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -208,7 +205,15 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string) error {
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// Patched separately from the Update below (see
+	// patchConsumerSuspendedCondition): ProjectSuspensionPropagationReconciler
+	// writes the same condition independently, on its own Get/patch cycle, so
+	// folding it into this function's own before/after diff would race it.
+	if err := patchConsumerSuspendedCondition(ctx, providerClient, consumer, projectSuspended); err != nil {
+		return fmt.Errorf("failed to apply Suspended condition on ServiceConsumer: %w", err)
+	}
+
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
 	consumer.Status.ServiceName = canonicalServiceName
@@ -238,7 +243,13 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 	return nil
 }
 
-func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
+func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// See the matching comment in reconcileConsumerStatus: patched separately
+	// rather than folded into the Update below.
+	if err := patchEntitlementSuspendedCondition(ctx, consumerClient, entitlement, projectSuspended); err != nil {
+		return fmt.Errorf("failed to apply Suspended condition on ServiceEntitlement: %w", err)
+	}
+
 	original := entitlement.Status.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
@@ -276,7 +287,7 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 }
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
-	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "")
+	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "", projectSuspension{})
 }
 
 func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {

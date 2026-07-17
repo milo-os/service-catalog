@@ -75,12 +75,6 @@ type ServiceConsumerSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Approval *ProviderApproval `json:"approval,omitempty"`
-
-	// Suspended indicates whether the consumer has been suspended.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=false
-	Suspended bool `json:"suspended"`
 }
 
 // ServiceConsumerStatus defines the observed state of a ServiceConsumer.
@@ -131,6 +125,7 @@ type ServiceConsumerStatus struct {
 // +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.spec.serviceRef.name`
 // +kubebuilder:printcolumn:name="Consumer",type=string,JSONPath=`.spec.consumerProjectRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Suspended",type=string,JSONPath=`.status.conditions[?(@.type=="Suspended")].status`
 type ServiceConsumer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
