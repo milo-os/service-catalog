@@ -49,6 +49,22 @@ const (
 	// is missing or not yet published. Clients treat it as "unavailable" rather
 	// than a denial.
 	ReasonServiceNotPublished = "ServiceNotPublished"
+
+	// ConditionTypeSuspended is written on both ServiceEntitlement and
+	// ServiceConsumer. It mirrors resourcemanager.miloapis.com Project's own
+	// Suspended condition and is orthogonal to status.phase: a PendingApproval
+	// or Active entitlement/consumer can independently be Suspended=True while
+	// its owning project is suspended, then resume without re-running approval
+	// once the project is reinstated.
+	ConditionTypeSuspended = "Suspended"
+
+	// ReasonProjectSuspended is the Suspended=True reason while the owning
+	// consumer project is suspended.
+	ReasonProjectSuspended = "ProjectSuspended"
+
+	// ReasonProjectActive is the Suspended=False reason once the owning
+	// consumer project is no longer suspended.
+	ReasonProjectActive = "ProjectActive"
 )
 
 // EntitlementOrigin describes how a ServiceEntitlement was created.
@@ -142,6 +158,7 @@ type ServiceEntitlementStatus struct {
 // +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.spec.serviceRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.origin`
+// +kubebuilder:printcolumn:name="Suspended",type=string,JSONPath=`.status.conditions[?(@.type=="Suspended")].status`
 type ServiceEntitlement struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

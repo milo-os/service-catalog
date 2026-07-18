@@ -1,0 +1,9 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConsumer
+metadata:
+  # sha256("compute.miloapis.com/e2e-single-cluster")[:8] hex, "sc-" prefixed
+  # — see serviceConsumerName() in internal/controller/serviceentitlement_controller.go.
+  name: sc-3a3b33b41eedde31
+status:
+  (conditions[?type == 'Suspended']):
+    - status: "False"

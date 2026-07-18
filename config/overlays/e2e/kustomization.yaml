@@ -12,6 +12,11 @@ resources:
   - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/quota/quota.miloapis.com_resourceregistrations.yaml
   - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/quota/quota.miloapis.com_resourceclaims.yaml
   - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/resourcemanager/resourcemanager.miloapis.com_projects.yaml
+  # OrganizationDefaultsReconciler (internal/controller/organization_defaults_controller.go)
+  # watches Organization; without this CRD its informer never syncs, and
+  # mgr.Start() blocks until the cache-sync timeout then exits non-zero,
+  # crash-looping the whole manager (and its webhook server) forever.
+  - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/resourcemanager/resourcemanager.miloapis.com_organizations.yaml
   - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/infrastructure/infrastructure.miloapis.com_projectcontrolplanes.yaml
   - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_meterdefinitions.yaml
   - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_monitoredresourcetypes.yaml
@@ -35,9 +40,37 @@ patches:
         value:
           - --health-probe-bind-address=:8081
           - --server-config=/config/config.yaml
+          # See cmd/services/main.go and pkg/multicluster-runtime/e2esingle:
+          # this cluster has no real Milo control plane, so per-project
+          # engagement never happens. This flag swaps in a provider that
+          # resolves every project name to this one cluster, letting
+          # ServiceEntitlement/ServiceConsumer/ProjectSuspensionPropagation
+          # run for real in the e2e chainsaw suite. Never set outside e2e.
+          - --enable-single-cluster-for-e2e-tests=true
     target:
       kind: Deployment
       name: services-controller-manager
+
+  # The manager skips registering the ServiceConsumer webhook in-process when
+  # --enable-single-cluster-for-e2e-tests is set (see cmd/services/main.go —
+  # that webhook's authorization needs per-project request context e2esingle
+  # can't provide). But the ValidatingWebhookConfiguration object is static
+  # config, unaffected by that flag: the apiserver would still call out to
+  # vserviceconsumer.kb.io, which the manager now 404s on, failing every
+  # ServiceConsumer write. Drop that one entry here.
+  #
+  # FRAGILE: index 3 depends on generation order in
+  # config/base/webhook/manifests.yaml (controller-gen aggregates all
+  # ValidatingWebhookConfiguration entries into one object, alphabetically by
+  # webhook name: vservice, vserviceavailability, vserviceconfiguration,
+  # vserviceconsumer, vserviceentitlement). Re-verify this index after
+  # `task manifests` if webhook types are added/renamed.
+  - patch: |-
+      - op: remove
+        path: /webhooks/3
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration
 
 replacements:
   - source:

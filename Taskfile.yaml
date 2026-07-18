@@ -9,6 +9,10 @@ vars:
   CONTROLLER_TOOLS_VERSION: "v0.16.4"
   DEFAULTER_GEN_VERSION: "v0.32.3"
   GOLANGCI_LINT_VERSION: "v2.12.2"
+  # renovate: datasource=go depName=github.com/kyverno/chainsaw
+  # v0.2.14 and earlier fail to build against newer Go toolchains (missing
+  # testing.testDeps.ModulePath) — keep this at v0.2.15+.
+  CHAINSAW_VERSION: v0.2.15
 
 includes:
   # Must set TASK_X_REMOTE_TASKFILES=1 to use this feature.
@@ -213,11 +217,73 @@ tasks:
     silent: true
 
   # E2E Testing
-  e2e:
-    desc: Run chainsaw e2e tests
+  e2e:setup:
+    desc: Spin up a kind cluster and deploy services using the e2e overlay (mirrors .github/workflows/e2e.yml)
+    silent: true
     cmds:
-      - chainsaw test --config test/e2e/.chainsaw.yaml test/e2e/
+      - task: test-infra:cluster-up
+      - task: dev:build
+      - task: dev:load
+      - |
+        set -e
+        echo "Installing billing CRDs..."
+        task test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
+        task test-infra:kubectl -- wait kustomization/billing-crds -n flux-system --for=condition=ready --timeout=120s
+
+        echo "Installing LocationBinding CRD..."
+        task test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
+
+        echo "Installing resourcemanager CRDs..."
+        task test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml
+
+        echo "Deploying services (e2e overlay)..."
+        task test-infra:kubectl -- apply -k config/overlays/e2e
+        task test-infra:kubectl -- wait --for=condition=available deployment/services-controller-manager -n services-system --timeout=120s
+
+        echo "Waiting for webhook certificate to be ready..."
+        task test-infra:kubectl -- wait --for=condition=ready certificate/services-serving-cert -n services-system --timeout=120s
+
+        echo ""
+        echo "e2e environment ready! Run 'task e2e' to execute the chainsaw suite."
+
+  e2e:
+    desc: Run chainsaw e2e tests (requires 'task e2e:setup' first)
+    deps:
+      - task: install-go-tool
+        vars:
+          NAME: chainsaw
+          PACKAGE: github.com/kyverno/chainsaw
+          VERSION: "{{.CHAINSAW_VERSION}}"
+    cmds:
+      - "{{.TOOL_DIR}}/chainsaw test --config test/e2e/.chainsaw.yaml test/e2e/"
     silent: false
+
+  install-go-tool:
+    desc: Install a Go tool (internal)
+    silent: true
+    internal: true
+    cmds:
+      - mkdir -p {{.TOOL_DIR}}
+      - |
+        set -e
+        _NAME="{{.NAME}}"
+        _PACKAGE="{{.PACKAGE}}"
+        _VERSION="{{.VERSION}}"
+        _TOOL_DIR="{{.TOOL_DIR}}"
+        _VERSIONED="$_TOOL_DIR/$_NAME-$_VERSION"
+        _SYMLINK="$_TOOL_DIR/$_NAME"
+
+        if [ ! -f "$_VERSIONED" ]; then
+          echo "Downloading $_PACKAGE@$_VERSION..."
+          rm -f "$_SYMLINK" || true
+          GOBIN="$_TOOL_DIR" go install "$_PACKAGE@$_VERSION"
+          if [ ! -f "$_SYMLINK" ]; then
+            echo "ERROR: go install did not produce $_SYMLINK"
+            exit 1
+          fi
+          mv "$_SYMLINK" "$_VERSIONED"
+        fi
+        (cd "$_TOOL_DIR" && ln -sf "$_NAME-$_VERSION" "$_NAME")
 
   ui:docker-build:
     desc: Build the services UI Docker image

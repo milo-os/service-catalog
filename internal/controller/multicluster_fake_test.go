@@ -116,6 +116,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 			&servicesv1alpha1.ServiceEntitlement{},
 			&servicesv1alpha1.ServiceConsumer{},
 			&servicesv1alpha1.Service{},
+			&resourcemanagerv1alpha1.Project{},
 		).
 		WithIndex(&servicesv1alpha1.ServiceEntitlement{}, entitlementServiceNameIndex, entitlementServiceNameIndexer).
 		WithIndex(&servicesv1alpha1.Service{}, "spec.serviceName", func(obj client.Object) []string {

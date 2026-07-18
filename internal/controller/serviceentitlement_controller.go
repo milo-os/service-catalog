@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -68,7 +69,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
-// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourcegrants,verbs=get;list;create;update;patch;delete
+// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourcegrants,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -130,6 +131,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	providerClient := providerCluster.GetClient()
 
+	var project resourcemanagerv1alpha1.Project
+	var projectSuspended projectSuspension
+	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: string(consumerProject)}, &project); err == nil {
+		projectSuspended = suspensionFromProject(&project)
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("failed to get project: %w", err)
+	}
+
 	gated := svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider
 
 	consumerName := serviceConsumerName(svc.Spec.ServiceName, string(consumerProject))
@@ -152,7 +161,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName); err != nil {
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -173,7 +182,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		message = "The service provider denied this request."
 	}
 
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName); err != nil {
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -196,7 +205,15 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string) error {
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// Patched separately from the Update below (see
+	// patchConsumerSuspendedCondition): ProjectSuspensionPropagationReconciler
+	// writes the same condition independently, on its own Get/patch cycle, so
+	// folding it into this function's own before/after diff would race it.
+	if err := patchConsumerSuspendedCondition(ctx, providerClient, consumer, projectSuspended); err != nil {
+		return fmt.Errorf("failed to apply Suspended condition on ServiceConsumer: %w", err)
+	}
+
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
 	consumer.Status.ServiceName = canonicalServiceName
@@ -226,7 +243,13 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 	return nil
 }
 
-func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
+func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// See the matching comment in reconcileConsumerStatus: patched separately
+	// rather than folded into the Update below.
+	if err := patchEntitlementSuspendedCondition(ctx, consumerClient, entitlement, projectSuspended); err != nil {
+		return fmt.Errorf("failed to apply Suspended condition on ServiceEntitlement: %w", err)
+	}
+
 	original := entitlement.Status.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
@@ -264,7 +287,7 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 }
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
-	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "")
+	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "", projectSuspension{})
 }
 
 func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {
@@ -456,8 +479,17 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 // falling back to Kubernetes object name for backward-compatibility with
 // entitlements created before the canonical-name convention was enforced.
 func (r *ServiceEntitlementReconciler) resolveService(ctx context.Context, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
+	return resolveService(ctx, r.rootClient, nameOrCanonical)
+}
+
+// resolveService looks up a Service by canonical name (spec.serviceName) first,
+// falling back to Kubernetes object name for backward-compatibility with
+// entitlements created before the canonical-name convention was enforced.
+// Shared with ProjectSuspensionPropagationReconciler so both controllers
+// resolve a ServiceEntitlement's serviceRef the same way.
+func resolveService(ctx context.Context, rootClient client.Client, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
 	var list servicesv1alpha1.ServiceList
-	if err := r.rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err != nil {
+	if err := rootClient.List(ctx, &list, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err != nil {
 		// Propagate transient errors (cache not synced, API unavailable, etc.)
 		// rather than silently falling through to the name-based Get, which
 		// could return the wrong Service or a misleading NotFound.
@@ -468,7 +500,7 @@ func (r *ServiceEntitlementReconciler) resolveService(ctx context.Context, nameO
 	}
 	// Backward-compat: try by Kubernetes object name.
 	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: nameOrCanonical}, &svc); err != nil {
+	if err := rootClient.Get(ctx, types.NamespacedName{Name: nameOrCanonical}, &svc); err != nil {
 		return nil, err
 	}
 	return &svc, nil
