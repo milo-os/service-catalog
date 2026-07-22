@@ -244,7 +244,7 @@ func TestComputeActiveSet_CanonicalJoinAndFilters(t *testing.T) {
 
 	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical})
 
-	active, revoked, err := p.computeActiveSet(context.Background())
+	active, revoked, _, err := p.computeActiveSet(context.Background())
 	if err != nil {
 		t.Fatalf("computeActiveSet: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestComputeActiveSet_NoOwnedServices(t *testing.T) {
 	}
 	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical})
 
-	active, revoked, err := p.computeActiveSet(context.Background())
+	active, revoked, _, err := p.computeActiveSet(context.Background())
 	if err != nil {
 		t.Fatalf("computeActiveSet: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestComputeActiveSet_ReadsServicesFromBaseClient(t *testing.T) {
 		withRootClient(serviceClient),
 	)
 
-	active, _, err := p.computeActiveSet(context.Background())
+	active, _, _, err := p.computeActiveSet(context.Background())
 	if err != nil {
 		t.Fatalf("computeActiveSet: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 	rec.watchCtx = func() context.Context { return clusterCtx }
 	td.watchCtx = func() context.Context { return clusterCtx }
 
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("disengage: %v", err)
 	}
 
@@ -835,7 +835,7 @@ func TestDisengage_DeletesCartesianOverServiceNames(t *testing.T) {
 	)
 	engageStub(p, "proj-a")
 
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("disengage: %v", err)
 	}
 
@@ -874,7 +874,7 @@ func TestDisengage_TeardownErrorAbortsKeepsEngagedThenSucceeds(t *testing.T) {
 	td.watchCtx = func() context.Context { return clusterCtx }
 
 	// Abort: the teardown fails.
-	if err := p.disengage(context.Background(), "proj-a"); err == nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err == nil {
 		t.Fatalf("expected disengage to return the teardown error")
 	}
 	if _, ok := p.clusters["proj-a"]; !ok {
@@ -895,7 +895,7 @@ func TestDisengage_TeardownErrorAbortsKeepsEngagedThenSucceeds(t *testing.T) {
 
 	// Recover: teardown now succeeds; the next disengage clears the maps.
 	td.err = nil
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("disengage retry: %v", err)
 	}
 	if td.calls != 2 {
@@ -920,7 +920,7 @@ func TestDisengage_DeleteErrorAbortsBeforeTeardowns(t *testing.T) {
 	)
 	engageStub(p, "proj-a")
 
-	if err := p.disengage(context.Background(), "proj-a"); err == nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err == nil {
 		t.Fatalf("expected disengage to surface the DeleteAllOf error")
 	}
 	if _, ok := p.clusters["proj-a"]; !ok {
@@ -951,7 +951,7 @@ func TestDisengage_ToleratesMissingType_NoMatchError(t *testing.T) {
 	)
 	engageStub(p, "proj-a")
 
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("a missing type (NoMatchError) must be tolerated as clean teardown, got %v", err)
 	}
 	// Teardown hooks still run despite the tolerated missing managed type.
@@ -977,7 +977,7 @@ func TestDisengage_ToleratesMissingType_NotFound(t *testing.T) {
 	)
 	engageStub(p, "proj-a")
 
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("a NotFound from DeleteAllOf must be tolerated, got %v", err)
 	}
 	if _, ok := p.clusters["proj-a"]; ok {
@@ -997,11 +997,11 @@ func TestDisengage_TeardownIsIdempotent(t *testing.T) {
 
 	// Tear down, then engage again and tear down a second time: both clean.
 	engageStub(p, "proj-a")
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("disengage 1: %v", err)
 	}
 	engageStub(p, "proj-a")
-	if err := p.disengage(context.Background(), "proj-a"); err != nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err != nil {
 		t.Fatalf("disengage 2 (idempotent re-run): %v", err)
 	}
 	if len(rec.deletes) != 2 {
@@ -1083,7 +1083,7 @@ func TestGet_MidTeardownReportsSentinel(t *testing.T) {
 	)
 	engageStub(p, "proj-a")
 
-	if err := p.disengage(context.Background(), "proj-a"); err == nil {
+	if err := p.disengage(context.Background(), "proj-a", nil); err == nil {
 		t.Fatalf("expected the failing teardown to return an error")
 	}
 	// Still tracked as a retry marker...
@@ -1140,7 +1140,7 @@ func TestMetrics_TeardownFailureCounter(t *testing.T) {
 	before := readMetric(t, teardownFailuresTotal.WithLabelValues(proj)).GetCounter().GetValue()
 
 	engageStub(p, proj)
-	if err := p.disengage(context.Background(), proj); err == nil {
+	if err := p.disengage(context.Background(), proj, nil); err == nil {
 		t.Fatalf("expected failing teardown (1)")
 	}
 	if got := readMetric(t, teardownFailuresTotal.WithLabelValues(proj)).GetCounter().GetValue(); got != before+1 {
@@ -1149,7 +1149,7 @@ func TestMetrics_TeardownFailureCounter(t *testing.T) {
 
 	// A second failing pass increments again (retried; never force-cancelled).
 	engageStub(p, proj)
-	if err := p.disengage(context.Background(), proj); err == nil {
+	if err := p.disengage(context.Background(), proj, nil); err == nil {
 		t.Fatalf("expected failing teardown (2)")
 	}
 	if got := readMetric(t, teardownFailuresTotal.WithLabelValues(proj)).GetCounter().GetValue(); got != before+2 {
@@ -1225,4 +1225,166 @@ func TestReconcile_PendingOnlyProjectIsNotTornDown(t *testing.T) {
 	if len(p.clusters) != 0 {
 		t.Errorf("a pending-only project must not be engaged, clusters=%v", p.clusters)
 	}
+}
+
+// --- provider-teardown finalizer ---------------------------------------------
+
+// An Active consumer gets the deprovisioning finalizer stamped on it so a later
+// deletion cannot complete before this operator confirms teardown. The finalizer
+// is only added when the operator declared cleanup work (ManagedResources here).
+func TestReconcile_StampsTeardownFinalizerOnActiveConsumer(t *testing.T) {
+	consumer := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withManagedResources(locationBindingGVK),
+	)
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: consumer.Name}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	if !containsString(got.Finalizers, providerTeardownFinalizer) {
+		t.Errorf("expected provider-teardown finalizer on active consumer, got %v", got.Finalizers)
+	}
+}
+
+// An operator that declares no ManagedResources or Teardowns projects nothing,
+// so it must NOT gate any consumer's deletion — no finalizer is stamped.
+func TestReconcile_NoTeardownFinalizerWhenNoCleanupDeclared(t *testing.T) {
+	consumer := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
+	p := newTestProvider(providerClient, []string{computeCanonical}, withMCMgr(newFakeMCMgr()))
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: consumer.Name}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	if containsString(got.Finalizers, providerTeardownFinalizer) {
+		t.Errorf("operator with no cleanup must not gate deletion, finalizers=%v", got.Finalizers)
+	}
+}
+
+// Both an Active and a Denied (still-present) consumer for the same project are
+// gated — a Denied consumer may still hold projected resources from when it was
+// Active. Neither being deleted, both keep the finalizer.
+func TestReconcile_StampsFinalizerOnActiveAndDeniedConsumers(t *testing.T) {
+	activeSC := newConsumer("c-active", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	deniedSC := newConsumer("c-denied", storageObject, "proj-a", servicesv1alpha1.ConsumerPhaseDenied)
+	providerClient := newProviderClient(t,
+		newService(computeObject, computeCanonical),
+		newService(storageObject, storageCanonical),
+		activeSC, deniedSC,
+	)
+	p := newTestProvider(providerClient, []string{computeCanonical, storageCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withManagedResources(locationBindingGVK),
+	)
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	for _, name := range []string{"c-active", "c-denied"} {
+		var got servicesv1alpha1.ServiceConsumer
+		if err := providerClient.Get(context.Background(), client.ObjectKey{Name: name}, &got); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		if !containsString(got.Finalizers, providerTeardownFinalizer) {
+			t.Errorf("%s: expected provider-teardown finalizer, got %v", name, got.Finalizers)
+		}
+	}
+}
+
+// A consumer that is being deleted has its finalizer removed only AFTER teardown
+// succeeds, at which point the fake client garbage-collects the object.
+func TestDisengage_RemovesTeardownFinalizerAfterTeardownSucceeds(t *testing.T) {
+	deleting := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	deleting.Finalizers = []string{providerTeardownFinalizer}
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), deleting)
+
+	rec := &recordingClient{}
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withManagedResources(locationBindingGVK),
+		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
+	)
+	engageStub(p, "proj-a")
+
+	// Fetch a fresh copy (correct resourceVersion) to pass into disengage.
+	var fresh servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: "c-proj-a"}, &fresh); err != nil {
+		t.Fatalf("get deleting consumer: %v", err)
+	}
+
+	if err := p.disengage(context.Background(), "proj-a", []servicesv1alpha1.ServiceConsumer{fresh}); err != nil {
+		t.Fatalf("disengage: %v", err)
+	}
+
+	// Finalizer removed -> the object is garbage-collected -> deletion completes.
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: "c-proj-a"}, &got); !apierrors.IsNotFound(err) {
+		t.Errorf("expected consumer gone after finalizer removal, got err=%v finalizers=%v", err, got.Finalizers)
+	}
+}
+
+// A failing teardown must NOT drop the finalizer: the deletion stays blocked and
+// is retried, never leaked.
+func TestDisengage_KeepsTeardownFinalizerWhenTeardownFails(t *testing.T) {
+	deleting := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	deleting.Finalizers = []string{providerTeardownFinalizer}
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), deleting)
+
+	rec := &recordingClient{}
+	td := &recordingTeardown{err: errors.New("teardown boom")}
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withManagedResources(locationBindingGVK),
+		withTeardowns(td),
+		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
+	)
+	engageStub(p, "proj-a")
+
+	var fresh servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: "c-proj-a"}, &fresh); err != nil {
+		t.Fatalf("get deleting consumer: %v", err)
+	}
+
+	if err := p.disengage(context.Background(), "proj-a", []servicesv1alpha1.ServiceConsumer{fresh}); err == nil {
+		t.Fatalf("expected disengage to fail on teardown error")
+	}
+
+	// Deletion is still gated: the object survives WITH the finalizer.
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: "c-proj-a"}, &got); err != nil {
+		t.Fatalf("consumer must survive a failing teardown: %v", err)
+	}
+	if !containsString(got.Finalizers, providerTeardownFinalizer) {
+		t.Errorf("finalizer must be retained while teardown keeps failing, finalizers=%v", got.Finalizers)
+	}
+	// Retry marker retained.
+	if _, ok := p.clusters["proj-a"]; !ok {
+		t.Errorf("project must stay tracked as a retry marker after teardown failure")
+	}
+}
+
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
