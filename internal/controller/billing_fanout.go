@@ -9,13 +9,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
+	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	billingapply "go.miloapis.com/billing/applyconfiguration/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -54,7 +54,6 @@ func mustLabelRequirement(key string, op selection.Operator, vals ...string) lab
 // appear in the desired set.
 type BillingFanOut struct {
 	Client client.Client
-	Scheme *runtime.Scheme
 }
 
 // Reconcile applies every billing object declared by sc and deletes any
@@ -114,34 +113,24 @@ func (f *BillingFanOut) applyMonitoredResourceTypes(
 		entry := &sc.Spec.MonitoredResourceTypes[i]
 		name := encodeName(entry.Type)
 
-		obj := &billingv1alpha1.MonitoredResourceType{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: billingv1alpha1.GroupVersion.String(),
-				Kind:       "MonitoredResourceType",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-				Labels: map[string]string{
-					labelManagedBy:    labelManagedByValue,
-					labelOwnerService: serviceName,
-				},
-			},
-			Spec: billingv1alpha1.MonitoredResourceTypeSpec{
-				ResourceTypeName: entry.Type,
-				Phase:            billingv1alpha1.Phase(sc.Spec.Phase),
-				DisplayName:      entry.DisplayName,
-				Description:      entry.Description,
-				GVK: billingv1alpha1.MonitoredResourceTypeGVK{
-					Group: entry.GVK.Group,
-					Kind:  entry.GVK.Kind,
-				},
-				Labels: billingLabelsFor(entry.Labels),
-			},
-		}
-		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
-			return nil, fmt.Errorf("set controller ref on billing MonitoredResourceType %q: %w", name, err)
-		}
-		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
+		applyConfig := billingapply.MonitoredResourceType(name, "").
+			WithLabels(map[string]string{
+				labelManagedBy:    labelManagedByValue,
+				labelOwnerService: serviceName,
+			}).
+			WithOwnerReferences(controllerRef(sc)).
+			WithSpec(billingapply.MonitoredResourceTypeSpec().
+				WithResourceTypeName(entry.Type).
+				WithPhase(billingv1alpha1.Phase(sc.Spec.Phase)).
+				WithDisplayName(entry.DisplayName).
+				WithDescription(entry.Description).
+				WithGVK(billingapply.MonitoredResourceTypeGVK().
+					WithGroup(entry.GVK.Group).
+					WithKind(entry.GVK.Kind),
+				).
+				WithLabels(billingLabelsApplyFor(entry.Labels)...),
+			)
+		if err := f.Client.Apply(ctx, applyConfig, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply billing MonitoredResourceType %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
@@ -191,44 +180,31 @@ func (f *BillingFanOut) applyMeterDefinitions(
 		}
 
 		name := encodeName(metric.Name)
-		obj := &billingv1alpha1.MeterDefinition{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: billingv1alpha1.GroupVersion.String(),
-				Kind:       "MeterDefinition",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-				Labels: map[string]string{
-					labelManagedBy:    labelManagedByValue,
-					labelOwnerService: serviceName,
-				},
-			},
-			Spec: billingv1alpha1.MeterDefinitionSpec{
-				MeterName:   metric.Name,
-				Phase:       billingv1alpha1.Phase(sc.Spec.Phase),
-				DisplayName: metric.DisplayName,
-				Description: metric.Description,
-				Measurement: billingv1alpha1.MeterMeasurement{
-					Aggregation: metricKindToAggregation(metric.Kind),
-					Unit:        metric.Unit,
-					Dimensions:  metric.Dimensions,
-				},
-				Billing: billingv1alpha1.MeterBilling{
+		applyConfig := billingapply.MeterDefinition(name, "").
+			WithLabels(map[string]string{
+				labelManagedBy:    labelManagedByValue,
+				labelOwnerService: serviceName,
+			}).
+			WithOwnerReferences(controllerRef(sc)).
+			WithSpec(billingapply.MeterDefinitionSpec().
+				WithMeterName(metric.Name).
+				WithPhase(billingv1alpha1.Phase(sc.Spec.Phase)).
+				WithDisplayName(metric.DisplayName).
+				WithDescription(metric.Description).
+				WithMeasurement(billingapply.MeterMeasurement().
+					WithAggregation(metricKindToAggregation(metric.Kind)).
+					WithUnit(metric.Unit).
+					WithDimensions(metric.Dimensions...),
+				).
+				WithBilling(billingapply.MeterBilling().
 					// Default both to the emission unit. The future SKU layer
 					// will diverge these when pricing units differ.
-					ConsumedUnit: metric.Unit,
-					PricingUnit:  metric.Unit,
-				},
-				MonitoredResourceTypes: mrtTypes,
-			},
-		}
-		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
-			return nil, fmt.Errorf("setting controller reference on MeterDefinition %q: %w", name, err)
-		}
-		if err := f.Client.Patch(ctx, obj, client.Apply,
-			client.FieldOwner(fieldManagerName),
-			client.ForceOwnership,
-		); err != nil {
+					WithConsumedUnit(metric.Unit).
+					WithPricingUnit(metric.Unit),
+				).
+				WithMonitoredResourceTypes(mrtTypes...),
+			)
+		if err := f.Client.Apply(ctx, applyConfig, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("applying MeterDefinition %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
@@ -284,18 +260,29 @@ func (f *BillingFanOut) pruneMeters(
 	return nil
 }
 
-func billingLabelsFor(labels []servicesv1alpha1.MonitoredResourceLabel) []billingv1alpha1.MonitoredResourceLabel {
-	if len(labels) == 0 {
-		return nil
-	}
-	out := make([]billingv1alpha1.MonitoredResourceLabel, 0, len(labels))
+func billingLabelsApplyFor(labels []servicesv1alpha1.MonitoredResourceLabel) []*billingapply.MonitoredResourceLabelApplyConfiguration {
+	out := make([]*billingapply.MonitoredResourceLabelApplyConfiguration, 0, len(labels))
 	for _, l := range labels {
-		out = append(out, billingv1alpha1.MonitoredResourceLabel{
-			Name:        l.Name,
-			Description: l.Description,
-		})
+		out = append(out, billingapply.MonitoredResourceLabel().
+			WithName(l.Name).
+			WithDescription(l.Description),
+		)
 	}
 	return out
+}
+
+// controllerRef builds an owner reference that marks sc as the controller of a
+// fan-out billing object. Replaces ctrl.SetControllerReference for use with
+// apply configuration types, which don't implement runtime.Object.
+func controllerRef(sc *servicesv1alpha1.ServiceConfiguration) *metav1apply.OwnerReferenceApplyConfiguration {
+	t := true
+	return metav1apply.OwnerReference().
+		WithAPIVersion(servicesv1alpha1.GroupVersion.String()).
+		WithKind("ServiceConfiguration").
+		WithName(sc.Name).
+		WithUID(sc.UID).
+		WithController(t).
+		WithBlockOwnerDeletion(t)
 }
 
 func ownedBy(refs []metav1.OwnerReference, uid types.UID) bool {

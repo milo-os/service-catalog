@@ -13,7 +13,7 @@ test('full walkthrough', async ({ page }) => {
   await page.goto('/services');
   await page.waitForLoadState('networkidle');
   await expect(
-    page.getByRole('heading', { name: /services/i }).first()
+    page.locator('[data-e2e="page-title"]').filter({ hasText: /services/i })
   ).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(3_000);
 

@@ -4,10 +4,8 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -29,8 +27,7 @@ func SetupServiceConfigurationWebhookWithManager(mgr ctrl.Manager) error {
 		reader: mgr.GetAPIReader(),
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&servicesv1alpha1.ServiceConfiguration{}).
+	return ctrl.NewWebhookManagedBy(mgr, &servicesv1alpha1.ServiceConfiguration{}).
 		WithValidator(webhook).
 		Complete()
 }
@@ -41,15 +38,10 @@ type serviceConfigurationWebhook struct {
 	reader client.Reader
 }
 
-var _ admission.CustomValidator = &serviceConfigurationWebhook{}
+var _ admission.Validator[*servicesv1alpha1.ServiceConfiguration] = &serviceConfigurationWebhook{}
 
 // ValidateCreate implements webhook.CustomValidator.
-func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	sc, ok := obj.(*servicesv1alpha1.ServiceConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
-
+func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) (admission.Warnings, error) {
 	isDryRun := false
 	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
 		isDryRun = *req.DryRun
@@ -63,7 +55,7 @@ func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, obj ru
 
 	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc, isDryRun); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
+			sc.GetObjectKind().GroupVersionKind().GroupKind(),
 			sc.Name,
 			errs,
 		)
@@ -72,16 +64,7 @@ func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, obj ru
 }
 
 // ValidateUpdate implements webhook.CustomValidator.
-func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldSC, ok := oldObj.(*servicesv1alpha1.ServiceConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", oldObj)
-	}
-	newSC, ok := newObj.(*servicesv1alpha1.ServiceConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", newObj)
-	}
-
+func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldSC, newSC *servicesv1alpha1.ServiceConfiguration) (admission.Warnings, error) {
 	isDryRun := false
 	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
 		isDryRun = *req.DryRun
@@ -91,7 +74,7 @@ func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldObj
 
 	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC, isDryRun); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
+			newSC.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
 			errs,
 		)
@@ -101,11 +84,7 @@ func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldObj
 
 // ValidateDelete implements webhook.CustomValidator. No-op today; the
 // fan-out controller cascades billing-object cleanup via owner refs.
-func (r *serviceConfigurationWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	sc, ok := obj.(*servicesv1alpha1.ServiceConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceConfigurationWebhook) ValidateDelete(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) (admission.Warnings, error) {
 	serviceConfigurationLog.Info("validating delete", "name", sc.GetName())
 	return nil, nil
 }

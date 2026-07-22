@@ -4,10 +4,8 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -28,8 +26,7 @@ func SetupServiceEntitlementWebhookWithManager(mgr ctrl.Manager) error {
 		reader: mgr.GetAPIReader(),
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&servicesv1alpha1.ServiceEntitlement{}).
+	return ctrl.NewWebhookManagedBy(mgr, &servicesv1alpha1.ServiceEntitlement{}).
 		WithValidator(webhook).
 		Complete()
 }
@@ -40,14 +37,10 @@ type serviceEntitlementWebhook struct {
 	reader client.Reader
 }
 
-var _ admission.CustomValidator = &serviceEntitlementWebhook{}
+var _ admission.Validator[*servicesv1alpha1.ServiceEntitlement] = &serviceEntitlementWebhook{}
 
 // ValidateCreate implements webhook.CustomValidator.
-func (r *serviceEntitlementWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	se, ok := obj.(*servicesv1alpha1.ServiceEntitlement)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceEntitlementWebhook) ValidateCreate(ctx context.Context, se *servicesv1alpha1.ServiceEntitlement) (admission.Warnings, error) {
 	serviceEntitlementLog.Info("validating create",
 		"name", se.GetName(),
 		"serviceRef", se.Spec.ServiceRef.Name,
@@ -55,7 +48,7 @@ func (r *serviceEntitlementWebhook) ValidateCreate(ctx context.Context, obj runt
 
 	if errs := validation.ValidateServiceEntitlementCreate(ctx, r.reader, se); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
+			se.GetObjectKind().GroupVersionKind().GroupKind(),
 			se.Name,
 			errs,
 		)
@@ -64,20 +57,12 @@ func (r *serviceEntitlementWebhook) ValidateCreate(ctx context.Context, obj runt
 }
 
 // ValidateUpdate implements webhook.CustomValidator.
-func (r *serviceEntitlementWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldSE, ok := oldObj.(*servicesv1alpha1.ServiceEntitlement)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", oldObj)
-	}
-	newSE, ok := newObj.(*servicesv1alpha1.ServiceEntitlement)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", newObj)
-	}
+func (r *serviceEntitlementWebhook) ValidateUpdate(ctx context.Context, oldSE, newSE *servicesv1alpha1.ServiceEntitlement) (admission.Warnings, error) {
 	serviceEntitlementLog.Info("validating update", "name", newSE.GetName())
 
 	if errs := validation.ValidateServiceEntitlementUpdate(ctx, r.reader, oldSE, newSE); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
+			newSE.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSE.Name,
 			errs,
 		)
@@ -88,11 +73,7 @@ func (r *serviceEntitlementWebhook) ValidateUpdate(ctx context.Context, oldObj, 
 // ValidateDelete implements webhook.CustomValidator. Refuses to delete a
 // dependency entitlement while the entitlement that pulled it in is
 // still Active.
-func (r *serviceEntitlementWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	se, ok := obj.(*servicesv1alpha1.ServiceEntitlement)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceEntitlementWebhook) ValidateDelete(ctx context.Context, se *servicesv1alpha1.ServiceEntitlement) (admission.Warnings, error) {
 	serviceEntitlementLog.Info("validating delete",
 		"name", se.GetName(),
 		"origin", se.Status.Origin,
@@ -101,7 +82,7 @@ func (r *serviceEntitlementWebhook) ValidateDelete(ctx context.Context, obj runt
 
 	if errs := validation.ValidateServiceEntitlementDelete(ctx, r.reader, se); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
+			se.GetObjectKind().GroupVersionKind().GroupKind(),
 			se.Name,
 			errs,
 		)

@@ -10,7 +10,6 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -30,8 +29,7 @@ var serviceConsumerLog = logf.Log.WithName("serviceconsumer-webhook")
 func SetupServiceConsumerWebhookWithManager(mgr ctrl.Manager, mcMgr mcmanager.Manager) error {
 	webhook := &serviceConsumerWebhook{mcMgr: mcMgr}
 
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&servicesv1alpha1.ServiceConsumer{}).
+	return ctrl.NewWebhookManagedBy(mgr, &servicesv1alpha1.ServiceConsumer{}).
 		WithValidator(webhook).
 		Complete()
 }
@@ -42,7 +40,7 @@ type serviceConsumerWebhook struct {
 	mcMgr mcmanager.Manager
 }
 
-var _ admission.CustomValidator = &serviceConsumerWebhook{}
+var _ admission.Validator[*servicesv1alpha1.ServiceConsumer] = &serviceConsumerWebhook{}
 
 func userInfoFromContext(ctx context.Context) authenticationv1.UserInfo {
 	req, err := admission.RequestFromContext(ctx)
@@ -138,11 +136,7 @@ func convertExtra(in map[string]authenticationv1.ExtraValue) map[string]authoriz
 
 // ValidateCreate implements webhook.CustomValidator. ServiceConsumer objects
 // are controller-managed; reject creates from callers without manage.
-func (r *serviceConsumerWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	sc, ok := obj.(*servicesv1alpha1.ServiceConsumer)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceConsumerWebhook) ValidateCreate(ctx context.Context, sc *servicesv1alpha1.ServiceConsumer) (admission.Warnings, error) {
 	user := userInfoFromContext(ctx)
 	serviceConsumerLog.Info("validating create", "name", sc.GetName(), "user", user.Username)
 
@@ -153,7 +147,7 @@ func (r *serviceConsumerWebhook) ValidateCreate(ctx context.Context, obj runtime
 
 	if errs := validation.ValidateServiceConsumerCreate(canManage, sc); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
+			sc.GetObjectKind().GroupVersionKind().GroupKind(),
 			sc.Name,
 			errs,
 		)
@@ -163,15 +157,7 @@ func (r *serviceConsumerWebhook) ValidateCreate(ctx context.Context, obj runtime
 
 // ValidateUpdate implements webhook.CustomValidator. Callers without manage may
 // only touch spec.approval; the controller has full write access.
-func (r *serviceConsumerWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldSC, ok := oldObj.(*servicesv1alpha1.ServiceConsumer)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", oldObj)
-	}
-	newSC, ok := newObj.(*servicesv1alpha1.ServiceConsumer)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", newObj)
-	}
+func (r *serviceConsumerWebhook) ValidateUpdate(ctx context.Context, oldSC, newSC *servicesv1alpha1.ServiceConsumer) (admission.Warnings, error) {
 	user := userInfoFromContext(ctx)
 	serviceConsumerLog.Info("validating update", "name", newSC.GetName(), "user", user.Username)
 
@@ -192,7 +178,7 @@ func (r *serviceConsumerWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 
 	if errs := validation.ValidateServiceConsumerUpdate(canManage, canApprove, oldSC, newSC); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
+			newSC.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
 			errs,
 		)
@@ -202,11 +188,7 @@ func (r *serviceConsumerWebhook) ValidateUpdate(ctx context.Context, oldObj, new
 
 // ValidateDelete implements webhook.CustomValidator. No-op today; the
 // services controller drives ServiceConsumer lifecycle via owner refs.
-func (r *serviceConsumerWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	sc, ok := obj.(*servicesv1alpha1.ServiceConsumer)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceConsumerWebhook) ValidateDelete(ctx context.Context, sc *servicesv1alpha1.ServiceConsumer) (admission.Warnings, error) {
 	serviceConsumerLog.Info("validating delete", "name", sc.GetName())
 	return nil, nil
 }

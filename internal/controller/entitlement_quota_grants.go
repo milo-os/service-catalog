@@ -120,6 +120,7 @@ func (r *ServiceEntitlementReconciler) ensureQuotaGrants(
 			},
 		}
 
+		//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
 		if err := consumerClient.Patch(ctx, grant, client.Apply,
 			client.FieldOwner(quotaGrantFieldManager),
 			client.ForceOwnership,

@@ -1,0 +1,14 @@
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  # Must equal e2esingle.ClusterName (pkg/multicluster-runtime/e2esingle):
+  # ServiceEntitlementReconciler derives the consumer project name from
+  # req.ClusterName, which the e2esingle provider fixes to this value.
+  # ProjectSuspensionPropagationReconciler derives it from this object's
+  # own name. They must match for the ServiceConsumer name computed by
+  # each side to line up.
+  name: e2e-single-cluster
+spec:
+  ownerRef:
+    kind: Organization
+    name: e2e-suspension-org

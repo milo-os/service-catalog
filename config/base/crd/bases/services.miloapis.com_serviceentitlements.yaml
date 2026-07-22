@@ -25,6 +25,9 @@ spec:
     - jsonPath: .status.origin
       name: Origin
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Suspended")].status
+      name: Suspended
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:

@@ -43,6 +43,17 @@ type ServicesOperator struct {
 	// useful for local development where the controller and API server share
 	// a cluster.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
+
+	// ConsumerScopedProjection, when set, switches projection of
+	// consumer-facing resources (today: LocationBinding) off the all-projects
+	// Milo manager and onto a consumer-scoped multicluster manager driven by
+	// the consumer provider: the operator engages a consumer project only while
+	// it has an active ServiceConsumer for one of ServiceNames, and tears down
+	// the resources it projected there when the last consumer goes away. When
+	// nil the operator keeps today's behavior, byte-for-byte — LocationBinding
+	// projection runs on the all-projects manager. This mirrors the
+	// WebhookServer pointer-gate above: nil = feature off.
+	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
 }
 
 // RestConfig returns the *rest.Config used to connect to the Milo API server.
@@ -94,6 +105,33 @@ func (c *WebhookServerConfig) Options(ctx context.Context, secretsClient client.
 	}
 
 	return opts
+}
+
+// +k8s:deepcopy-gen=true
+
+// ConsumerScopedProjectionConfig configures consumer-scoped projection. When
+// present on ServicesOperator, the operator engages a consumer project only
+// while it has an active ServiceConsumer for one of ServiceNames and projects
+// its consumer-facing resources (LocationBinding) there, tearing them down when
+// the last consumer goes away.
+type ConsumerScopedProjectionConfig struct {
+	// ProviderProject is the name of the provider Project whose virtual control
+	// plane hosts this operator's ServiceConsumer objects. It is the single
+	// source of truth for routing — the manager builds providerMgr against this
+	// project's control plane and gates startup on its readiness. Required when
+	// this block is set; the manager fails fast at startup if it is empty.
+	ProviderProject string `json:"providerProject"`
+
+	// ServiceNames is the set of CANONICAL service names
+	// (Service.spec.serviceName, e.g. "compute.miloapis.com") this operator
+	// owns. Only ServiceConsumers resolving to one of these canonical names are
+	// engaged and projected into; a provider project may host ServiceConsumers
+	// for other services, which are ignored. Required, non-empty.
+	ServiceNames []string `json:"serviceNames"`
+
+	// ResyncInterval optionally overrides the consumer provider's periodic
+	// full-resync cadence. When unset the provider uses its own default (5m).
+	ResyncInterval *metav1.Duration `json:"resyncInterval,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -4,10 +4,8 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,8 +42,7 @@ func SetupServiceWebhookWithManager(mgr ctrl.Manager) error {
 		reader: mgr.GetAPIReader(),
 	}
 
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&servicesv1alpha1.Service{}).
+	return ctrl.NewWebhookManagedBy(mgr, &servicesv1alpha1.Service{}).
 		WithDefaulter(webhook).
 		WithValidator(webhook).
 		Complete()
@@ -62,28 +59,20 @@ type serviceWebhook struct {
 	reader client.Reader
 }
 
-var _ admission.CustomDefaulter = &serviceWebhook{}
-var _ admission.CustomValidator = &serviceWebhook{}
+var _ admission.Defaulter[*servicesv1alpha1.Service] = &serviceWebhook{}
+var _ admission.Validator[*servicesv1alpha1.Service] = &serviceWebhook{}
 
 // Default implements webhook.CustomDefaulter. spec.phase defaults to
 // Draft via the CRD's +kubebuilder:default marker, so admission-time
 // defaulting is a no-op today; this hook is retained so future spec
 // defaults can land here without a wiring change.
-func (r *serviceWebhook) Default(ctx context.Context, obj runtime.Object) error {
-	svc, ok := obj.(*servicesv1alpha1.Service)
-	if !ok {
-		return fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceWebhook) Default(ctx context.Context, svc *servicesv1alpha1.Service) error {
 	serviceLog.Info("defaulting", "name", svc.GetName())
 	return nil
 }
 
 // ValidateCreate implements webhook.CustomValidator.
-func (r *serviceWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	svc, ok := obj.(*servicesv1alpha1.Service)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceWebhook) ValidateCreate(ctx context.Context, svc *servicesv1alpha1.Service) (admission.Warnings, error) {
 	serviceLog.Info("validating create",
 		"name", svc.GetName(),
 		"serviceName", svc.Spec.ServiceName,
@@ -93,7 +82,7 @@ func (r *serviceWebhook) ValidateCreate(ctx context.Context, obj runtime.Object)
 	errs = append(errs, validation.ValidateServiceDependencies(ctx, r.reader, svc)...)
 	if len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			obj.GetObjectKind().GroupVersionKind().GroupKind(),
+			svc.GetObjectKind().GroupVersionKind().GroupKind(),
 			svc.Name,
 			errs,
 		)
@@ -102,15 +91,7 @@ func (r *serviceWebhook) ValidateCreate(ctx context.Context, obj runtime.Object)
 }
 
 // ValidateUpdate implements webhook.CustomValidator.
-func (r *serviceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldSvc, ok := oldObj.(*servicesv1alpha1.Service)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", oldObj)
-	}
-	newSvc, ok := newObj.(*servicesv1alpha1.Service)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", newObj)
-	}
+func (r *serviceWebhook) ValidateUpdate(ctx context.Context, oldSvc, newSvc *servicesv1alpha1.Service) (admission.Warnings, error) {
 	serviceLog.Info("validating update", "name", newSvc.GetName())
 
 	errs := validation.ValidateServiceUpdate(oldSvc, newSvc)
@@ -119,7 +100,7 @@ func (r *serviceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runt
 	}
 	if len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
-			newObj.GetObjectKind().GroupVersionKind().GroupKind(),
+			newSvc.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSvc.Name,
 			errs,
 		)
@@ -131,11 +112,7 @@ func (r *serviceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runt
 // downstream references (MeterDefinition, MonitoredResourceType, etc.)
 // hold the finalizer, this is the place to refuse deletion while any
 // reference remains.
-func (r *serviceWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	svc, ok := obj.(*servicesv1alpha1.Service)
-	if !ok {
-		return nil, fmt.Errorf("unexpected type %T", obj)
-	}
+func (r *serviceWebhook) ValidateDelete(ctx context.Context, svc *servicesv1alpha1.Service) (admission.Warnings, error) {
 	serviceLog.Info("validating delete", "name", svc.GetName())
 	return nil, nil
 }

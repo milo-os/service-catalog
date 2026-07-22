@@ -12,19 +12,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	billingapply "go.miloapis.com/billing/applyconfiguration/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// meterCapturingClient records every MeterDefinition Patch so tests can
+// meterCapturingClient records every MeterDefinition Apply so tests can
 // assert on the materialized billing object without a live API server.
 type meterCapturingClient struct {
 	client.Client
-	meters []*billingv1alpha1.MeterDefinition
+	meters []*billingapply.MeterDefinitionApplyConfiguration
 }
 
-func (c *meterCapturingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	if md, ok := obj.(*billingv1alpha1.MeterDefinition); ok {
-		c.meters = append(c.meters, md.DeepCopy())
+func (c *meterCapturingClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	if md, ok := obj.(*billingapply.MeterDefinitionApplyConfiguration); ok {
+		c.meters = append(c.meters, md)
 	}
 	return nil
 }
@@ -74,7 +75,7 @@ func TestApplyMeterDefinitions_DimensionsPassThrough(t *testing.T) {
 	base := fake.NewClientBuilder().WithScheme(scheme).Build()
 	capturing := &meterCapturingClient{Client: base}
 
-	fanOut := &BillingFanOut{Client: capturing, Scheme: scheme}
+	fanOut := &BillingFanOut{Client: capturing}
 
 	if _, err := fanOut.applyMeterDefinitions(context.Background(), sc, "assistant.miloapis.com"); err != nil {
 		t.Fatalf("applyMeterDefinitions: %v", err)
@@ -126,7 +127,7 @@ func TestApplyMeterDefinitions_NoDimensions(t *testing.T) {
 	base := fake.NewClientBuilder().WithScheme(scheme).Build()
 	capturing := &meterCapturingClient{Client: base}
 
-	fanOut := &BillingFanOut{Client: capturing, Scheme: scheme}
+	fanOut := &BillingFanOut{Client: capturing}
 
 	if _, err := fanOut.applyMeterDefinitions(context.Background(), sc, "assistant.miloapis.com"); err != nil {
 		t.Fatalf("applyMeterDefinitions: %v", err)
