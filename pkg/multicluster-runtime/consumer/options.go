@@ -63,6 +63,14 @@ type Options struct {
 	// Wired in Phase 2 (deactivation cleanup); declared here so the API is stable.
 	Teardowns []Teardown
 
+	// Suspends is the list of hooks called when a consumer project is suspended.
+	// Running them is non-destructive.
+	Suspends []Suspend
+
+	// Resumes is the list of hooks called when a consumer project is resumed.
+	// Running them reinstates the normal operating state.
+	Resumes []Resume
+
 	// ResyncInterval is the periodic full-resync cadence. Defaults to
 	// DefaultResyncInterval when zero.
 	ResyncInterval time.Duration
@@ -89,5 +97,27 @@ type Teardown interface {
 	// ServiceConsumers. A non-nil error aborts disengage and is retried with
 	// backoff (alert-only; never force-cancel, never auto-leak).
 	TeardownConsumer(ctx context.Context, consumerProject string,
+		consumerClient client.Client, serviceNames []string) error
+}
+
+// Suspend pauses the resources a single operator created in a consumer project
+// when that project is suspended.
+type Suspend interface {
+	// SuspendConsumer pauses the resources the caller created in the consumer
+	// project. It MUST be idempotent and MUST scope changes to the caller's
+	// service (by the services.miloapis.com/service-name label and/or owner-ref).
+	// A non-nil error aborts suspend and is retried with backoff.
+	SuspendConsumer(ctx context.Context, consumerProject string,
+		consumerClient client.Client, serviceNames []string) error
+}
+
+// Resume resumes the resources a single operator created in a consumer project
+// when that project is resumed.
+type Resume interface {
+	// ResumeConsumer resumes the resources the caller created in the consumer
+	// project. It MUST be idempotent and MUST scope changes to the caller's
+	// service (by the services.miloapis.com/service-name label and/or owner-ref).
+	// A non-nil error aborts resume and is retried with backoff.
+	ResumeConsumer(ctx context.Context, consumerProject string,
 		consumerClient client.Client, serviceNames []string) error
 }

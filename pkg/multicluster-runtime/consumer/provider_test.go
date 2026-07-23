@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,6 +61,7 @@ func newProviderClient(t *testing.T, objs ...client.Object) client.Client {
 			return []string{sc.Spec.ServiceRef.Name}
 		}).
 		WithObjects(objs...).
+		WithStatusSubresource(&servicesv1alpha1.ServiceConsumer{}).
 		Build()
 }
 
@@ -191,6 +193,9 @@ func newTestProvider(providerClient client.Client, serviceNames []string, opts .
 		resyncInterval:     DefaultResyncInterval,
 		newCluster: func(*rest.Config, ...cluster.Option) (cluster.Cluster, error) {
 			return &fakeCluster{cache: &fakeCache{}}, nil
+		},
+		newClient: func(*rest.Config, client.Options) (client.Client, error) {
+			return fake.NewClientBuilder().Build(), nil
 		},
 		serviceNames: sn,
 		clusters:     map[string]cluster.Cluster{},
@@ -1377,6 +1382,164 @@ func TestDisengage_KeepsTeardownFinalizerWhenTeardownFails(t *testing.T) {
 	// Retry marker retained.
 	if _, ok := p.clusters["proj-a"]; !ok {
 		t.Errorf("project must stay tracked as a retry marker after teardown failure")
+	}
+}
+
+type recordingSuspend struct {
+	called bool
+	err    error
+}
+
+func (s *recordingSuspend) SuspendConsumer(ctx context.Context, consumerProject string, consumerClient client.Client, serviceNames []string) error {
+	s.called = true
+	return s.err
+}
+
+type recordingResume struct {
+	called bool
+	err    error
+}
+
+func (r *recordingResume) ResumeConsumer(ctx context.Context, consumerProject string, consumerClient client.Client, serviceNames []string) error {
+	r.called = true
+	return r.err
+}
+
+func withSuspends(suspends ...Suspend) providerOpt {
+	return func(p *Provider) { p.opts.Suspends = suspends }
+}
+
+func withResumes(resumes ...Resume) providerOpt {
+	return func(p *Provider) { p.opts.Resumes = resumes }
+}
+
+func TestReconcile_SuspendAndResumeHooks(t *testing.T) {
+	// 1. Test Suspend Hook Firing
+	consumer := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	meta.SetStatusCondition(&consumer.Status.Conditions, metav1.Condition{
+		Type:    servicesv1alpha1.ConditionTypeSuspended,
+		Status:  metav1.ConditionTrue,
+		Reason:  servicesv1alpha1.ReasonProjectSuspended,
+		Message: "Project is suspended.",
+	})
+
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
+	suspendHook := &recordingSuspend{}
+	resumeHook := &recordingResume{}
+
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withSuspends(suspendHook),
+		withResumes(resumeHook),
+	)
+	engageStub(p, "proj-a")
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile suspend: %v", err)
+	}
+
+	if !suspendHook.called {
+		t.Errorf("expected suspend hook to be called")
+	}
+	if resumeHook.called {
+		t.Errorf("expected resume hook NOT to be called")
+	}
+
+	// Verify the platform's Suspended signal is untouched and a distinct
+	// Paused confirmation condition was written.
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: consumer.Name}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	signal := meta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
+	if signal == nil {
+		t.Fatalf("expected Suspended condition to exist")
+	}
+	if signal.Status != metav1.ConditionTrue || signal.Reason != servicesv1alpha1.ReasonProjectSuspended || signal.Message != "Project is suspended." {
+		t.Errorf("expected the platform's Suspended signal to be left untouched, got status=%v reason=%s message=%q", signal.Status, signal.Reason, signal.Message)
+	}
+	paused := meta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypePaused)
+	if paused == nil {
+		t.Fatalf("expected Paused condition to exist")
+	}
+	if paused.Status != metav1.ConditionTrue || paused.Reason != servicesv1alpha1.ReasonPaused {
+		t.Errorf("expected Paused condition status=True and reason=%s, got status=%v reason=%s", servicesv1alpha1.ReasonPaused, paused.Status, paused.Reason)
+	}
+
+	// Reset hooks
+	suspendHook.called = false
+	resumeHook.called = false
+
+	// 2. Test Resume Hook Firing (flip the platform's Suspended signal to False)
+	meta.SetStatusCondition(&got.Status.Conditions, metav1.Condition{
+		Type:    servicesv1alpha1.ConditionTypeSuspended,
+		Status:  metav1.ConditionFalse,
+		Reason:  servicesv1alpha1.ReasonProjectActive,
+		Message: "Project is active.",
+	})
+	if err := providerClient.Status().Update(context.Background(), &got); err != nil {
+		t.Fatalf("update consumer status: %v", err)
+	}
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("reconcile resume: %v", err)
+	}
+
+	if suspendHook.called {
+		t.Errorf("expected suspend hook NOT to be called")
+	}
+	if !resumeHook.called {
+		t.Errorf("expected resume hook to be called")
+	}
+
+	// Verify the signal is still untouched and Paused flipped to False.
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: consumer.Name}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	signal = meta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
+	if signal == nil || signal.Status != metav1.ConditionFalse || signal.Reason != servicesv1alpha1.ReasonProjectActive {
+		t.Fatalf("expected the platform's Suspended signal to reflect the test's own update, got %+v", signal)
+	}
+	paused = meta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypePaused)
+	if paused == nil {
+		t.Fatalf("expected Paused condition to exist")
+	}
+	if paused.Status != metav1.ConditionFalse || paused.Reason != servicesv1alpha1.ReasonActive {
+		t.Errorf("expected Paused condition status=False and reason=%s, got status=%v reason=%s", servicesv1alpha1.ReasonActive, paused.Status, paused.Reason)
+	}
+}
+
+// TestConformanceSuspendResume dogfoods the exported ConformanceSuspendResume
+// harness: a fictional managed service seeds a ConfigMap into the consumer
+// project (standing in for whatever it projects there) and registers
+// Suspend/Resume hooks that record their calls, then the harness drives the
+// full suspend -> reinstate cycle and verifies the ConfigMap is untouched
+// throughout.
+func TestConformanceSuspendResume(t *testing.T) {
+	consumer := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
+
+	consumerScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(consumerScheme); err != nil {
+		t.Fatalf("add corev1 scheme: %v", err)
+	}
+	projected := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "projected-resource", Namespace: "default"},
+		Data:       map[string]string{"key": "value"},
+	}
+	consumerClient := fake.NewClientBuilder().WithScheme(consumerScheme).WithObjects(projected).Build()
+
+	suspendHook := &recordingSuspend{}
+	resumeHook := &recordingResume{}
+
+	ConformanceSuspendResume(t, providerClient, consumerClient, consumer.Name, "proj-a",
+		[]string{computeCanonical}, suspendHook, resumeHook, projected)
+
+	if !suspendHook.called {
+		t.Errorf("expected SuspendConsumer to be called by the harness")
+	}
+	if !resumeHook.called {
+		t.Errorf("expected ResumeConsumer to be called by the harness")
 	}
 }
 
