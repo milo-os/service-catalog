@@ -50,12 +50,32 @@
 //
 // Restart-safety residual: this self-healing covers only consumers whose
 // ServiceConsumer OBJECT is still present (active, Denied, or deleting). A
-// consumer that was FULLY DELETED while the operator was down leaves no
-// ServiceConsumer to list, so the provider cannot discover that project and does
-// NOT sweep it. That case is handled instead by owner-reference garbage
-// collection in the consumer project: every projected resource is owner-ref'd to
-// its consumer-side ServiceEntitlement (see the adopter contract), so deleting
-// the entitlement reclaims those resources independently of the provider.
+// consumer that was FULLY DELETED while the operator was down would leave no
+// ServiceConsumer to list, so the provider could not discover that project and
+// would not sweep it — which is exactly why the provider gates the
+// ServiceConsumer's deletion (see "Deprovisioning finalizer" below): the object
+// cannot disappear until the operator has confirmed teardown, so a
+// fully-deleted-while-down consumer is not a reachable state. Consumer-side
+// owner-reference garbage collection remains a backstop for resources inside the
+// consumer's own control plane, but it cannot reach cross-cluster or federated
+// resources; the finalizer is what guarantees those are reclaimed.
+//
+// # Deprovisioning finalizer
+//
+// An operator that projects resources cannot rely on merely OBSERVING a
+// deletion in time — the consumer's control plane can be torn down before the
+// poll fires, stranding whatever the operator created outside it. To make
+// teardown a GATE rather than a best-effort reaction, the provider stamps the
+// services.miloapis.com/provider-teardown finalizer on each of its
+// ServiceConsumers while they are active, and removes it only after teardown of
+// that project succeeds. It never DELETES a provider-side ServiceConsumer (the
+// consumer-side ServiceEntitlement cascade owns deletion); the finalizer only
+// holds the deletion open until teardown confirms. The consumer-side
+// ServiceEntitlement finalizer in turn holds the entitlement — and thus the
+// project — until the ServiceConsumer is gone, chaining the guarantee all the
+// way up to project deletion. The finalizer is stamped only when the operator
+// declared ManagedResources or Teardowns, so an operator that projects nothing
+// never gates a deletion.
 //
 // # Canonical service-name keying
 //

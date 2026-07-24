@@ -48,6 +48,13 @@ const (
 // trigger is the multi-hour cache resync.
 const pendingApprovalRequeueInterval = 2 * time.Minute
 
+// providerTeardownRequeueInterval bounds how often the finalize path re-checks
+// whether the provider has finished tearing down the resources it created for
+// this project. The entitlement's finalizer is held until the shared
+// ServiceConsumer — gated by the provider's own deprovisioning finalizer — is
+// gone, so this only paces the wait; it does not drive teardown itself.
+const providerTeardownRequeueInterval = 10 * time.Second
+
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
 // reconciler reads the referenced Service from the root cluster, resolves the
@@ -390,6 +397,15 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 		svc = &servicesv1alpha1.Service{}
 	}
 
+	// consumerGated tracks whether we must hold this entitlement's finalizer
+	// until the provider confirms teardown. It is set when we (as the last
+	// referencing entitlement) delete the shared ServiceConsumer: a provider that
+	// projects resources gates the ServiceConsumer's deletion with its own
+	// finalizer, so the ServiceConsumer lingers until teardown succeeds. Holding
+	// the entitlement finalizer until the ServiceConsumer is gone keeps this
+	// project's control plane — and thus the ServiceConsumer — alive for the
+	// provider to observe, chaining the teardown guarantee up to project deletion.
+	consumerGated := false
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
 		providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name))
 		if err != nil {
@@ -437,6 +453,22 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 			if err := providerClient.Delete(ctx, consumer); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("failed to delete ServiceConsumer %q: %w", consumerName, err)
 			}
+
+			// If the ServiceConsumer is still present, the provider's
+			// deprovisioning finalizer is holding its deletion until teardown
+			// confirms. Re-read to distinguish "gone" (proceed) from "finalizing"
+			// (wait). A provider that projects nothing sets no finalizer, so the
+			// object is already gone here and this is a NotFound no-op.
+			var remaining servicesv1alpha1.ServiceConsumer
+			err := providerClient.Get(ctx, types.NamespacedName{Name: consumerName}, &remaining)
+			switch {
+			case apierrors.IsNotFound(err):
+				// Fully torn down; safe to finalize.
+			case err != nil:
+				return ctrl.Result{}, fmt.Errorf("failed to re-read ServiceConsumer %q during finalize: %w", consumerName, err)
+			default:
+				consumerGated = true
+			}
 		}
 	}
 
@@ -465,6 +497,17 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	// Clean up any ResourceGrants that were provisioned for this entitlement.
 	if err := r.pruneQuotaGrants(ctx, consumerClient, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to prune quota grants: %w", err)
+	}
+
+	// Deprovisioning gate: hold the finalizer until the provider has confirmed
+	// teardown, which it signals by dropping its own finalizer and letting the
+	// ServiceConsumer be garbage-collected. This keeps the project's control
+	// plane alive so the provider can observe and complete teardown, making a
+	// completed project deletion proof that no provider resources remain.
+	if consumerGated {
+		logger.Info("waiting for provider to confirm teardown before finalizing ServiceEntitlement",
+			"service", svc.Spec.ServiceName, "consumerProject", consumerProject)
+		return ctrl.Result{RequeueAfter: providerTeardownRequeueInterval}, nil
 	}
 
 	controllerutil.RemoveFinalizer(entitlement, serviceEntitlementFinalizer)

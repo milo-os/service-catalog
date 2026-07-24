@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -660,4 +661,132 @@ func hasFinalizer(obj client.Object, f string) bool {
 		}
 	}
 	return false
+}
+
+// providerTeardownFinalizerString mirrors the deprovisioning finalizer the
+// consumer-project provider SDK stamps on a ServiceConsumer. It is duplicated
+// here (the SDK constant is unexported and in another package) so the handshake
+// test can simulate a provider that gates its ServiceConsumer's deletion.
+const providerTeardownFinalizerString = "services.miloapis.com/provider-teardown"
+
+// When the last entitlement for a service is finalized but the provider is
+// still tearing down (its finalizer keeps the ServiceConsumer alive), the
+// entitlement's own finalizer must be HELD — otherwise the project could
+// complete deletion while provider resources still exist. The finalize must
+// requeue rather than remove the finalizer.
+func TestServiceEntitlementReconciler_DeleteWaitsForProviderTeardown(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := terminatingEntitlement(testServiceSlug, testServiceSlug)
+
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	// The provider's deprovisioning finalizer gates the consumer's deletion.
+	gatedConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       consumerName,
+			Finalizers: []string{providerTeardownFinalizerString},
+		},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceName},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient(gatedConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	res, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if res.RequeueAfter != providerTeardownRequeueInterval {
+		t.Errorf("expected requeue while provider teardown is pending, got RequeueAfter=%v", res.RequeueAfter)
+	}
+
+	// The entitlement finalizer must still be present — deletion is blocked.
+	var gotEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &gotEnt); err != nil {
+		t.Fatalf("entitlement should still exist while gated: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&gotEnt, serviceEntitlementFinalizer) {
+		t.Errorf("entitlement finalizer must be held until provider confirms teardown")
+	}
+
+	// The ServiceConsumer was asked to delete but is held by the provider finalizer.
+	var gotSC servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &gotSC); err != nil {
+		t.Fatalf("gated ServiceConsumer should still exist: %v", err)
+	}
+	if gotSC.DeletionTimestamp.IsZero() {
+		t.Errorf("ServiceConsumer should be marked for deletion (deletionTimestamp set)")
+	}
+}
+
+// Once the provider confirms teardown (drops its finalizer, the ServiceConsumer
+// is garbage-collected), the next finalize pass removes the entitlement
+// finalizer so the entitlement — and the project — can complete deletion.
+func TestServiceEntitlementReconciler_DeleteCompletesAfterProviderTeardown(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := terminatingEntitlement(testServiceSlug, testServiceSlug)
+
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	gatedConsumer := &servicesv1alpha1.ServiceConsumer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       consumerName,
+			Finalizers: []string{providerTeardownFinalizerString},
+		},
+		Spec: servicesv1alpha1.ServiceConsumerSpec{
+			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceName},
+			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: testConsumerProject},
+		},
+	}
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient(gatedConsumer)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	// Pass 1: gated — finalizer held.
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug)); err != nil {
+		t.Fatalf("reconcile (gated): %v", err)
+	}
+	var stillThere servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &stillThere); err != nil {
+		t.Fatalf("entitlement should still exist while gated: %v", err)
+	}
+
+	// Provider confirms teardown: drop its finalizer so the ServiceConsumer is
+	// garbage-collected.
+	var sc servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); err != nil {
+		t.Fatalf("get gated consumer: %v", err)
+	}
+	controllerutil.RemoveFinalizer(&sc, providerTeardownFinalizerString)
+	if err := providerClient.Update(context.Background(), &sc); err != nil {
+		t.Fatalf("provider drop finalizer: %v", err)
+	}
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &sc); !apierrors.IsNotFound(err) {
+		t.Fatalf("consumer should be gone after provider drops its finalizer, err=%v", err)
+	}
+
+	// Pass 2: teardown confirmed — entitlement finalizer removed, deletion completes.
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug)); err != nil {
+		t.Fatalf("reconcile (post-teardown): %v", err)
+	}
+	var gone servicesv1alpha1.ServiceEntitlement
+	err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &gone)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("entitlement should be finalized once teardown is confirmed, err=%v", err)
+	}
 }

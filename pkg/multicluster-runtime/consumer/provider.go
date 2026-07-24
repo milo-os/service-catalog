@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -41,6 +42,20 @@ const (
 	// ServiceConsumer.spec.serviceRef.name, used to list a service's consumers
 	// without scanning every ServiceConsumer in the provider project.
 	serviceRefNameField = "spec.serviceRef.name"
+
+	// providerTeardownFinalizer is placed on a ServiceConsumer in the provider
+	// project while this operator may hold projected resources for it, so the
+	// consumer's deletion cannot complete until this operator has confirmed
+	// teardown. The provider ADDS it on an active/denied consumer and REMOVES it
+	// only after teardown of that project succeeds — it never DELETES the
+	// ServiceConsumer (the consumer-side ServiceEntitlement cascade owns
+	// deletion); the finalizer only gates that deletion.
+	//
+	// Each provider owns the ServiceConsumers for its own ServiceNames, so a
+	// single finalizer per object gates the one operator that could have
+	// projected resources for it. A different operator's services map to
+	// different ServiceConsumer objects, each independently gated.
+	providerTeardownFinalizer = "services.miloapis.com/provider-teardown"
 
 	// mcMgrUnboundRequeue is how long to requeue when Start has not yet bound
 	// the Aware. With two independently-started managers this window is wider
@@ -261,8 +276,17 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 		return ctrl.Result{RequeueAfter: mcMgrUnboundRequeue}, nil
 	}
 
-	active, revoked, err := p.computeActiveSet(ctx)
+	active, revoked, byProject, err := p.computeActiveSet(ctx)
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Gate deletion on teardown: stamp the provider-teardown finalizer on every
+	// consumer that may hold projected resources (Active or Denied, not yet being
+	// deleted) BEFORE it can be deleted. Removal happens in disengage once
+	// teardown for the project succeeds. A no-op for providers that declare no
+	// cleanup, so their consumers are never gated.
+	if err := p.ensureTeardownFinalizers(ctx, byProject); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -303,7 +327,7 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 		if _, ok := active[project]; ok {
 			continue
 		}
-		if err := p.disengage(ctx, project); err != nil {
+		if err := p.disengage(ctx, project, byProject[project]); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to disengage consumer project %q: %w", project, err)
 		}
 	}
@@ -335,10 +359,14 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 // service. That is intentional: Reconcile's (engaged ∪ revoked) − active
 // subtraction is the SOLE teardown authority, so a project is never torn down
 // while any sibling service still keeps it active.
-func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[string]struct{}, err error) {
+//
+// byProject buckets every matched ServiceConsumer object by its consumer
+// project, so the caller can stamp/remove the provider-teardown finalizer on the
+// exact objects without re-listing.
+func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[string]struct{}, byProject map[string][]servicesv1alpha1.ServiceConsumer, err error) {
 	var services servicesv1alpha1.ServiceList
 	if err := p.rootClient.List(ctx, &services); err != nil {
-		return nil, nil, fmt.Errorf("failed to list Services: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to list Services: %w", err)
 	}
 
 	// Resolve our canonical service names to Service object names. serviceRef.name
@@ -354,12 +382,13 @@ func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[st
 
 	active = map[string]struct{}{}
 	revoked = map[string]struct{}{}
+	byProject = map[string][]servicesv1alpha1.ServiceConsumer{}
 	for _, objectName := range objectNames {
 		var consumers servicesv1alpha1.ServiceConsumerList
 		if err := p.providerClient.List(ctx, &consumers,
 			client.MatchingFields{serviceRefNameField: objectName},
 		); err != nil {
-			return nil, nil, fmt.Errorf("failed to list ServiceConsumers for service %q: %w", objectName, err)
+			return nil, nil, nil, fmt.Errorf("failed to list ServiceConsumers for service %q: %w", objectName, err)
 		}
 		for i := range consumers.Items {
 			sc := &consumers.Items[i]
@@ -367,6 +396,7 @@ func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[st
 			if project == "" {
 				continue
 			}
+			byProject[project] = append(byProject[project], *sc)
 			switch {
 			case !sc.DeletionTimestamp.IsZero():
 				revoked[project] = struct{}{}
@@ -377,7 +407,69 @@ func (p *Provider) computeActiveSet(ctx context.Context) (active, revoked map[st
 			}
 		}
 	}
-	return active, revoked, nil
+	return active, revoked, byProject, nil
+}
+
+// ensureTeardownFinalizers stamps providerTeardownFinalizer on every consumer
+// that could hold projected resources — Active or Denied, and not already being
+// deleted — so a subsequent delete blocks on teardown. It is a no-op when the
+// operator declared no cleanup (neither ManagedResources nor Teardowns): such an
+// operator projects nothing, so gating its consumers would only strand
+// deletions. Adding the finalizer while the object still exists is what makes
+// the gate reliable; once a deletionTimestamp is set with no finalizer present
+// the object is already gone.
+func (p *Provider) ensureTeardownFinalizers(ctx context.Context, byProject map[string][]servicesv1alpha1.ServiceConsumer) error {
+	if len(p.opts.ManagedResources) == 0 && len(p.opts.Teardowns) == 0 {
+		return nil
+	}
+	for _, consumers := range byProject {
+		for i := range consumers {
+			sc := &consumers[i]
+			if !sc.DeletionTimestamp.IsZero() {
+				continue
+			}
+			switch sc.Status.Phase {
+			case servicesv1alpha1.ConsumerPhaseActive, servicesv1alpha1.ConsumerPhaseDenied:
+			default:
+				continue
+			}
+			if controllerutil.ContainsFinalizer(sc, providerTeardownFinalizer) {
+				continue
+			}
+			controllerutil.AddFinalizer(sc, providerTeardownFinalizer)
+			if err := p.providerClient.Update(ctx, sc); err != nil {
+				return fmt.Errorf("failed to add teardown finalizer to ServiceConsumer %q: %w", sc.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// releaseTeardownFinalizers removes providerTeardownFinalizer from every
+// consumer in the slice that is being deleted, unblocking its garbage
+// collection. It runs only after teardown for the project has succeeded, so the
+// resources this operator created are already gone. It is idempotent: a consumer
+// without the finalizer, or already gone (NotFound), is skipped. A conflict or
+// other error is returned so disengage keeps the project tracked and the next
+// reconcile retries against a fresh read.
+func (p *Provider) releaseTeardownFinalizers(ctx context.Context, consumers []servicesv1alpha1.ServiceConsumer) error {
+	for i := range consumers {
+		sc := &consumers[i]
+		if sc.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if !controllerutil.ContainsFinalizer(sc, providerTeardownFinalizer) {
+			continue
+		}
+		controllerutil.RemoveFinalizer(sc, providerTeardownFinalizer)
+		if err := p.providerClient.Update(ctx, sc); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("failed to remove teardown finalizer from ServiceConsumer %q: %w", sc.Name, err)
+		}
+	}
+	return nil
 }
 
 // engage builds a cluster.Cluster for the consumer project (re-addressing the
@@ -449,7 +541,13 @@ func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 // project is marked tearingDown from that point: Get reports it as not-engaged
 // even while it lingers in the maps as a retry marker, and the mark is cleared
 // only when it leaves the maps on success.
-func (p *Provider) disengage(ctx context.Context, consumerProject string) error {
+//
+// consumers is the set of this project's matched ServiceConsumer objects (as of
+// this reconcile). After teardown succeeds, the provider-teardown finalizer is
+// removed from any of them that are being deleted, which is what lets the
+// consumer's deletion — and, through the ServiceEntitlement handshake, the
+// project's deletion — finally complete.
+func (p *Provider) disengage(ctx context.Context, consumerProject string, consumers []servicesv1alpha1.ServiceConsumer) error {
 	p.lock.Lock()
 	cancel, ok := p.cancelFns[consumerProject]
 	if _, engaged := p.clusters[consumerProject]; engaged {
@@ -464,6 +562,14 @@ func (p *Provider) disengage(ctx context.Context, consumerProject string) error 
 		// Cluster stays in p.clusters/p.cancelFns (and tearingDown) as the retry
 		// marker; the surfaced error drives Reconcile's requeue-with-backoff.
 		p.recordTeardownFailure(consumerProject)
+		return err
+	}
+
+	// Teardown succeeded: the resources this operator created for the project are
+	// gone, so it is safe to drop the deletion gate on any being-deleted consumer.
+	// A failure here keeps the cluster tracked (same retry contract as teardown),
+	// since teardown is idempotent on the next pass.
+	if err := p.releaseTeardownFinalizers(ctx, consumers); err != nil {
 		return err
 	}
 
