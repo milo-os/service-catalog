@@ -65,6 +65,26 @@ const (
 	// ReasonProjectActive is the Suspended=False reason once the owning
 	// consumer project is no longer suspended.
 	ReasonProjectActive = "ProjectActive"
+
+	// ConditionTypePaused is written on ServiceConsumer by the provider that
+	// owns it, to confirm — separately from ConditionTypeSuspended — whether
+	// that provider's Suspend/Resume hooks have finished running for the
+	// current suspension signal. It is intentionally a distinct condition:
+	// ConditionTypeSuspended is the platform's inbound signal, while
+	// ConditionTypePaused is the provider's outbound confirmation the
+	// platform rolls up across services to gate the project's
+	// Suspending -> Suspended (and Reinstating -> Active) transition.
+	// Collapsing the two onto one condition would leave the platform unable
+	// to tell "told to pause" from "confirmed paused".
+	ConditionTypePaused = "Paused"
+
+	// ReasonPaused is the Paused=True reason once the provider's Suspend
+	// hooks have run for the current suspension signal.
+	ReasonPaused = "Paused"
+
+	// ReasonActive is the Paused=False reason once the provider's Resume
+	// hooks have run after the suspension signal cleared.
+	ReasonActive = "Active"
 )
 
 // EntitlementOrigin describes how a ServiceEntitlement was created.

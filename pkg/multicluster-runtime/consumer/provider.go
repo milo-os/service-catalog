@@ -57,6 +57,16 @@ const (
 	// different ServiceConsumer objects, each independently gated.
 	providerTeardownFinalizer = "services.miloapis.com/provider-teardown"
 
+	// pausedConditionFieldManager is the field manager recorded in
+	// ServiceConsumer's managedFields when this provider patches the Paused
+	// condition, distinguishing it from the platform's own
+	// suspendedConditionFieldManager entry for the Suspended condition.
+	// Scoping the write to just this field comes from the merge patch itself
+	// (computed from a before/after diff in reconcileSuspension) —
+	// FieldOwner only labels provenance, it doesn't limit what the patch
+	// touches.
+	pausedConditionFieldManager = "services-consumer-paused-condition"
+
 	// mcMgrUnboundRequeue is how long to requeue when Start has not yet bound
 	// the Aware. With two independently-started managers this window is wider
 	// than Milo's single-manager case, so the guard is retained.
@@ -205,10 +215,13 @@ func consumerEventPredicate() predicate.Predicate {
 			if !ok1 || !ok2 {
 				return true
 			}
+			oldSusp := apimeta.IsStatusConditionTrue(oldC.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
+			newSusp := apimeta.IsStatusConditionTrue(newC.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
 			return oldC.Status.Phase != newC.Status.Phase ||
 				oldC.Spec.ServiceRef.Name != newC.Spec.ServiceRef.Name ||
 				oldC.Spec.ConsumerProjectRef.Name != newC.Spec.ConsumerProjectRef.Name ||
-				oldC.DeletionTimestamp.IsZero() != newC.DeletionTimestamp.IsZero()
+				oldC.DeletionTimestamp.IsZero() != newC.DeletionTimestamp.IsZero() ||
+				oldSusp != newSusp
 		},
 	}
 }
@@ -304,6 +317,13 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 		}
 		if err := p.engage(ctx, project); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to engage consumer project %q: %w", project, err)
+		}
+	}
+
+	// Reconcile suspend/resume hooks for active consumer projects.
+	for project := range active {
+		if err := p.reconcileSuspension(ctx, project, byProject[project]); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to reconcile suspension for consumer project %q: %w", project, err)
 		}
 	}
 
@@ -661,3 +681,79 @@ func extractConditions(obj map[string]any) ([]metav1.Condition, error) {
 	}
 	return typed.Conditions, nil
 }
+
+// reconcileSuspension checks each active consumer for the project and runs
+// Suspend/Resume hooks if their status has transitioned.
+func (p *Provider) reconcileSuspension(ctx context.Context, project string, consumers []servicesv1alpha1.ServiceConsumer) error {
+	var direct client.Client
+	getDirect := func() (client.Client, error) {
+		if direct != nil {
+			return direct, nil
+		}
+		cfg, err := p.consumerRestConfig(project)
+		if err != nil {
+			return nil, err
+		}
+		cl, err := p.newClient(cfg, client.Options{Scheme: p.opts.Scheme})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build direct client for project %q: %w", project, err)
+		}
+		direct = cl
+		return direct, nil
+	}
+
+	for i := range consumers {
+		sc := &consumers[i]
+		if sc.DeletionTimestamp.IsZero() && sc.Status.Phase == servicesv1alpha1.ConsumerPhaseActive {
+			// signal is the platform's own Suspended condition — the inbound
+			// instruction to pause or resume. It is read-only here: writing
+			// to it would collide with the platform's rollup and erase the
+			// specific reason/message it carries.
+			signal := apimeta.FindStatusCondition(sc.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
+			if signal == nil {
+				continue
+			}
+			signalSuspended := signal.Status == metav1.ConditionTrue
+			confirmedPaused := apimeta.IsStatusConditionTrue(sc.Status.Conditions, servicesv1alpha1.ConditionTypePaused)
+			if signalSuspended == confirmedPaused {
+				// Already caught up with the signal; nothing to run.
+				continue
+			}
+
+			cl, err := getDirect()
+			if err != nil {
+				return err
+			}
+
+			before := sc.DeepCopy()
+			if signalSuspended {
+				if err := p.runSuspends(ctx, cl, project); err != nil {
+					return err
+				}
+				apimeta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
+					Type:               servicesv1alpha1.ConditionTypePaused,
+					Status:             metav1.ConditionTrue,
+					Reason:             servicesv1alpha1.ReasonPaused,
+					Message:            "Suspend hooks have run; this provider's resources for the consumer are paused.",
+					ObservedGeneration: sc.Generation,
+				})
+			} else {
+				if err := p.runResumes(ctx, cl, project); err != nil {
+					return err
+				}
+				apimeta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
+					Type:               servicesv1alpha1.ConditionTypePaused,
+					Status:             metav1.ConditionFalse,
+					Reason:             servicesv1alpha1.ReasonActive,
+					Message:            "Resume hooks have run; this provider's resources for the consumer are active.",
+					ObservedGeneration: sc.Generation,
+				})
+			}
+			if err := p.providerClient.Status().Patch(ctx, sc, client.MergeFrom(before), client.FieldOwner(pausedConditionFieldManager)); err != nil {
+				return fmt.Errorf("failed to patch ServiceConsumer %q Paused condition: %w", sc.Name, err)
+			}
+		}
+	}
+	return nil
+}
+

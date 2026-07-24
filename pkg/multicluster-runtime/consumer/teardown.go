@@ -158,3 +158,27 @@ func (p *Provider) runTeardowns(ctx context.Context, direct client.Client, consu
 	}
 	return nil
 }
+
+// runSuspends runs each caller-supplied Suspend in declared order against the
+// direct (non-cached) client. The first error aborts; each Suspend must be
+// idempotent so a retry after a later-hook failure is safe.
+func (p *Provider) runSuspends(ctx context.Context, direct client.Client, consumerProject string) error {
+	for _, s := range p.opts.Suspends {
+		if err := s.SuspendConsumer(ctx, consumerProject, direct, p.opts.ServiceNames); err != nil {
+			return fmt.Errorf("suspend failed for consumer project %q: %w", consumerProject, err)
+		}
+	}
+	return nil
+}
+
+// runResumes runs each caller-supplied Resume in declared order against the
+// direct (non-cached) client. The first error aborts; each Resume must be
+// idempotent so a retry after a later-hook failure is safe.
+func (p *Provider) runResumes(ctx context.Context, direct client.Client, consumerProject string) error {
+	for _, r := range p.opts.Resumes {
+		if err := r.ResumeConsumer(ctx, consumerProject, direct, p.opts.ServiceNames); err != nil {
+			return fmt.Errorf("resume failed for consumer project %q: %w", consumerProject, err)
+		}
+	}
+	return nil
+}
