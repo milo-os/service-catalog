@@ -15,6 +15,12 @@ status:
     - type: QuotaFanOutHealthy
       status: "True"
       reason: QuotaFanOutHealthy
+    - type: PricingFanOutHealthy
+      status: "True"
+      reason: PricingFanOutHealthy
+    - type: ChargeFanOutHealthy
+      status: "True"
+      reason: ChargeFanOutHealthy
     - type: Published
       status: "True"
   (publishedAt != null): true

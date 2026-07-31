@@ -19,5 +19,11 @@ status:
     - type: QuotaFanOutHealthy
       status: "True"
       reason: QuotaFanOutSkipped
+    - type: PricingFanOutHealthy
+      status: "True"
+      reason: PricingFanOutSkipped
+    - type: ChargeFanOutHealthy
+      status: "True"
+      reason: ChargeFanOutSkipped
     - type: Published
       status: "False"

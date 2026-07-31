@@ -28,8 +28,8 @@ spec:
     - name: create-draft
       description: |
         Create a Draft ServiceConfiguration. The controller adds the
-        finalizer and records BillingFanOutHealthy=True with reason
-        BillingFanOutSkipped (Draft does not fan out).
+        finalizer and records fan-out Healthy conditions as Skipped
+        (Draft does not fan out billing, quota, pricing, or charges).
       try:
         - create:
             file: 01-create-draft.yaml
