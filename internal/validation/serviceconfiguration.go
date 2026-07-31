@@ -320,7 +320,60 @@ func validateCharges(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList 
 		}
 		allErrs = append(allErrs, validateChargeEntry(&charge, itemPath)...)
 	}
+	allErrs = append(allErrs, validateServicePricingNameUniqueness(sc)...)
 	return allErrs
+}
+
+// validateServicePricingNameUniqueness rejects charge and priced-metric
+// names that encode to the same ServicePricing metadata.name. Pricing and
+// Charge fan-outs both write into milo-system via encodeServicePricingName;
+// collisions cause ForceOwnership thrashing between Usage and fixed charges.
+func validateServicePricingNameUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	var allErrs field.ErrorList
+	encoded := make(map[string]string) // encoded name → source field path
+
+	for i, m := range sc.Spec.Metrics {
+		if m.Name == "" || m.Pricing == nil {
+			continue
+		}
+		name := encodeServicePricingName(m.Name)
+		path := field.NewPath("spec", "metrics").Index(i).Child("name")
+		if other, ok := encoded[name]; ok {
+			allErrs = append(allErrs, field.Invalid(path, m.Name,
+				fmt.Sprintf("encodes to ServicePricing name %q which collides with %s", name, other)))
+			continue
+		}
+		encoded[name] = path.String()
+	}
+
+	for i, charge := range sc.Spec.Charges {
+		if charge.Name == "" {
+			continue
+		}
+		name := encodeServicePricingName(charge.Name)
+		path := field.NewPath("spec", "charges").Index(i).Child("name")
+		if other, ok := encoded[name]; ok {
+			allErrs = append(allErrs, field.Invalid(path, charge.Name,
+				fmt.Sprintf("encodes to ServicePricing name %q which collides with %s", name, other)))
+			continue
+		}
+		encoded[name] = path.String()
+	}
+	return allErrs
+}
+
+// encodeServicePricingName mirrors controller.encodeServicePricingName so
+// admission can reject collisions before fan-out. Keep in sync with
+// internal/controller/names.go.
+func encodeServicePricingName(metricOrChargeName string) string {
+	s := strings.ToLower(metricOrChargeName)
+	idx := strings.IndexByte(s, '/')
+	if idx < 0 {
+		return strings.ReplaceAll(s, ".", "-")
+	}
+	host := strings.ReplaceAll(s[:idx], ".", "-")
+	rest := strings.ReplaceAll(s[idx+1:], "/", "-")
+	return host + "--" + rest
 }
 
 func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *field.Path) field.ErrorList {
@@ -345,11 +398,23 @@ func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *fi
 				"trigger is required when chargeType is OneTime",
 			))
 		}
+		if charge.Interval != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("interval"),
+				"interval must not be set when chargeType is OneTime",
+			))
+		}
 	case servicesv1alpha1.ServiceChargeTypeRecurring:
 		if charge.Interval == "" {
 			allErrs = append(allErrs, field.Required(
 				fldPath.Child("interval"),
 				"interval is required when chargeType is Recurring",
+			))
+		}
+		if charge.Trigger != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("trigger"),
+				"trigger must not be set when chargeType is Recurring",
 			))
 		}
 	case "":
@@ -474,6 +539,20 @@ func validateServiceConfigurationNamePrefixes(
 				metricsPath.Index(i).Child("name"), m.Name,
 				fmt.Sprintf("must start with the service's name %q so it stays unique to this service (for example, %q)",
 					prefix, prefix+"example-metric"),
+			))
+		}
+	}
+
+	chargesPath := field.NewPath("spec", "charges")
+	for i, charge := range sc.Spec.Charges {
+		if charge.Name == "" {
+			continue
+		}
+		if !strings.HasPrefix(charge.Name, prefix) || strings.TrimPrefix(charge.Name, prefix) == "" {
+			allErrs = append(allErrs, field.Invalid(
+				chargesPath.Index(i).Child("name"), charge.Name,
+				fmt.Sprintf("must start with the service's name %q so ServicePricing names stay unique in milo-system (for example, %q)",
+					prefix, prefix+"platform-fee"),
 			))
 		}
 	}
@@ -656,19 +735,27 @@ func validateServiceConfigurationPublishedImmutability(
 				}
 			}
 		}
+	}
 
-		oldGating := oldSC.Spec.Billing.QuotaGating
-		newGating := servicesv1alpha1.QuotaGatingMode("")
-		if newSC.Spec.Billing != nil {
-			newGating = newSC.Spec.Billing.QuotaGating
-		}
-		if oldGating != newGating {
-			allErrs = append(allErrs, field.Forbidden(
-				field.NewPath("spec", "billing", "quotaGating"),
-				"can't be changed once the configuration is published",
-			))
-		}
+	// Compare effective quotaGating even when old billing was nil so
+	// introducing a billing block after publish cannot flip the mode.
+	oldGating := effectiveQuotaGating(oldSC)
+	newGating := effectiveQuotaGating(newSC)
+	if oldGating != newGating {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "billing", "quotaGating"),
+			"can't be changed once the configuration is published",
+		))
 	}
 
 	return allErrs
+}
+
+// effectiveQuotaGating returns the QuotaGatingMode in force for sc.
+// Empty / unset is treated as OrganizationDefault.
+func effectiveQuotaGating(sc *servicesv1alpha1.ServiceConfiguration) servicesv1alpha1.QuotaGatingMode {
+	if sc.Spec.Billing == nil || sc.Spec.Billing.QuotaGating == "" {
+		return servicesv1alpha1.QuotaGatingOrganizationDefault
+	}
+	return sc.Spec.Billing.QuotaGating
 }

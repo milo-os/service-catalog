@@ -689,5 +689,10 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 			&billingv1alpha1.Offer{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapOfferToServiceEntitlements),
 		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.ServiceConfiguration{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceConfigurationToServiceEntitlements),
+		)).
 		Complete(r)
 }

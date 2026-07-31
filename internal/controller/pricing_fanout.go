@@ -6,10 +6,10 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	billingapply "go.miloapis.com/billing/applyconfiguration/api/v1alpha1"
@@ -18,12 +18,6 @@ import (
 
 const (
 	pricingFieldManagerName = "services-operator-pricing"
-
-	// reasonPricingWithoutQuotaGating is emitted when a ServicePricing is
-	// created for a service that has not opted into BillingEntitlement
-	// quota gating — accounts may be billed without being blocked when
-	// they lack an active Offer.
-	reasonPricingWithoutQuotaGating = "PricingWithoutQuotaGating"
 )
 
 // PricingFanOut materializes Usage ServicePricing objects declared by
@@ -56,11 +50,16 @@ func (f *PricingFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha1.Serv
 		return err
 	}
 
-	if len(desired) > 0 && f.Recorder != nil && usesOrganizationDefaultQuotaGating(sc) {
-		f.Recorder.Eventf(sc, nil, corev1.EventTypeWarning, reasonPricingWithoutQuotaGating, "PricingFanOut",
+	if len(desired) > 0 && usesOrganizationDefaultQuotaGating(sc) {
+		// Log rather than Event: emitting a Warning on every reconcile
+		// spams the event stream for every priced SC that has not opted
+		// into BillingEntitlement gating.
+		log.FromContext(ctx).Info(
 			"ServicePricing resources were created but billing.quotaGating is OrganizationDefault; "+
 				"accounts may be billed without being blocked when they lack an active Offer. "+
-				"Set billing.quotaGating to BillingEntitlement to opt in.")
+				"Set billing.quotaGating to BillingEntitlement to opt in.",
+			"serviceConfiguration", sc.Name,
+		)
 	}
 
 	return nil

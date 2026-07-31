@@ -20,6 +20,7 @@ import (
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -381,6 +382,72 @@ func (r *ServiceEntitlementReconciler) mapOfferToServiceEntitlements(
 			}
 			seen[key] = struct{}{}
 			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// mapServiceConfigurationToServiceEntitlements enqueues ServiceEntitlements
+// for the service named by the configuration so quotaGating / quota limit
+// changes re-evaluate project grants.
+func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitlements(
+	ctx context.Context,
+	sc *servicesv1alpha1.ServiceConfiguration,
+) []mcreconcile.Request {
+	if sc.Spec.ServiceRef.Name == "" {
+		return nil
+	}
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "get Service for ServiceConfiguration fan-out",
+				"serviceConfiguration", sc.Name, "serviceRef", sc.Spec.ServiceRef.Name)
+		}
+		return nil
+	}
+	canonical := svc.Spec.ServiceName
+	if canonical == "" {
+		return nil
+	}
+
+	var projects resourcemanagerv1alpha1.ProjectList
+	if err := r.rootClient.List(ctx, &projects); err != nil {
+		log.FromContext(ctx).Error(err, "list Projects for ServiceConfiguration fan-out",
+			"serviceConfiguration", sc.Name)
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var out []mcreconcile.Request
+	for i := range projects.Items {
+		project := projects.Items[i].Name
+		if project == "" {
+			continue
+		}
+		cluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(project))
+		if err != nil {
+			continue
+		}
+		var list servicesv1alpha1.ServiceEntitlementList
+		if err := cluster.GetClient().List(ctx, &list,
+			client.MatchingFields{entitlementServiceNameIndex: canonical},
+		); err != nil {
+			log.FromContext(ctx).Error(err, "list ServiceEntitlements for ServiceConfiguration fan-out",
+				"project", project, "service", canonical)
+			continue
+		}
+		for j := range list.Items {
+			key := project + "/" + list.Items[j].Name
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, mcreconcile.Request{
+				Request: reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: list.Items[j].Name},
+				},
+				ClusterName: multicluster.ClusterName(project),
+			})
 		}
 	}
 	return out

@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -74,15 +73,20 @@ func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, re
 		return ctrl.Result{}, nil
 	}
 
-	entitlementName := defaultBillingEntitlementName(ba.UID)
-	var existing billingv1alpha1.BillingEntitlement
-	if err := r.Get(ctx, client.ObjectKey{Namespace: ba.Namespace, Name: entitlementName}, &existing); err == nil {
-		// Already seeded (or staff-managed under the default name). Leave
-		// offerRef alone so staff portal changes are not overwritten.
-		return ctrl.Result{}, nil
-	} else if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("get BillingEntitlement %q: %w", entitlementName, err)
+	// One active BillingEntitlement per account (billing admission). If
+	// staff already authored a BE under any name, do not try to seed
+	// be-<uid>-default — Apply would fail forever on that uniqueness rule.
+	existing, err := r.anyBillingEntitlementForAccount(ctx, ba.Namespace, ba.Name)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
+	if existing != nil {
+		logger.V(1).Info("BillingAccount already has a BillingEntitlement; skipping default seed",
+			"existing", existing.Name)
+		return ctrl.Result{}, nil
+	}
+
+	entitlementName := defaultBillingEntitlementName(ba.UID)
 
 	obj := &billingv1alpha1.BillingEntitlement{
 		TypeMeta: metav1.TypeMeta{
@@ -122,6 +126,25 @@ func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, re
 		"offer", defaultOffer,
 	)
 	return ctrl.Result{}, nil
+}
+
+// anyBillingEntitlementForAccount returns a non-deleting BillingEntitlement
+// for the account, if one exists.
+func (r *BillingEntitlementDefaultsReconciler) anyBillingEntitlementForAccount(
+	ctx context.Context,
+	namespace, billingAccountName string,
+) (*billingv1alpha1.BillingEntitlement, error) {
+	var list billingv1alpha1.BillingEntitlementList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list BillingEntitlements in %q: %w", namespace, err)
+	}
+	for i := range list.Items {
+		be := &list.Items[i]
+		if be.DeletionTimestamp.IsZero() && be.Spec.BillingAccountRef.Name == billingAccountName {
+			return be, nil
+		}
+	}
+	return nil, nil
 }
 
 // lookupBillingDefaultOffer resolves the billing.miloapis.com Service and
@@ -182,16 +205,24 @@ func (r *BillingEntitlementDefaultsReconciler) SetupWithManager(mgr ctrl.Manager
 		For(&billingv1alpha1.BillingAccount{}).
 		Watches(
 			&servicesv1alpha1.ServiceConfiguration{},
-			handler.EnqueueRequestsFromMapFunc(r.enqueueAllBillingAccounts),
-			builder.WithPredicates(),
+			handler.EnqueueRequestsFromMapFunc(r.enqueueBillingAccountsForDefaultOffer),
 		).
 		Complete(r)
 }
 
-// enqueueAllBillingAccounts re-enqueues every BillingAccount when a
-// ServiceConfiguration changes so a newly published defaultOffer lands on
-// accounts that do not yet have a default entitlement.
-func (r *BillingEntitlementDefaultsReconciler) enqueueAllBillingAccounts(ctx context.Context, _ client.Object) []reconcile.Request {
+// enqueueBillingAccountsForDefaultOffer re-enqueues every BillingAccount when
+// the billing service's ServiceConfiguration changes so a newly published
+// defaultOffer lands on accounts that do not yet have a BillingEntitlement.
+// Other ServiceConfigurations are ignored to avoid a thundering herd.
+func (r *BillingEntitlementDefaultsReconciler) enqueueBillingAccountsForDefaultOffer(ctx context.Context, obj client.Object) []reconcile.Request {
+	sc, ok := obj.(*servicesv1alpha1.ServiceConfiguration)
+	if !ok || sc == nil {
+		return nil
+	}
+	if !r.isBillingServiceConfiguration(ctx, sc) {
+		return nil
+	}
+
 	var list billingv1alpha1.BillingAccountList
 	if err := r.List(ctx, &list); err != nil {
 		log.FromContext(ctx).Error(err, "list BillingAccounts for fan-out re-enqueue")
@@ -207,4 +238,17 @@ func (r *BillingEntitlementDefaultsReconciler) enqueueAllBillingAccounts(ctx con
 		})
 	}
 	return out
+}
+
+// isBillingServiceConfiguration reports whether sc belongs to the
+// billing.miloapis.com Service (the only place defaultOffer is read).
+func (r *BillingEntitlementDefaultsReconciler) isBillingServiceConfiguration(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) bool {
+	if sc.Spec.ServiceRef.Name == "" {
+		return false
+	}
+	var svc servicesv1alpha1.Service
+	if err := r.Get(ctx, client.ObjectKey{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
+		return false
+	}
+	return svc.Spec.ServiceName == billingServiceCanonicalName
 }

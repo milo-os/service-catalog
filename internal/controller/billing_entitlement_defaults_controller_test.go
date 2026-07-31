@@ -178,3 +178,62 @@ func TestBillingEntitlementDefaults_DoesNotOverwriteExisting(t *testing.T) {
 		t.Errorf("offerRef overwritten to %q; want staff-switched-offer preserved", be.Spec.OfferRef.Name)
 	}
 }
+
+func TestBillingEntitlementDefaults_SkipsWhenStaffBEExistsUnderOtherName(t *testing.T) {
+	scheme := newBillingEntitlementDefaultsScheme()
+
+	billingSvc := &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing-miloapis-com"},
+		Spec: servicesv1alpha1.ServiceSpec{
+			ServiceName: billingServiceCanonicalName,
+			Phase:       servicesv1alpha1.PhasePublished,
+			DisplayName: "Billing",
+		},
+	}
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing-config"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef:   servicesv1alpha1.ServiceReference{Name: billingSvc.Name},
+			Phase:        servicesv1alpha1.PhasePublished,
+			DefaultOffer: "default-pay-as-you-go-v1",
+		},
+	}
+	baUID := types.UID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	ba := &billingv1alpha1.BillingAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "acct-1",
+			Namespace: "organization-acme",
+			UID:       baUID,
+		},
+	}
+	staffBE := &billingv1alpha1.BillingEntitlement{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "staff-authored-entitlement",
+			Namespace: ba.Namespace,
+		},
+		Spec: billingv1alpha1.BillingEntitlementSpec{
+			BillingAccountRef: billingv1alpha1.BillingAccountRef{Name: ba.Name},
+			OfferRef:          billingv1alpha1.OfferReference{Name: "enterprise-v1"},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(billingSvc, sc, ba, staffBE).Build()
+	r := &BillingEntitlementDefaultsReconciler{Client: &ssaClient{Client: c}, Scheme: scheme}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: ba.Name, Namespace: ba.Namespace},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var list billingv1alpha1.BillingEntitlementList
+	if err := c.List(context.Background(), &list, client.InNamespace(ba.Namespace)); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("expected only staff BE, got %d", len(list.Items))
+	}
+	if list.Items[0].Name != "staff-authored-entitlement" {
+		t.Errorf("unexpected BE %q", list.Items[0].Name)
+	}
+}

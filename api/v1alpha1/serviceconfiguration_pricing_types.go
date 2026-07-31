@@ -135,8 +135,10 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.chargeType != 'OneTime' || has(self.trigger)",message="OneTime charges require trigger"
 // +kubebuilder:validation:XValidation:rule="self.chargeType != 'Recurring' || has(self.interval)",message="Recurring charges require interval"
 type ServiceChargeSpec struct {
-	// Name uniquely identifies this charge within the ServiceConfiguration.
-	// Immutable once the ServiceConfiguration is Published.
+	// Name uniquely identifies this charge within the ServiceConfiguration
+	// and must be prefixed with the Service's canonical serviceName (same
+	// rule as metrics) so ServicePricing metadata.name stays unique in
+	// milo-system. Immutable once the ServiceConfiguration is Published.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
