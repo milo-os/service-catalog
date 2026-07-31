@@ -191,6 +191,10 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "OrganizationDefaults")
 		os.Exit(1)
 	}
+	if err = (&controller.BillingEntitlementDefaultsReconciler{Scheme: scheme}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BillingEntitlementDefaults")
+		os.Exit(1)
+	}
 
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
 	// planes. We need a multicluster manager backed by the Milo provider so

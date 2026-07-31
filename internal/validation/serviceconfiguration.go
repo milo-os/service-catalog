@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strings"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -30,11 +32,14 @@ func ValidateServiceConfigurationCreate(
 	metricNames := collectMetricNames(sc)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(sc)...)
 	allErrs = append(allErrs, validateMetricUniqueness(sc)...)
+	allErrs = append(allErrs, validateMetricPricing(sc)...)
+	allErrs = append(allErrs, validateCharges(sc)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
+		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
 	}
 
 	return allErrs
@@ -55,11 +60,14 @@ func ValidateServiceConfigurationUpdate(
 	metricNames := collectMetricNames(newSC)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(newSC)...)
 	allErrs = append(allErrs, validateMetricUniqueness(newSC)...)
+	allErrs = append(allErrs, validateMetricPricing(newSC)...)
+	allErrs = append(allErrs, validateCharges(newSC)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
+		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
 	}
 	allErrs = append(allErrs, ValidatePhaseTransition(oldSC.Spec.Phase, newSC.Spec.Phase, field.NewPath("spec", "phase"))...)
 	if oldSC.Spec.Phase == servicesv1alpha1.PhasePublished {
@@ -202,6 +210,210 @@ func validateQuotaRefs(
 	return allErrs
 }
 
+// validateMetricPricing validates metrics[].pricing: USD currency, flat XOR
+// tiered rates, and tier band shape.
+func validateMetricPricing(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	var allErrs field.ErrorList
+	path := field.NewPath("spec", "metrics")
+	for i, m := range sc.Spec.Metrics {
+		if m.Pricing == nil {
+			continue
+		}
+		pricingPath := path.Index(i).Child("pricing")
+		allErrs = append(allErrs, validateMetricPricingEntry(m.Pricing, pricingPath)...)
+	}
+	return allErrs
+}
+
+func validateMetricPricingEntry(pricing *servicesv1alpha1.MetricPricing, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	if pricing.Currency != "" && pricing.Currency != "USD" {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("currency"),
+			pricing.Currency,
+			"currency must be USD",
+		))
+	}
+	if pricing.PricingUnit == "" {
+		allErrs = append(allErrs, field.Required(fldPath.Child("pricingUnit"), "pricingUnit is required"))
+	}
+	if len(pricing.Rates) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath.Child("rates"), "rates is required"))
+		return allErrs
+	}
+	allErrs = append(allErrs, validatePricingRateEntries(pricing.Rates, fldPath.Child("rates"))...)
+	return allErrs
+}
+
+func validatePricingRateEntries(rates []servicesv1alpha1.PricingRateEntry, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	for i := range rates {
+		allErrs = append(allErrs, validatePricingRateEntry(&rates[i], fldPath.Index(i))...)
+	}
+	return allErrs
+}
+
+func validatePricingRateEntry(rate *servicesv1alpha1.PricingRateEntry, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	hasFlat := rate.Flat != ""
+	hasTiered := len(rate.Tiered) > 0
+
+	switch {
+	case hasFlat && hasTiered:
+		allErrs = append(allErrs, field.Invalid(
+			fldPath,
+			rate,
+			"exactly one of flat or tiered must be set",
+		))
+	case !hasFlat && !hasTiered:
+		allErrs = append(allErrs, field.Required(
+			fldPath,
+			"exactly one of flat or tiered must be set",
+		))
+	case hasTiered:
+		allErrs = append(allErrs, validatePricingTiers(rate.Tiered, fldPath.Child("tiered"))...)
+	}
+
+	return allErrs
+}
+
+func validatePricingTiers(tiers []servicesv1alpha1.PricingTierBand, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if len(tiers) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath, "tiered must contain at least one band"))
+		return allErrs
+	}
+
+	last := len(tiers) - 1
+	for i, band := range tiers {
+		bandPath := fldPath.Index(i)
+		if band.Rate == "" {
+			allErrs = append(allErrs, field.Required(bandPath.Child("rate"), "rate is required"))
+		}
+		if i != last && band.UpTo == "" {
+			allErrs = append(allErrs, field.Required(
+				bandPath.Child("upTo"),
+				fmt.Sprintf("upTo is required on all but the last tiered band (index %d)", i),
+			))
+		}
+	}
+
+	return allErrs
+}
+
+// validateCharges validates charges[]: unique names, required fields per
+// charge type, and USD currency.
+func validateCharges(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	var allErrs field.ErrorList
+	path := field.NewPath("spec", "charges")
+	seen := make(map[string]struct{}, len(sc.Spec.Charges))
+
+	for i, charge := range sc.Spec.Charges {
+		itemPath := path.Index(i)
+		if charge.Name != "" {
+			if _, dup := seen[charge.Name]; dup {
+				allErrs = append(allErrs, field.Duplicate(itemPath.Child("name"), charge.Name))
+			}
+			seen[charge.Name] = struct{}{}
+		}
+		allErrs = append(allErrs, validateChargeEntry(&charge, itemPath)...)
+	}
+	return allErrs
+}
+
+func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	if charge.Currency != "" && charge.Currency != "USD" {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("currency"),
+			charge.Currency,
+			"currency must be USD",
+		))
+	}
+	if charge.Amount == "" {
+		allErrs = append(allErrs, field.Required(fldPath.Child("amount"), "amount is required"))
+	}
+
+	switch charge.ChargeType {
+	case servicesv1alpha1.ServiceChargeTypeOneTime:
+		if charge.Trigger == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("trigger"),
+				"trigger is required when chargeType is OneTime",
+			))
+		}
+	case servicesv1alpha1.ServiceChargeTypeRecurring:
+		if charge.Interval == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("interval"),
+				"interval is required when chargeType is Recurring",
+			))
+		}
+	case "":
+		allErrs = append(allErrs, field.Required(fldPath.Child("chargeType"), "chargeType is required"))
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			fldPath.Child("chargeType"),
+			charge.ChargeType,
+			[]string{
+				string(servicesv1alpha1.ServiceChargeTypeOneTime),
+				string(servicesv1alpha1.ServiceChargeTypeRecurring),
+			},
+		))
+	}
+
+	return allErrs
+}
+
+// validateDefaultOffer ensures that when defaultOffer is set, the named
+// Offer exists and is assignable (GA with a non-empty servicePricings
+// snapshot). OfferIsAssignable lives in billing/internal, so the check is
+// inlined here against the public Offer API.
+func validateDefaultOffer(
+	ctx context.Context,
+	c client.Reader,
+	sc *servicesv1alpha1.ServiceConfiguration,
+) field.ErrorList {
+	var allErrs field.ErrorList
+	fldPath := field.NewPath("spec", "defaultOffer")
+
+	if sc.Spec.DefaultOffer == "" || c == nil {
+		return allErrs
+	}
+
+	var offer billingv1alpha1.Offer
+	if err := c.Get(ctx, types.NamespacedName{Name: sc.Spec.DefaultOffer}, &offer); err != nil {
+		if apierrors.IsNotFound(err) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath, sc.Spec.DefaultOffer,
+				fmt.Sprintf("offer %q does not exist", sc.Spec.DefaultOffer),
+			))
+			return allErrs
+		}
+		allErrs = append(allErrs, field.InternalError(fldPath,
+			fmt.Errorf("failed to load referenced Offer: %w", err)))
+		return allErrs
+	}
+
+	if offer.Spec.LaunchStage != billingv1alpha1.OfferLaunchStageGA {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath, sc.Spec.DefaultOffer,
+			fmt.Sprintf("offer %q must have launchStage GA (got %q)", sc.Spec.DefaultOffer, offer.Spec.LaunchStage),
+		))
+	}
+	if len(offer.Spec.ServicePricings) == 0 {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath, sc.Spec.DefaultOffer,
+			fmt.Sprintf("offer %q must have a non-empty servicePricings snapshot", sc.Spec.DefaultOffer),
+		))
+	}
+
+	return allErrs
+}
+
 // validateServiceConfigurationNamePrefixes resolves the referenced
 // Service and enforces that every meter.name and
 // monitoredResourceType.type is prefixed by the Service's canonical
@@ -336,7 +548,44 @@ func validateServiceConfigurationPublishedImmutability(
 				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("unit"),
 					"can't be changed once the configuration is published"))
 			}
+			if !apiequality.Semantic.DeepEqual(old.Pricing, m.Pricing) {
+				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("pricing"),
+					"can't be changed once the configuration is published"))
+			}
 		}
+	}
+
+	oldCharges := make(map[string]servicesv1alpha1.ServiceChargeSpec, len(oldSC.Spec.Charges))
+	for _, c := range oldSC.Spec.Charges {
+		oldCharges[c.Name] = c
+	}
+	newChargeSet := make(map[string]struct{}, len(newSC.Spec.Charges))
+	for _, c := range newSC.Spec.Charges {
+		newChargeSet[c.Name] = struct{}{}
+	}
+	chargesPath := field.NewPath("spec", "charges")
+	for name, old := range oldCharges {
+		if _, exists := newChargeSet[name]; !exists {
+			allErrs = append(allErrs, field.Forbidden(chargesPath,
+				fmt.Sprintf("the charge %q can't be removed once the configuration is published", name)))
+			continue
+		}
+		for i, c := range newSC.Spec.Charges {
+			if c.Name != name {
+				continue
+			}
+			if !apiequality.Semantic.DeepEqual(old, c) {
+				allErrs = append(allErrs, field.Forbidden(chargesPath.Index(i),
+					"can't be changed once the configuration is published"))
+			}
+		}
+	}
+
+	if oldSC.Spec.DefaultOffer != newSC.Spec.DefaultOffer {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "defaultOffer"),
+			"can't be changed once the configuration is published",
+		))
 	}
 
 	if oldSC.Spec.Quota != nil {
@@ -406,6 +655,18 @@ func validateServiceConfigurationPublishedImmutability(
 						fmt.Sprintf("the metric %q can't be removed from billing destination %q once the configuration is published", m, mrt)))
 				}
 			}
+		}
+
+		oldGating := oldSC.Spec.Billing.QuotaGating
+		newGating := servicesv1alpha1.QuotaGatingMode("")
+		if newSC.Spec.Billing != nil {
+			newGating = newSC.Spec.Billing.QuotaGating
+		}
+		if oldGating != newGating {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "billing", "quotaGating"),
+				"can't be changed once the configuration is published",
+			))
 		}
 	}
 

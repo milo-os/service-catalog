@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -404,6 +406,205 @@ func TestEnsureQuotaGrants_PrunesStaleGrant(t *testing.T) {
 	err := consumerClient.Get(context.Background(), types.NamespacedName{Name: l2Name, Namespace: quotaGrantNamespace}, &afterL2)
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("expected L2 grant %q to be pruned, got err=%v", l2Name, err)
+	}
+}
+
+// TestResourceGrantName verifies the naming scheme produces stable,
+// prefix-correct names.
+// TestOfferIncludesService covers the Offer snapshot membership check used
+// by BillingEntitlement quota gating.
+func TestOfferIncludesService(t *testing.T) {
+	t.Parallel()
+
+	offerWith := func(services ...string) *billingv1alpha1.Offer {
+		snapshots := make([]billingv1alpha1.ServicePricingSnapshot, 0, len(services))
+		for i, s := range services {
+			snapshots = append(snapshots, billingv1alpha1.ServicePricingSnapshot{
+				Name: fmt.Sprintf("pricing-%d", i),
+				Spec: billingv1alpha1.ServicePricingSpec{
+					ServiceRef: s,
+					ChargeType: billingv1alpha1.ChargeTypeUsage,
+					Currency:   "USD",
+				},
+			})
+		}
+		return &billingv1alpha1.Offer{
+			Spec: billingv1alpha1.OfferSpec{ServicePricings: snapshots},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		offer       *billingv1alpha1.Offer
+		serviceName string
+		want        bool
+	}{
+		{
+			name:        "nil offer",
+			offer:       nil,
+			serviceName: "compute.miloapis.com",
+			want:        false,
+		},
+		{
+			name:        "empty service name",
+			offer:       offerWith("compute.miloapis.com"),
+			serviceName: "",
+			want:        false,
+		},
+		{
+			name:        "empty snapshots",
+			offer:       offerWith(),
+			serviceName: "compute.miloapis.com",
+			want:        false,
+		},
+		{
+			name:        "service present",
+			offer:       offerWith("compute.miloapis.com", "storage.miloapis.com"),
+			serviceName: "compute.miloapis.com",
+			want:        true,
+		},
+		{
+			name:        "service absent",
+			offer:       offerWith("storage.miloapis.com"),
+			serviceName: "compute.miloapis.com",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := offerIncludesService(tt.offer, tt.serviceName); got != tt.want {
+				t.Fatalf("offerIncludesService() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEnsureQuotaGrants_BillingEntitlementGating verifies that when
+// ServiceConfiguration.spec.billing.quotaGating is BillingEntitlement,
+// grants are issued only when the project's Offer snapshot covers the
+// service, and are pruned otherwise.
+func TestEnsureQuotaGrants_BillingEntitlementGating(t *testing.T) {
+	limits := []servicesv1alpha1.QuotaLimitSpec{
+		{
+			Name:         "instances",
+			Metric:       "compute.miloapis.com/instances",
+			DefaultLimit: 10,
+			Unit:         "1/{project}",
+			ConsumerType: servicesv1alpha1.QuotaConsumerType{
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+			},
+		},
+	}
+
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, limits)
+	sc.Spec.Billing = &servicesv1alpha1.ServiceBillingConfig{
+		QuotaGating: servicesv1alpha1.QuotaGatingBillingEntitlement,
+	}
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	orgNS := "organization-acme"
+	baName := "ba-acme"
+	offerName := "offer-standard"
+
+	binding := &billingv1alpha1.BillingAccountBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "binding-1", Namespace: orgNS},
+		Spec: billingv1alpha1.BillingAccountBindingSpec{
+			BillingAccountRef: billingv1alpha1.BillingAccountRef{Name: baName},
+			ProjectRef:        billingv1alpha1.ProjectRef{Name: testConsumerProject},
+		},
+		Status: billingv1alpha1.BillingAccountBindingStatus{
+			Phase: billingv1alpha1.BillingAccountBindingPhaseActive,
+		},
+	}
+	be := &billingv1alpha1.BillingEntitlement{
+		ObjectMeta: metav1.ObjectMeta{Name: "be-default", Namespace: orgNS},
+		Spec: billingv1alpha1.BillingEntitlementSpec{
+			BillingAccountRef: billingv1alpha1.BillingAccountRef{Name: baName},
+			OfferRef:          billingv1alpha1.OfferReference{Name: offerName},
+		},
+		Status: billingv1alpha1.BillingEntitlementStatus{
+			Conditions: []metav1.Condition{{
+				Type:   ConditionTypeReady,
+				Status: metav1.ConditionTrue,
+				Reason: "BillingEntitlementReady",
+			}},
+		},
+	}
+	offerWithoutService := &billingv1alpha1.Offer{
+		ObjectMeta: metav1.ObjectMeta{Name: offerName},
+		Spec: billingv1alpha1.OfferSpec{
+			LaunchStage: billingv1alpha1.OfferLaunchStageGA,
+			ChargeTypes: []billingv1alpha1.ChargeType{billingv1alpha1.ChargeTypeUsage},
+			ServicePricings: []billingv1alpha1.ServicePricingSnapshot{{
+				Name: "other-pricing",
+				Spec: billingv1alpha1.ServicePricingSpec{
+					ServiceRef: "other.miloapis.com",
+					ChargeType: billingv1alpha1.ChargeTypeUsage,
+					Currency:   "USD",
+				},
+			}},
+		},
+	}
+
+	rootClient := newFakeClient(svc, sc, binding, be, offerWithoutService)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	// Not entitled → no grants.
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var grantList quotav1alpha1.ResourceGrantList
+	if err := consumerClient.List(context.Background(), &grantList,
+		client.InNamespace(quotaGrantNamespace),
+		client.MatchingLabels{labelEntitlementName: testServiceSlug},
+	); err != nil {
+		t.Fatalf("list ResourceGrants: %v", err)
+	}
+	if len(grantList.Items) != 0 {
+		t.Fatalf("got %d ResourceGrants while service absent from Offer, want 0", len(grantList.Items))
+	}
+
+	// Add the service to the Offer snapshot → grants should appear.
+	var liveOffer billingv1alpha1.Offer
+	if err := rootClient.Get(context.Background(), types.NamespacedName{Name: offerName}, &liveOffer); err != nil {
+		t.Fatalf("get Offer: %v", err)
+	}
+	liveOffer.Spec.ServicePricings = append(liveOffer.Spec.ServicePricings, billingv1alpha1.ServicePricingSnapshot{
+		Name: "svc-pricing",
+		Spec: billingv1alpha1.ServicePricingSpec{
+			ServiceRef: testServiceName,
+			ChargeType: billingv1alpha1.ChargeTypeUsage,
+			Currency:   "USD",
+		},
+	})
+	if err := rootClient.Update(context.Background(), &liveOffer); err != nil {
+		t.Fatalf("update Offer: %v", err)
+	}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	if err := consumerClient.List(context.Background(), &grantList,
+		client.InNamespace(quotaGrantNamespace),
+		client.MatchingLabels{labelEntitlementName: testServiceSlug},
+	); err != nil {
+		t.Fatalf("list ResourceGrants after entitle: %v", err)
+	}
+	if len(grantList.Items) != 1 {
+		t.Fatalf("got %d ResourceGrants after service present on Offer, want 1", len(grantList.Items))
 	}
 }
 

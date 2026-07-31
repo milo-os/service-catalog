@@ -7,8 +7,30 @@ rules:
 - apiGroups:
   - billing.miloapis.com
   resources:
+  - billingaccountbindings
+  - billingaccounts
+  - offers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - billing.miloapis.com
+  resources:
+  - billingentitlements
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - billing.miloapis.com
+  resources:
   - meterdefinitions
   - monitoredresourcetypes
+  - servicepricings
   verbs:
   - create
   - delete
