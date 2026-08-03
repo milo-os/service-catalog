@@ -2,35 +2,9 @@
 
 package v1alpha1
 
-// MetricPricing optionally attaches Usage rates to a metric. Fans out to a
-// ServicePricing with chargeType Usage.
-type MetricPricing struct {
-	// Currency is the ISO 4217 currency code. USD only in v1.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Pattern=`^USD$`
-	// +kubebuilder:default=USD
-	Currency string `json:"currency,omitempty"`
-
-	// PricingUnit is a human-readable billing unit label (e.g. "vcpu",
-	// "gib"). Does not need to be the literal UCUM unit string of the meter.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	PricingUnit string `json:"pricingUnit"`
-
-	// Rates is the ordered list of rate entries for this metric.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	// +listType=atomic
-	Rates []PricingRateEntry `json:"rates"`
-}
-
-// PricingRateEntry is a single rate. Exactly one of Flat or Tiered must be
-// set. An optional Match filters the rate by dimension value; the last
-// unmatched entry is the default catch-all.
+// PricingRateEntry is a single Usage rate. Exactly one of Flat or Tiered
+// must be set. An optional Match filters the rate by dimension value; the
+// last unmatched entry is the default catch-all.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.flat) != has(self.tiered)",message="exactly one of flat or tiered must be set"
 type PricingRateEntry struct {
@@ -94,13 +68,17 @@ type PricingTierBand struct {
 	Rate string `json:"rate"`
 }
 
-// ServiceChargeType distinguishes OneTime and Recurring fixed charges
-// declared on a ServiceConfiguration. Usage pricing lives on metrics.
+// ServiceChargeType distinguishes Usage, OneTime, and Recurring charges
+// declared on a ServiceConfiguration. Metrics stay telemetry/quota-only;
+// all commercial terms live on spec.charges[].
 //
-// +kubebuilder:validation:Enum=OneTime;Recurring
+// +kubebuilder:validation:Enum=Usage;OneTime;Recurring
 type ServiceChargeType string
 
 const (
+	// ServiceChargeTypeUsage meters consumption against a named metric.
+	ServiceChargeTypeUsage ServiceChargeType = "Usage"
+
 	// ServiceChargeTypeOneTime is a fixed amount charged once at a defined trigger.
 	ServiceChargeTypeOneTime ServiceChargeType = "OneTime"
 
@@ -129,11 +107,14 @@ const (
 	ChargeIntervalMonthly ChargeInterval = "monthly"
 )
 
-// ServiceChargeSpec declares a fixed OneTime or Recurring charge for a
+// ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
 // service. Fans out to a ServicePricing with the matching chargeType.
+// Metrics are referenced by name for Usage charges and are never priced
+// in-place on the metric itself.
 //
-// +kubebuilder:validation:XValidation:rule="self.chargeType != 'OneTime' || has(self.trigger)",message="OneTime charges require trigger"
-// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Recurring' || has(self.interval)",message="Recurring charges require interval"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Usage' || (has(self.metricRef) && has(self.pricingUnit) && has(self.rates))",message="Usage charges require metricRef, pricingUnit, and rates"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'OneTime' || (has(self.amount) && has(self.trigger))",message="OneTime charges require amount and trigger"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Recurring' || (has(self.amount) && has(self.interval))",message="Recurring charges require amount and interval"
 type ServiceChargeSpec struct {
 	// Name uniquely identifies this charge within the ServiceConfiguration
 	// and must be prefixed with the Service's canonical serviceName (same
@@ -145,7 +126,7 @@ type ServiceChargeSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// ChargeType is OneTime or Recurring.
+	// ChargeType is Usage, OneTime, or Recurring.
 	//
 	// +kubebuilder:validation:Required
 	ChargeType ServiceChargeType `json:"chargeType"`
@@ -163,11 +144,35 @@ type ServiceChargeSpec struct {
 	// +kubebuilder:default=USD
 	Currency string `json:"currency,omitempty"`
 
-	// Amount is the fixed USD decimal string.
+	// MetricRef is the full metric name this Usage charge prices. Must
+	// match a spec.metrics[].name. Required when chargeType is Usage.
 	//
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	MetricRef string `json:"metricRef,omitempty"`
+
+	// PricingUnit is a human-readable billing unit label (e.g. "vcpu",
+	// "gib"). Required when chargeType is Usage. Does not need to be the
+	// literal UCUM unit string of the meter.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=64
+	PricingUnit string `json:"pricingUnit,omitempty"`
+
+	// Rates is the ordered list of rate entries for Usage charges.
+	// Required when chargeType is Usage.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Rates []PricingRateEntry `json:"rates,omitempty"`
+
+	// Amount is the fixed USD decimal string for OneTime and Recurring
+	// charges.
+	//
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Pattern=`^(0|[1-9]\d*)(\.\d+)?$`
-	Amount string `json:"amount"`
+	Amount string `json:"amount,omitempty"`
 
 	// Trigger identifies when a OneTime charge fires. Required when
 	// chargeType is OneTime.

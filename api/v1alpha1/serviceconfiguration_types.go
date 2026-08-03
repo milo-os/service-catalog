@@ -74,9 +74,10 @@ type ServiceConfigurationSpec struct {
 	// +listMapKey=name
 	Metrics []MetricSpec `json:"metrics,omitempty"`
 
-	// Charges declares fixed OneTime or Recurring charges for this service.
-	// Fans out to ServicePricing resources with chargeType OneTime or
-	// Recurring. Usage rates live on metrics[].pricing instead.
+	// Charges declares Usage, OneTime, and Recurring charges for this
+	// service. Fans out to ServicePricing resources distinguished by
+	// chargeType. Usage charges reference metrics by name; metrics
+	// themselves stay telemetry/quota-only.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=64
@@ -275,13 +276,6 @@ type MetricSpec struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=atomic
 	Dimensions []string `json:"dimensions,omitempty"`
-
-	// Pricing optionally attaches Usage rates to this metric.
-	// Fans out to a ServicePricing with chargeType Usage.
-	// Immutable once the ServiceConfiguration is Published.
-	//
-	// +kubebuilder:validation:Optional
-	Pricing *MetricPricing `json:"pricing,omitempty"`
 }
 
 // ServiceBillingConfig groups all billing routing declarations.

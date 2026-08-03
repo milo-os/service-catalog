@@ -30,12 +30,9 @@ const (
 	// fan-out is up to date with the current ServiceConfiguration spec.
 	ConditionTypeQuotaFanOutHealthy = "QuotaFanOutHealthy"
 
-	// ConditionTypePricingFanOutHealthy surfaces whether the pricing
-	// fan-out is up to date with the current ServiceConfiguration spec.
-	ConditionTypePricingFanOutHealthy = "PricingFanOutHealthy"
-
 	// ConditionTypeChargeFanOutHealthy surfaces whether the charge
-	// fan-out is up to date with the current ServiceConfiguration spec.
+	// fan-out (Usage/OneTime/Recurring) is up to date with the current
+	// ServiceConfiguration spec.
 	ConditionTypeChargeFanOutHealthy = "ChargeFanOutHealthy"
 
 	reasonServiceConfigurationReady = "ServiceConfigurationReady"
@@ -46,25 +43,21 @@ const (
 	reasonQuotaFanOutFailed         = "QuotaFanOutFailed"
 	reasonQuotaFanOutHealthy        = "QuotaFanOutHealthy"
 	reasonQuotaFanOutSkipped        = "QuotaFanOutSkipped"
-	reasonPricingFanOutFailed       = "PricingFanOutFailed"
-	reasonPricingFanOutHealthy      = "PricingFanOutHealthy"
-	reasonPricingFanOutSkipped      = "PricingFanOutSkipped"
 	reasonChargeFanOutFailed        = "ChargeFanOutFailed"
 	reasonChargeFanOutHealthy       = "ChargeFanOutHealthy"
 	reasonChargeFanOutSkipped       = "ChargeFanOutSkipped"
 )
 
 // ServiceConfigurationReconciler reconciles a ServiceConfiguration
-// object. It owns the billing, pricing, charge, and quota fan-outs:
-// changes to the document materialize as downstream CRDs via server-side
-// apply, and previously-managed objects no longer in the desired set are
+// object. It owns the billing, charge, and quota fan-outs: changes to
+// the document materialize as downstream CRDs via server-side apply,
+// and previously-managed objects no longer in the desired set are
 // deleted.
 type ServiceConfigurationReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	BillingFanOut *BillingFanOut
 	QuotaFanOut   *QuotaFanOut
-	PricingFanOut *PricingFanOut
 	ChargeFanOut  *ChargeFanOut
 }
 
@@ -125,13 +118,6 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 					Message:            fanOutMsg,
 				},
 				metav1.Condition{
-					Type:               ConditionTypePricingFanOutHealthy,
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: sc.Generation,
-					Reason:             reasonServiceRefNotFound,
-					Message:            fanOutMsg,
-				},
-				metav1.Condition{
 					Type:               ConditionTypeChargeFanOutHealthy,
 					Status:             metav1.ConditionFalse,
 					ObservedGeneration: sc.Generation,
@@ -155,12 +141,6 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	}
 	quotaFanOutCondition := desiredQuotaFanOutCondition(&sc, quotaFanOutErr)
 
-	var pricingFanOutErr error
-	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
-		pricingFanOutErr = r.PricingFanOut.Reconcile(ctx, &sc)
-	}
-	pricingFanOutCondition := desiredPricingFanOutCondition(&sc, pricingFanOutErr)
-
 	var chargeFanOutErr error
 	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
 		chargeFanOutErr = r.ChargeFanOut.Reconcile(ctx, &sc)
@@ -181,10 +161,6 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonQuotaFanOutFailed
 		readyCondition.Message = quotaFanOutCondition.Message
-	case pricingFanOutErr != nil:
-		readyCondition.Status = metav1.ConditionFalse
-		readyCondition.Reason = reasonPricingFanOutFailed
-		readyCondition.Message = pricingFanOutCondition.Message
 	case chargeFanOutErr != nil:
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonChargeFanOutFailed
@@ -192,12 +168,12 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	default:
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
-		readyCondition.Message = "Service configuration is ready; billing, pricing, and quota are set up."
+		readyCondition.Message = "Service configuration is ready; billing, charges, and quota are set up."
 	}
 
 	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName,
 		readyCondition, billingFanOutCondition, quotaFanOutCondition,
-		pricingFanOutCondition, chargeFanOutCondition,
+		chargeFanOutCondition,
 	); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -207,9 +183,6 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	}
 	if quotaFanOutErr != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", quotaFanOutErr)
-	}
-	if pricingFanOutErr != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", pricingFanOutErr)
 	}
 	if chargeFanOutErr != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", chargeFanOutErr)
@@ -237,9 +210,6 @@ func (r *ServiceConfigurationReconciler) reconcileDelete(
 	if err := r.QuotaFanOut.Cleanup(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cleanup quota objects: %w", err)
 	}
-	if err := r.PricingFanOut.Cleanup(ctx, sc); err != nil {
-		return ctrl.Result{}, fmt.Errorf("cleanup pricing objects: %w", err)
-	}
 	if err := r.ChargeFanOut.Cleanup(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cleanup charge objects: %w", err)
 	}
@@ -266,6 +236,8 @@ func (r *ServiceConfigurationReconciler) writeStatusConditions(
 		apimeta.SetStatusCondition(&newStatus.Conditions, c)
 	}
 	apimeta.SetStatusCondition(&newStatus.Conditions, desiredPublishedCondition(sc.Spec.Phase, sc.Generation))
+	// Drop the legacy PricingFanOutHealthy condition on upgrade.
+	apimeta.RemoveStatusCondition(&newStatus.Conditions, "PricingFanOutHealthy")
 	if sc.Spec.Phase == servicesv1alpha1.PhasePublished && newStatus.PublishedAt == nil {
 		now := metav1.Now()
 		newStatus.PublishedAt = &now
@@ -291,11 +263,14 @@ func serviceConfigurationStatusNeedsUpdate(current, desired *servicesv1alpha1.Se
 	if (current.PublishedAt == nil) != (desired.PublishedAt == nil) {
 		return true
 	}
+	// Detect removals such as the legacy PricingFanOutHealthy condition.
+	if len(current.Conditions) != len(desired.Conditions) {
+		return true
+	}
 	for _, t := range []string{
 		ConditionTypeReady,
 		ConditionTypeBillingFanOutHealthy,
 		ConditionTypeQuotaFanOutHealthy,
-		ConditionTypePricingFanOutHealthy,
 		ConditionTypeChargeFanOutHealthy,
 		ConditionTypePublished,
 	} {
@@ -352,29 +327,6 @@ func desiredQuotaFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err 
 	return c
 }
 
-func desiredPricingFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
-	c := metav1.Condition{
-		Type:               ConditionTypePricingFanOutHealthy,
-		ObservedGeneration: sc.Generation,
-	}
-	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
-		c.Status = metav1.ConditionTrue
-		c.Reason = reasonPricingFanOutSkipped
-		c.Message = "Pricing setup is on hold while this configuration is still a draft."
-		return c
-	}
-	if err != nil {
-		c.Status = metav1.ConditionFalse
-		c.Reason = reasonPricingFanOutFailed
-		c.Message = "Couldn't finish setting up pricing for this service; the system will keep retrying."
-	} else {
-		c.Status = metav1.ConditionTrue
-		c.Reason = reasonPricingFanOutHealthy
-		c.Message = "Pricing is set up for this service."
-	}
-	return c
-}
-
 func desiredChargeFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
 	c := metav1.Condition{
 		Type:               ConditionTypeChargeFanOutHealthy,
@@ -418,12 +370,6 @@ func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 			Client:     mgr.GetClient(),
 			Scheme:     mgr.GetScheme(),
 			RESTMapper: mgr.GetRESTMapper(),
-		}
-	}
-	if r.PricingFanOut == nil {
-		r.PricingFanOut = &PricingFanOut{
-			Client:   mgr.GetClient(),
-			Recorder: mgr.GetEventRecorder("pricing-fanout"),
 		}
 	}
 	if r.ChargeFanOut == nil {

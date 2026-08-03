@@ -32,8 +32,7 @@ func ValidateServiceConfigurationCreate(
 	metricNames := collectMetricNames(sc)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(sc)...)
 	allErrs = append(allErrs, validateMetricUniqueness(sc)...)
-	allErrs = append(allErrs, validateMetricPricing(sc)...)
-	allErrs = append(allErrs, validateCharges(sc)...)
+	allErrs = append(allErrs, validateCharges(sc, metricNames)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
@@ -60,8 +59,7 @@ func ValidateServiceConfigurationUpdate(
 	metricNames := collectMetricNames(newSC)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(newSC)...)
 	allErrs = append(allErrs, validateMetricUniqueness(newSC)...)
-	allErrs = append(allErrs, validateMetricPricing(newSC)...)
-	allErrs = append(allErrs, validateCharges(newSC)...)
+	allErrs = append(allErrs, validateCharges(newSC, metricNames)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
@@ -210,42 +208,6 @@ func validateQuotaRefs(
 	return allErrs
 }
 
-// validateMetricPricing validates metrics[].pricing: USD currency, flat XOR
-// tiered rates, and tier band shape.
-func validateMetricPricing(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
-	var allErrs field.ErrorList
-	path := field.NewPath("spec", "metrics")
-	for i, m := range sc.Spec.Metrics {
-		if m.Pricing == nil {
-			continue
-		}
-		pricingPath := path.Index(i).Child("pricing")
-		allErrs = append(allErrs, validateMetricPricingEntry(m.Pricing, pricingPath)...)
-	}
-	return allErrs
-}
-
-func validateMetricPricingEntry(pricing *servicesv1alpha1.MetricPricing, fldPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-
-	if pricing.Currency != "" && pricing.Currency != "USD" {
-		allErrs = append(allErrs, field.Invalid(
-			fldPath.Child("currency"),
-			pricing.Currency,
-			"currency must be USD",
-		))
-	}
-	if pricing.PricingUnit == "" {
-		allErrs = append(allErrs, field.Required(fldPath.Child("pricingUnit"), "pricingUnit is required"))
-	}
-	if len(pricing.Rates) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath.Child("rates"), "rates is required"))
-		return allErrs
-	}
-	allErrs = append(allErrs, validatePricingRateEntries(pricing.Rates, fldPath.Child("rates"))...)
-	return allErrs
-}
-
 func validatePricingRateEntries(rates []servicesv1alpha1.PricingRateEntry, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	for i := range rates {
@@ -303,9 +265,10 @@ func validatePricingTiers(tiers []servicesv1alpha1.PricingTierBand, fldPath *fie
 	return allErrs
 }
 
-// validateCharges validates charges[]: unique names, required fields per
-// charge type, and USD currency.
-func validateCharges(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+// validateCharges validates charges[]: unique names, required/forbidden
+// fields per charge type (Usage, OneTime, Recurring), metricRef existence
+// for Usage charges, and USD currency.
+func validateCharges(sc *servicesv1alpha1.ServiceConfiguration, metricNames map[string]struct{}) field.ErrorList {
 	var allErrs field.ErrorList
 	path := field.NewPath("spec", "charges")
 	seen := make(map[string]struct{}, len(sc.Spec.Charges))
@@ -318,33 +281,19 @@ func validateCharges(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList 
 			}
 			seen[charge.Name] = struct{}{}
 		}
-		allErrs = append(allErrs, validateChargeEntry(&charge, itemPath)...)
+		allErrs = append(allErrs, validateChargeEntry(&charge, metricNames, itemPath)...)
 	}
 	allErrs = append(allErrs, validateServicePricingNameUniqueness(sc)...)
 	return allErrs
 }
 
-// validateServicePricingNameUniqueness rejects charge and priced-metric
-// names that encode to the same ServicePricing metadata.name. Pricing and
-// Charge fan-outs both write into milo-system via encodeServicePricingName;
-// collisions cause ForceOwnership thrashing between Usage and fixed charges.
+// validateServicePricingNameUniqueness rejects charge names that encode to
+// the same ServicePricing metadata.name. Charge fan-out writes into
+// milo-system via encodeServicePricingName; collisions cause ForceOwnership
+// thrashing between charges.
 func validateServicePricingNameUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
 	var allErrs field.ErrorList
 	encoded := make(map[string]string) // encoded name → source field path
-
-	for i, m := range sc.Spec.Metrics {
-		if m.Name == "" || m.Pricing == nil {
-			continue
-		}
-		name := encodeServicePricingName(m.Name)
-		path := field.NewPath("spec", "metrics").Index(i).Child("name")
-		if other, ok := encoded[name]; ok {
-			allErrs = append(allErrs, field.Invalid(path, m.Name,
-				fmt.Sprintf("encodes to ServicePricing name %q which collides with %s", name, other)))
-			continue
-		}
-		encoded[name] = path.String()
-	}
 
 	for i, charge := range sc.Spec.Charges {
 		if charge.Name == "" {
@@ -376,7 +325,11 @@ func encodeServicePricingName(metricOrChargeName string) string {
 	return host + "--" + rest
 }
 
-func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *field.Path) field.ErrorList {
+func validateChargeEntry(
+	charge *servicesv1alpha1.ServiceChargeSpec,
+	metricNames map[string]struct{},
+	fldPath *field.Path,
+) field.ErrorList {
 	var allErrs field.ErrorList
 
 	if charge.Currency != "" && charge.Currency != "USD" {
@@ -386,16 +339,81 @@ func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *fi
 			"currency must be USD",
 		))
 	}
-	if charge.Amount == "" {
-		allErrs = append(allErrs, field.Required(fldPath.Child("amount"), "amount is required"))
-	}
 
 	switch charge.ChargeType {
+	case servicesv1alpha1.ServiceChargeTypeUsage:
+		if charge.MetricRef == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("metricRef"),
+				"metricRef is required when chargeType is Usage",
+			))
+		} else if _, ok := metricNames[charge.MetricRef]; !ok {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("metricRef"), charge.MetricRef,
+				"must name a metric that this configuration defines",
+			))
+		}
+		if charge.PricingUnit == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("pricingUnit"),
+				"pricingUnit is required when chargeType is Usage",
+			))
+		}
+		if len(charge.Rates) == 0 {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("rates"),
+				"rates is required when chargeType is Usage",
+			))
+		} else {
+			allErrs = append(allErrs, validatePricingRateEntries(charge.Rates, fldPath.Child("rates"))...)
+		}
+		if charge.Amount != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("amount"),
+				"amount must not be set when chargeType is Usage",
+			))
+		}
+		if charge.Trigger != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("trigger"),
+				"trigger must not be set when chargeType is Usage",
+			))
+		}
+		if charge.Interval != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("interval"),
+				"interval must not be set when chargeType is Usage",
+			))
+		}
 	case servicesv1alpha1.ServiceChargeTypeOneTime:
+		if charge.Amount == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("amount"),
+				"amount is required when chargeType is OneTime",
+			))
+		}
 		if charge.Trigger == "" {
 			allErrs = append(allErrs, field.Required(
 				fldPath.Child("trigger"),
 				"trigger is required when chargeType is OneTime",
+			))
+		}
+		if charge.MetricRef != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("metricRef"),
+				"metricRef must not be set when chargeType is OneTime",
+			))
+		}
+		if charge.PricingUnit != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("pricingUnit"),
+				"pricingUnit must not be set when chargeType is OneTime",
+			))
+		}
+		if len(charge.Rates) > 0 {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("rates"),
+				"rates must not be set when chargeType is OneTime",
 			))
 		}
 		if charge.Interval != "" {
@@ -405,10 +423,34 @@ func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *fi
 			))
 		}
 	case servicesv1alpha1.ServiceChargeTypeRecurring:
+		if charge.Amount == "" {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("amount"),
+				"amount is required when chargeType is Recurring",
+			))
+		}
 		if charge.Interval == "" {
 			allErrs = append(allErrs, field.Required(
 				fldPath.Child("interval"),
 				"interval is required when chargeType is Recurring",
+			))
+		}
+		if charge.MetricRef != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("metricRef"),
+				"metricRef must not be set when chargeType is Recurring",
+			))
+		}
+		if charge.PricingUnit != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("pricingUnit"),
+				"pricingUnit must not be set when chargeType is Recurring",
+			))
+		}
+		if len(charge.Rates) > 0 {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("rates"),
+				"rates must not be set when chargeType is Recurring",
 			))
 		}
 		if charge.Trigger != "" {
@@ -424,6 +466,7 @@ func validateChargeEntry(charge *servicesv1alpha1.ServiceChargeSpec, fldPath *fi
 			fldPath.Child("chargeType"),
 			charge.ChargeType,
 			[]string{
+				string(servicesv1alpha1.ServiceChargeTypeUsage),
 				string(servicesv1alpha1.ServiceChargeTypeOneTime),
 				string(servicesv1alpha1.ServiceChargeTypeRecurring),
 			},
@@ -625,10 +668,6 @@ func validateServiceConfigurationPublishedImmutability(
 			}
 			if m.Unit != old.Unit {
 				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("unit"),
-					"can't be changed once the configuration is published"))
-			}
-			if !apiequality.Semantic.DeepEqual(old.Pricing, m.Pricing) {
-				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("pricing"),
 					"can't be changed once the configuration is published"))
 			}
 		}
