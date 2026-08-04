@@ -23,7 +23,6 @@ import (
 
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
@@ -38,14 +37,6 @@ import (
 	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/e2esingle"
 	// +kubebuilder:scaffold:imports
 )
-
-// mcProvider is the subset of the Milo and e2esingle providers' capabilities
-// main needs: resolving cluster names (multicluster.Provider) and running the
-// provider's background engagement loop (multicluster.ProviderRunnable).
-type mcProvider interface {
-	multicluster.Provider
-	multicluster.ProviderRunnable
-}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -195,13 +186,23 @@ func main() {
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
 	// planes. We need a multicluster manager backed by the Milo provider so
 	// reconcilers run inside every engaged project's cluster context.
+	// The provider runs on its own manager rather than on mgr, so that
+	// project discovery and cluster engagement are not leader-gated; see
+	// newDiscoveryManager. It doubles as the multicluster manager's local
+	// manager.
+	discoveryMgr, err := newDiscoveryManager(cfg)
+	if err != nil {
+		setupLog.Error(err, "unable to create project discovery manager")
+		os.Exit(1)
+	}
+
 	var provider mcProvider
 	if enableSingleClusterForE2ETests {
 		setupLog.Info("enable-single-cluster-for-e2e-tests is set: using e2esingle provider, " +
 			"NOT the Milo multicluster provider — project isolation is disabled")
 		provider = e2esingle.New(mgr)
 	} else {
-		miloProvider, err := miloprovider.New(mgr, miloprovider.Options{
+		miloProvider, err := miloprovider.New(discoveryMgr, miloprovider.Options{
 			InternalServiceDiscovery: false,
 			ProjectRestConfig:        cfg,
 			// Engaged project clusters must use our scheme; without it their cache
@@ -220,13 +221,7 @@ func main() {
 		provider = miloProvider
 	}
 
-	mcMgr, err := mcmanager.New(cfg, provider, mcmanager.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			// Avoid port conflict with the primary manager's metrics server.
-			BindAddress: "0",
-		},
-	})
+	mcMgr, err := newMulticlusterManager(discoveryMgr, provider)
 	if err != nil {
 		setupLog.Error(err, "unable to create multicluster manager")
 		os.Exit(1)
@@ -407,10 +402,9 @@ func main() {
 	}
 
 	// Engage the local manager so the root cluster is reachable as cluster "".
-	// Provider and multicluster manager must run concurrently — each waits on
-	// the other to make progress, so neither can be Start()ed in the
-	// foreground. This mirrors the wiring used by the quota controllers in
-	// the Milo controller manager.
+	// The multicluster manager runs in the background — it and the primary
+	// manager each block, and the provider's engagement loop runs as one of
+	// its always-running runnables.
 	//
 	// Skipped under e2esingle: it engages the SAME underlying mgr under its
 	// own fixed name already. The multicluster coordinator tracks engagement
@@ -427,12 +421,6 @@ func main() {
 			}
 		}()
 	}
-	go func() {
-		if err := provider.Start(ctx, mcMgr); err != nil {
-			setupLog.Error(err, "Milo multicluster provider failed")
-			os.Exit(1)
-		}
-	}()
 	go func() {
 		if err := mcMgr.Start(ctx); err != nil {
 			setupLog.Error(err, "multicluster manager failed")
