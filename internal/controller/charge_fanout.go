@@ -92,8 +92,8 @@ func (f *ChargeFanOut) applyServicePricings(
 			currency = "USD"
 		}
 		displayName := charge.DisplayName
-		if displayName == "" && charge.ChargeType == servicesv1alpha1.ServiceChargeTypeUsage {
-			displayName = metricDisplayNames[charge.MetricRef]
+		if displayName == "" && charge.ChargeType == servicesv1alpha1.ServiceChargeTypeUsage && charge.Usage != nil {
+			displayName = metricDisplayNames[charge.Usage.MetricRef]
 		}
 
 		spec := billingapply.ServicePricingSpec().
@@ -106,14 +106,27 @@ func (f *ChargeFanOut) applyServicePricings(
 
 		switch charge.ChargeType {
 		case servicesv1alpha1.ServiceChargeTypeUsage:
+			if charge.Usage == nil {
+				return nil, fmt.Errorf("charge %q: usage is required when chargeType is Usage", charge.Name)
+			}
 			spec = spec.
-				WithMetric(charge.MetricRef).
-				WithPricingUnit(charge.PricingUnit).
-				WithRates(billingPricingRatesApplyFor(charge.Rates)...)
+				WithMetric(charge.Usage.MetricRef).
+				WithPricingUnit(charge.Usage.PricingUnit).
+				WithRates(billingPricingRatesApplyFor(charge.Usage.Rates)...)
 		case servicesv1alpha1.ServiceChargeTypeOneTime:
-			spec = spec.WithAmount(charge.Amount).WithTrigger(billingv1alpha1.ChargeTrigger(charge.Trigger))
+			if charge.OneTime == nil {
+				return nil, fmt.Errorf("charge %q: oneTime is required when chargeType is OneTime", charge.Name)
+			}
+			spec = spec.
+				WithAmount(charge.OneTime.Amount).
+				WithTrigger(billingv1alpha1.ChargeTrigger(charge.OneTime.Trigger))
 		case servicesv1alpha1.ServiceChargeTypeRecurring:
-			spec = spec.WithAmount(charge.Amount).WithInterval(billingv1alpha1.ChargeInterval(charge.Interval))
+			if charge.Recurring == nil {
+				return nil, fmt.Errorf("charge %q: recurring is required when chargeType is Recurring", charge.Name)
+			}
+			spec = spec.
+				WithAmount(charge.Recurring.Amount).
+				WithInterval(billingv1alpha1.ChargeInterval(charge.Recurring.Interval))
 		default:
 			return nil, fmt.Errorf("charge %q: unsupported chargeType %q", charge.Name, charge.ChargeType)
 		}

@@ -7,6 +7,7 @@ package v1alpha1
 // last unmatched entry is the default catch-all.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.flat) != has(self.tiered)",message="exactly one of flat or tiered must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.tiered) || self.tiered.size() == 0 || !has(self.tiered[self.tiered.size() - 1].upTo)",message="the last tiered band must omit upTo"
 type PricingRateEntry struct {
 	// Match optionally restricts this rate to a single dimension value.
 	//
@@ -21,7 +22,7 @@ type PricingRateEntry struct {
 	Flat string `json:"flat,omitempty"`
 
 	// Tiered is an ordered list of graduated volume bands.
-	// Mutually exclusive with Flat.
+	// Mutually exclusive with Flat. The last band must omit upTo.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinItems=1
@@ -54,7 +55,7 @@ type DimensionMatch struct {
 // upTo (open-ended).
 type PricingTierBand struct {
 	// UpTo is the exclusive upper bound of this band in pricingUnit units.
-	// Omit on the last band for an open-ended range.
+	// Required on every band except the last, which must omit it.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Pattern=`^(0|[1-9]\d*)(\.\d+)?$`
@@ -107,14 +108,69 @@ const (
 	ChargeIntervalMonthly ChargeInterval = "monthly"
 )
 
+// UsageChargeOptions holds fields that apply only when chargeType is Usage.
+type UsageChargeOptions struct {
+	// MetricRef is the full metric name this charge prices. Must match a
+	// spec.metrics[].name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	MetricRef string `json:"metricRef"`
+
+	// PricingUnit is a human-readable billing unit label (e.g. "vcpu",
+	// "gib"). Does not need to be the literal UCUM unit string of the meter.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	PricingUnit string `json:"pricingUnit"`
+
+	// Rates is the ordered list of rate entries for this Usage charge.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Rates []PricingRateEntry `json:"rates"`
+}
+
+// OneTimeChargeOptions holds fields that apply only when chargeType is OneTime.
+type OneTimeChargeOptions struct {
+	// Amount is the fixed USD decimal string.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^(0|[1-9]\d*)(\.\d+)?$`
+	Amount string `json:"amount"`
+
+	// Trigger identifies when this OneTime charge fires.
+	//
+	// +kubebuilder:validation:Required
+	Trigger ChargeTrigger `json:"trigger"`
+}
+
+// RecurringChargeOptions holds fields that apply only when chargeType is Recurring.
+type RecurringChargeOptions struct {
+	// Amount is the fixed USD decimal string.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^(0|[1-9]\d*)(\.\d+)?$`
+	Amount string `json:"amount"`
+
+	// Interval is the cadence for this Recurring charge.
+	//
+	// +kubebuilder:validation:Required
+	Interval ChargeInterval `json:"interval"`
+}
+
 // ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
 // service. Fans out to a ServicePricing with the matching chargeType.
 // Metrics are referenced by name for Usage charges and are never priced
-// in-place on the metric itself.
+// in-place on the metric itself. Type-specific fields live under usage,
+// oneTime, or recurring so supported options are explicit per chargeType.
 //
-// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Usage' || (has(self.metricRef) && has(self.pricingUnit) && has(self.rates))",message="Usage charges require metricRef, pricingUnit, and rates"
-// +kubebuilder:validation:XValidation:rule="self.chargeType != 'OneTime' || (has(self.amount) && has(self.trigger))",message="OneTime charges require amount and trigger"
-// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Recurring' || (has(self.amount) && has(self.interval))",message="Recurring charges require amount and interval"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Usage' || (has(self.usage) && !has(self.oneTime) && !has(self.recurring))",message="Usage charges require usage and must not set oneTime or recurring"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'OneTime' || (has(self.oneTime) && !has(self.usage) && !has(self.recurring))",message="OneTime charges require oneTime and must not set usage or recurring"
+// +kubebuilder:validation:XValidation:rule="self.chargeType != 'Recurring' || (has(self.recurring) && !has(self.usage) && !has(self.oneTime))",message="Recurring charges require recurring and must not set usage or oneTime"
 type ServiceChargeSpec struct {
 	// Name uniquely identifies this charge within the ServiceConfiguration
 	// and must be prefixed with the Service's canonical serviceName (same
@@ -144,47 +200,20 @@ type ServiceChargeSpec struct {
 	// +kubebuilder:default=USD
 	Currency string `json:"currency,omitempty"`
 
-	// MetricRef is the full metric name this Usage charge prices. Must
-	// match a spec.metrics[].name. Required when chargeType is Usage.
+	// Usage holds Usage-specific options. Required when chargeType is Usage.
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=253
-	MetricRef string `json:"metricRef,omitempty"`
+	Usage *UsageChargeOptions `json:"usage,omitempty"`
 
-	// PricingUnit is a human-readable billing unit label (e.g. "vcpu",
-	// "gib"). Required when chargeType is Usage. Does not need to be the
-	// literal UCUM unit string of the meter.
+	// OneTime holds OneTime-specific options. Required when chargeType is OneTime.
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MaxLength=64
-	PricingUnit string `json:"pricingUnit,omitempty"`
+	OneTime *OneTimeChargeOptions `json:"oneTime,omitempty"`
 
-	// Rates is the ordered list of rate entries for Usage charges.
-	// Required when chargeType is Usage.
+	// Recurring holds Recurring-specific options. Required when chargeType is Recurring.
 	//
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:MinItems=1
-	// +listType=atomic
-	Rates []PricingRateEntry `json:"rates,omitempty"`
-
-	// Amount is the fixed USD decimal string for OneTime and Recurring
-	// charges.
-	//
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Pattern=`^(0|[1-9]\d*)(\.\d+)?$`
-	Amount string `json:"amount,omitempty"`
-
-	// Trigger identifies when a OneTime charge fires. Required when
-	// chargeType is OneTime.
-	//
-	// +kubebuilder:validation:Optional
-	Trigger ChargeTrigger `json:"trigger,omitempty"`
-
-	// Interval is the cadence for a Recurring charge. Required when
-	// chargeType is Recurring.
-	//
-	// +kubebuilder:validation:Optional
-	Interval ChargeInterval `json:"interval,omitempty"`
+	Recurring *RecurringChargeOptions `json:"recurring,omitempty"`
 }
 
 // QuotaGatingMode controls whether quota for a service is gated on the

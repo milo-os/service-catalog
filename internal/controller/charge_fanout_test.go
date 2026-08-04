@@ -64,14 +64,16 @@ func TestChargeFanOut_ApplyUsageAndFixed(t *testing.T) {
 					ChargeType:  servicesv1alpha1.ServiceChargeTypeUsage,
 					DisplayName: "CPU Allocated",
 					Currency:    "USD",
-					MetricRef:   metricName,
-					PricingUnit: "vcpu",
-					Rates: []servicesv1alpha1.PricingRateEntry{
-						{
-							Match: &servicesv1alpha1.DimensionMatch{Dimension: "tier", Value: "standard"},
-							Flat:  "0.025",
+					Usage: &servicesv1alpha1.UsageChargeOptions{
+						MetricRef:   metricName,
+						PricingUnit: "vcpu",
+						Rates: []servicesv1alpha1.PricingRateEntry{
+							{
+								Match: &servicesv1alpha1.DimensionMatch{Dimension: "tier", Value: "standard"},
+								Flat:  "0.025",
+							},
+							{Flat: "0.030"},
 						},
-						{Flat: "0.030"},
 					},
 				},
 				{
@@ -79,8 +81,10 @@ func TestChargeFanOut_ApplyUsageAndFixed(t *testing.T) {
 					ChargeType:  servicesv1alpha1.ServiceChargeTypeRecurring,
 					DisplayName: "Platform Fee",
 					Currency:    "USD",
-					Amount:      "5.00",
-					Interval:    servicesv1alpha1.ChargeIntervalMonthly,
+					Recurring: &servicesv1alpha1.RecurringChargeOptions{
+						Amount:   "5.00",
+						Interval: servicesv1alpha1.ChargeIntervalMonthly,
+					},
 				},
 			},
 			Billing: &servicesv1alpha1.ServiceBillingConfig{

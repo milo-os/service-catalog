@@ -139,14 +139,9 @@ spec:
                     ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
                     service. Fans out to a ServicePricing with the matching chargeType.
                     Metrics are referenced by name for Usage charges and are never priced
-                    in-place on the metric itself.
+                    in-place on the metric itself. Type-specific fields live under usage,
+                    oneTime, or recurring so supported options are explicit per chargeType.
                   properties:
-                    amount:
-                      description: |-
-                        Amount is the fixed USD decimal string for OneTime and Recurring
-                        charges.
-                      pattern: ^(0|[1-9]\d*)(\.\d+)?$
-                      type: string
                     chargeType:
                       description: ChargeType is Usage, OneTime, or Recurring.
                       enum:
@@ -165,19 +160,6 @@ spec:
                         and portals.
                       maxLength: 128
                       type: string
-                    interval:
-                      description: |-
-                        Interval is the cadence for a Recurring charge. Required when
-                        chargeType is Recurring.
-                      enum:
-                      - monthly
-                      type: string
-                    metricRef:
-                      description: |-
-                        MetricRef is the full metric name this Usage charge prices. Must
-                        match a spec.metrics[].name. Required when chargeType is Usage.
-                      maxLength: 253
-                      type: string
                     name:
                       description: |-
                         Name uniquely identifies this charge within the ServiceConfiguration
@@ -187,105 +169,157 @@ spec:
                       maxLength: 253
                       minLength: 1
                       type: string
-                    pricingUnit:
-                      description: |-
-                        PricingUnit is a human-readable billing unit label (e.g. "vcpu",
-                        "gib"). Required when chargeType is Usage. Does not need to be the
-                        literal UCUM unit string of the meter.
-                      maxLength: 64
-                      type: string
-                    rates:
-                      description: |-
-                        Rates is the ordered list of rate entries for Usage charges.
-                        Required when chargeType is Usage.
-                      items:
-                        description: |-
-                          PricingRateEntry is a single Usage rate. Exactly one of Flat or Tiered
-                          must be set. An optional Match filters the rate by dimension value; the
-                          last unmatched entry is the default catch-all.
-                        properties:
-                          flat:
+                    oneTime:
+                      description: OneTime holds OneTime-specific options. Required
+                        when chargeType is OneTime.
+                      properties:
+                        amount:
+                          description: Amount is the fixed USD decimal string.
+                          pattern: ^(0|[1-9]\d*)(\.\d+)?$
+                          type: string
+                        trigger:
+                          description: Trigger identifies when this OneTime charge
+                            fires.
+                          enum:
+                          - BillingAccountActivation
+                          type: string
+                      required:
+                      - amount
+                      - trigger
+                      type: object
+                    recurring:
+                      description: Recurring holds Recurring-specific options. Required
+                        when chargeType is Recurring.
+                      properties:
+                        amount:
+                          description: Amount is the fixed USD decimal string.
+                          pattern: ^(0|[1-9]\d*)(\.\d+)?$
+                          type: string
+                        interval:
+                          description: Interval is the cadence for this Recurring
+                            charge.
+                          enum:
+                          - monthly
+                          type: string
+                      required:
+                      - amount
+                      - interval
+                      type: object
+                    usage:
+                      description: Usage holds Usage-specific options. Required when
+                        chargeType is Usage.
+                      properties:
+                        metricRef:
+                          description: |-
+                            MetricRef is the full metric name this charge prices. Must match a
+                            spec.metrics[].name.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        pricingUnit:
+                          description: |-
+                            PricingUnit is a human-readable billing unit label (e.g. "vcpu",
+                            "gib"). Does not need to be the literal UCUM unit string of the meter.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                        rates:
+                          description: Rates is the ordered list of rate entries for
+                            this Usage charge.
+                          items:
                             description: |-
-                              Flat is a single decimal USD string multiplied by metered usage.
-                              Mutually exclusive with Tiered.
-                            pattern: ^(0|[1-9]\d*)(\.\d+)?$
-                            type: string
-                          match:
-                            description: Match optionally restricts this rate to a
-                              single dimension value.
+                              PricingRateEntry is a single Usage rate. Exactly one of Flat or Tiered
+                              must be set. An optional Match filters the rate by dimension value; the
+                              last unmatched entry is the default catch-all.
                             properties:
-                              dimension:
+                              flat:
                                 description: |-
-                                  Dimension is the label key declared on the metric (e.g. "tier",
-                                  "region", "model").
-                                maxLength: 63
-                                minLength: 1
+                                  Flat is a single decimal USD string multiplied by metered usage.
+                                  Mutually exclusive with Tiered.
+                                pattern: ^(0|[1-9]\d*)(\.\d+)?$
                                 type: string
-                              value:
-                                description: Value is the dimension value this rate
-                                  applies to.
-                                maxLength: 253
-                                minLength: 1
-                                type: string
-                            required:
-                            - dimension
-                            - value
+                              match:
+                                description: Match optionally restricts this rate
+                                  to a single dimension value.
+                                properties:
+                                  dimension:
+                                    description: |-
+                                      Dimension is the label key declared on the metric (e.g. "tier",
+                                      "region", "model").
+                                    maxLength: 63
+                                    minLength: 1
+                                    type: string
+                                  value:
+                                    description: Value is the dimension value this
+                                      rate applies to.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - dimension
+                                - value
+                                type: object
+                              tiered:
+                                description: |-
+                                  Tiered is an ordered list of graduated volume bands.
+                                  Mutually exclusive with Flat. The last band must omit upTo.
+                                items:
+                                  description: |-
+                                    PricingTierBand is a single graduated volume band. Aggregation for tier
+                                    breaks is monthly at billing-account scope. Each band has a rate and an
+                                    exclusive upper bound upTo in pricingUnit units. The last band omits
+                                    upTo (open-ended).
+                                  properties:
+                                    rate:
+                                      description: |-
+                                        Rate is the USD decimal string applied to usage within this band.
+                                        Zero ("0") is valid for free allowances.
+                                      pattern: ^(0|[1-9]\d*)(\.\d+)?$
+                                      type: string
+                                    upTo:
+                                      description: |-
+                                        UpTo is the exclusive upper bound of this band in pricingUnit units.
+                                        Required on every band except the last, which must omit it.
+                                      pattern: ^(0|[1-9]\d*)(\.\d+)?$
+                                      type: string
+                                  required:
+                                  - rate
+                                  type: object
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
                             type: object
-                          tiered:
-                            description: |-
-                              Tiered is an ordered list of graduated volume bands.
-                              Mutually exclusive with Flat.
-                            items:
-                              description: |-
-                                PricingTierBand is a single graduated volume band. Aggregation for tier
-                                breaks is monthly at billing-account scope. Each band has a rate and an
-                                exclusive upper bound upTo in pricingUnit units. The last band omits
-                                upTo (open-ended).
-                              properties:
-                                rate:
-                                  description: |-
-                                    Rate is the USD decimal string applied to usage within this band.
-                                    Zero ("0") is valid for free allowances.
-                                  pattern: ^(0|[1-9]\d*)(\.\d+)?$
-                                  type: string
-                                upTo:
-                                  description: |-
-                                    UpTo is the exclusive upper bound of this band in pricingUnit units.
-                                    Omit on the last band for an open-ended range.
-                                  pattern: ^(0|[1-9]\d*)(\.\d+)?$
-                                  type: string
-                              required:
-                              - rate
-                              type: object
-                            minItems: 1
-                            type: array
-                            x-kubernetes-list-type: atomic
-                        type: object
-                        x-kubernetes-validations:
-                        - message: exactly one of flat or tiered must be set
-                          rule: has(self.flat) != has(self.tiered)
-                      minItems: 1
-                      type: array
-                      x-kubernetes-list-type: atomic
-                    trigger:
-                      description: |-
-                        Trigger identifies when a OneTime charge fires. Required when
-                        chargeType is OneTime.
-                      enum:
-                      - BillingAccountActivation
-                      type: string
+                            x-kubernetes-validations:
+                            - message: exactly one of flat or tiered must be set
+                              rule: has(self.flat) != has(self.tiered)
+                            - message: the last tiered band must omit upTo
+                              rule: '!has(self.tiered) || self.tiered.size() == 0
+                                || !has(self.tiered[self.tiered.size() - 1].upTo)'
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - metricRef
+                      - pricingUnit
+                      - rates
+                      type: object
                   required:
                   - chargeType
                   - name
                   type: object
                   x-kubernetes-validations:
-                  - message: Usage charges require metricRef, pricingUnit, and rates
-                    rule: self.chargeType != 'Usage' || (has(self.metricRef) && has(self.pricingUnit)
-                      && has(self.rates))
-                  - message: OneTime charges require amount and trigger
-                    rule: self.chargeType != 'OneTime' || (has(self.amount) && has(self.trigger))
-                  - message: Recurring charges require amount and interval
-                    rule: self.chargeType != 'Recurring' || (has(self.amount) && has(self.interval))
+                  - message: Usage charges require usage and must not set oneTime
+                      or recurring
+                    rule: self.chargeType != 'Usage' || (has(self.usage) && !has(self.oneTime)
+                      && !has(self.recurring))
+                  - message: OneTime charges require oneTime and must not set usage
+                      or recurring
+                    rule: self.chargeType != 'OneTime' || (has(self.oneTime) && !has(self.usage)
+                      && !has(self.recurring))
+                  - message: Recurring charges require recurring and must not set
+                      usage or oneTime
+                    rule: self.chargeType != 'Recurring' || (has(self.recurring) &&
+                      !has(self.usage) && !has(self.oneTime))
                 maxItems: 64
                 type: array
                 x-kubernetes-list-map-keys:

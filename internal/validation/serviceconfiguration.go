@@ -260,13 +260,19 @@ func validatePricingTiers(tiers []servicesv1alpha1.PricingTierBand, fldPath *fie
 				fmt.Sprintf("upTo is required on all but the last tiered band (index %d)", i),
 			))
 		}
+		if i == last && band.UpTo != "" {
+			allErrs = append(allErrs, field.Forbidden(
+				bandPath.Child("upTo"),
+				"the last tiered band must omit upTo (open-ended)",
+			))
+		}
 	}
 
 	return allErrs
 }
 
-// validateCharges validates charges[]: unique names, required/forbidden
-// fields per charge type (Usage, OneTime, Recurring), metricRef existence
+// validateCharges validates charges[]: unique names, required nested
+// options per charge type (Usage, OneTime, Recurring), metricRef existence
 // for Usage charges, and USD currency.
 func validateCharges(sc *servicesv1alpha1.ServiceConfiguration, metricNames map[string]struct{}) field.ErrorList {
 	var allErrs field.ErrorList
@@ -342,121 +348,115 @@ func validateChargeEntry(
 
 	switch charge.ChargeType {
 	case servicesv1alpha1.ServiceChargeTypeUsage:
-		if charge.MetricRef == "" {
-			allErrs = append(allErrs, field.Required(
-				fldPath.Child("metricRef"),
-				"metricRef is required when chargeType is Usage",
+		if charge.OneTime != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("oneTime"),
+				"oneTime must not be set when chargeType is Usage",
 			))
-		} else if _, ok := metricNames[charge.MetricRef]; !ok {
+		}
+		if charge.Recurring != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("recurring"),
+				"recurring must not be set when chargeType is Usage",
+			))
+		}
+		if charge.Usage == nil {
+			allErrs = append(allErrs, field.Required(
+				fldPath.Child("usage"),
+				"usage is required when chargeType is Usage",
+			))
+			break
+		}
+		usagePath := fldPath.Child("usage")
+		if charge.Usage.MetricRef == "" {
+			allErrs = append(allErrs, field.Required(
+				usagePath.Child("metricRef"),
+				"metricRef is required",
+			))
+		} else if _, ok := metricNames[charge.Usage.MetricRef]; !ok {
 			allErrs = append(allErrs, field.Invalid(
-				fldPath.Child("metricRef"), charge.MetricRef,
+				usagePath.Child("metricRef"), charge.Usage.MetricRef,
 				"must name a metric that this configuration defines",
 			))
 		}
-		if charge.PricingUnit == "" {
+		if charge.Usage.PricingUnit == "" {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("pricingUnit"),
-				"pricingUnit is required when chargeType is Usage",
+				usagePath.Child("pricingUnit"),
+				"pricingUnit is required",
 			))
 		}
-		if len(charge.Rates) == 0 {
+		if len(charge.Usage.Rates) == 0 {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("rates"),
-				"rates is required when chargeType is Usage",
+				usagePath.Child("rates"),
+				"rates is required",
 			))
 		} else {
-			allErrs = append(allErrs, validatePricingRateEntries(charge.Rates, fldPath.Child("rates"))...)
-		}
-		if charge.Amount != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("amount"),
-				"amount must not be set when chargeType is Usage",
-			))
-		}
-		if charge.Trigger != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("trigger"),
-				"trigger must not be set when chargeType is Usage",
-			))
-		}
-		if charge.Interval != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("interval"),
-				"interval must not be set when chargeType is Usage",
-			))
+			allErrs = append(allErrs, validatePricingRateEntries(charge.Usage.Rates, usagePath.Child("rates"))...)
 		}
 	case servicesv1alpha1.ServiceChargeTypeOneTime:
-		if charge.Amount == "" {
+		if charge.Usage != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("usage"),
+				"usage must not be set when chargeType is OneTime",
+			))
+		}
+		if charge.Recurring != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("recurring"),
+				"recurring must not be set when chargeType is OneTime",
+			))
+		}
+		if charge.OneTime == nil {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("amount"),
-				"amount is required when chargeType is OneTime",
+				fldPath.Child("oneTime"),
+				"oneTime is required when chargeType is OneTime",
 			))
+			break
 		}
-		if charge.Trigger == "" {
+		oneTimePath := fldPath.Child("oneTime")
+		if charge.OneTime.Amount == "" {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("trigger"),
-				"trigger is required when chargeType is OneTime",
+				oneTimePath.Child("amount"),
+				"amount is required",
 			))
 		}
-		if charge.MetricRef != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("metricRef"),
-				"metricRef must not be set when chargeType is OneTime",
-			))
-		}
-		if charge.PricingUnit != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("pricingUnit"),
-				"pricingUnit must not be set when chargeType is OneTime",
-			))
-		}
-		if len(charge.Rates) > 0 {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("rates"),
-				"rates must not be set when chargeType is OneTime",
-			))
-		}
-		if charge.Interval != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("interval"),
-				"interval must not be set when chargeType is OneTime",
+		if charge.OneTime.Trigger == "" {
+			allErrs = append(allErrs, field.Required(
+				oneTimePath.Child("trigger"),
+				"trigger is required",
 			))
 		}
 	case servicesv1alpha1.ServiceChargeTypeRecurring:
-		if charge.Amount == "" {
+		if charge.Usage != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("usage"),
+				"usage must not be set when chargeType is Recurring",
+			))
+		}
+		if charge.OneTime != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				fldPath.Child("oneTime"),
+				"oneTime must not be set when chargeType is Recurring",
+			))
+		}
+		if charge.Recurring == nil {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("amount"),
-				"amount is required when chargeType is Recurring",
+				fldPath.Child("recurring"),
+				"recurring is required when chargeType is Recurring",
 			))
+			break
 		}
-		if charge.Interval == "" {
+		recurringPath := fldPath.Child("recurring")
+		if charge.Recurring.Amount == "" {
 			allErrs = append(allErrs, field.Required(
-				fldPath.Child("interval"),
-				"interval is required when chargeType is Recurring",
+				recurringPath.Child("amount"),
+				"amount is required",
 			))
 		}
-		if charge.MetricRef != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("metricRef"),
-				"metricRef must not be set when chargeType is Recurring",
-			))
-		}
-		if charge.PricingUnit != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("pricingUnit"),
-				"pricingUnit must not be set when chargeType is Recurring",
-			))
-		}
-		if len(charge.Rates) > 0 {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("rates"),
-				"rates must not be set when chargeType is Recurring",
-			))
-		}
-		if charge.Trigger != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("trigger"),
-				"trigger must not be set when chargeType is Recurring",
+		if charge.Recurring.Interval == "" {
+			allErrs = append(allErrs, field.Required(
+				recurringPath.Child("interval"),
+				"interval is required",
 			))
 		}
 	case "":
