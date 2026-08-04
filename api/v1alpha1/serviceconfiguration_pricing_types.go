@@ -7,7 +7,6 @@ package v1alpha1
 // last unmatched entry is the default catch-all.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.flat) != has(self.tiered)",message="exactly one of flat or tiered must be set"
-// +kubebuilder:validation:XValidation:rule="!has(self.tiered) || self.tiered.size() == 0 || !has(self.tiered[self.tiered.size() - 1].upTo)",message="the last tiered band must omit upTo"
 type PricingRateEntry struct {
 	// Match optionally restricts this rate to a single dimension value.
 	//
@@ -22,10 +21,13 @@ type PricingRateEntry struct {
 	Flat string `json:"flat,omitempty"`
 
 	// Tiered is an ordered list of graduated volume bands.
-	// Mutually exclusive with Flat. The last band must omit upTo.
+	// Mutually exclusive with Flat. The last band must omit upTo; the
+	// admission webhook enforces that (CEL last-index checks exceed the
+	// CRD validation cost budget).
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	// +listType=atomic
 	Tiered []PricingTierBand `json:"tiered,omitempty"`
 }

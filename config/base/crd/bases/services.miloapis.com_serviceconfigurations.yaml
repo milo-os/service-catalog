@@ -262,7 +262,9 @@ spec:
                               tiered:
                                 description: |-
                                   Tiered is an ordered list of graduated volume bands.
-                                  Mutually exclusive with Flat. The last band must omit upTo.
+                                  Mutually exclusive with Flat. The last band must omit upTo; the
+                                  admission webhook enforces that (CEL last-index checks exceed the
+                                  CRD validation cost budget).
                                 items:
                                   description: |-
                                     PricingTierBand is a single graduated volume band. Aggregation for tier
@@ -285,6 +287,7 @@ spec:
                                   required:
                                   - rate
                                   type: object
+                                maxItems: 32
                                 minItems: 1
                                 type: array
                                 x-kubernetes-list-type: atomic
@@ -292,9 +295,6 @@ spec:
                             x-kubernetes-validations:
                             - message: exactly one of flat or tiered must be set
                               rule: has(self.flat) != has(self.tiered)
-                            - message: the last tiered band must omit upTo
-                              rule: '!has(self.tiered) || self.tiered.size() == 0
-                                || !has(self.tiered[self.tiered.size() - 1].upTo)'
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
