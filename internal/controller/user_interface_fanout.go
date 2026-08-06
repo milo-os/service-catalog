@@ -8,16 +8,27 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	portalv1alpha1 "go.miloapis.com/milo/pkg/apis/portal/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
 const portalFieldManagerName = "services-operator-portal"
+
+// portalGroupVersion is portal.miloapis.com/v1alpha1. ConsumerPortalPlugin
+// and ProviderPortalPlugin are each owned and schema-defined by their own
+// portal (cloud-portal, staff-portal respectively), not by milo — so unlike
+// the billing/quota fan-outs, this one has no generated Go types to import
+// and instead builds/reads these objects as unstructured.Unstructured.
+var portalGroupVersion = schema.GroupVersion{Group: "portal.miloapis.com", Version: "v1alpha1"}
+
+func portalGVK(kind string) schema.GroupVersionKind {
+	return portalGroupVersion.WithKind(kind)
+}
 
 // UserInterfaceFanOut materializes the portal plugin(s) declared by a
 // ServiceConfiguration's spec.userInterface (ConsumerPortalPlugin,
@@ -58,28 +69,31 @@ func (f *UserInterfaceFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha
 		}
 	}
 
-	if err := f.pruneConsumerPlugin(ctx, sc, desiredConsumer); err != nil {
+	if err := f.pruneOne(ctx, sc, "ConsumerPortalPlugin", "ConsumerPortalPluginList", desiredConsumer); err != nil {
 		return err
 	}
-	return f.pruneProviderPlugin(ctx, sc, desiredProvider)
+	return f.pruneOne(ctx, sc, "ProviderPortalPlugin", "ProviderPortalPluginList", desiredProvider)
 }
 
 // Cleanup deletes any ConsumerPortalPlugin/ProviderPortalPlugin owned by sc.
 // Used during finalization to release managed state before the owner record
 // goes away.
 func (f *UserInterfaceFanOut) Cleanup(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) error {
-	if err := f.pruneConsumerPlugin(ctx, sc, ""); err != nil {
+	if err := f.pruneOne(ctx, sc, "ConsumerPortalPlugin", "ConsumerPortalPluginList", ""); err != nil {
 		return err
 	}
-	return f.pruneProviderPlugin(ctx, sc, "")
+	return f.pruneOne(ctx, sc, "ProviderPortalPlugin", "ProviderPortalPluginList", "")
 }
 
-func toPortalAssets(a servicesv1alpha1.PluginAssets) portalv1alpha1.PluginAssets {
-	return portalv1alpha1.PluginAssets{
-		BaseURL:      a.BaseURL,
-		ManifestPath: a.ManifestPath,
-		CABundle:     a.CABundle,
+func pluginAssetsMap(a servicesv1alpha1.PluginAssets) map[string]interface{} {
+	m := map[string]interface{}{"baseURL": a.BaseURL}
+	if a.ManifestPath != "" {
+		m["manifestPath"] = a.ManifestPath
 	}
+	if a.CABundle != "" {
+		m["caBundle"] = a.CABundle
+	}
+	return m
 }
 
 // applyConsumerPlugin returns the desired object name (for pruning) when
@@ -96,34 +110,30 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 		return "", nil
 	}
 
-	obj := &portalv1alpha1.ConsumerPortalPlugin{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: portalv1alpha1.GroupVersion.String(),
-			Kind:       "ConsumerPortalPlugin",
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(portalGVK("ConsumerPortalPlugin"))
+	obj.SetName(slug)
+	obj.SetLabels(map[string]string{
+		labelManagedBy:    labelManagedByValue,
+		labelOwnerService: serviceName,
+	})
+	if err := unstructured.SetNestedMap(obj.Object, map[string]interface{}{
+		"slug":        slug,
+		"displayName": displayName,
+		"deprecated":  deprecated,
+		"suspend":     spec.Suspend,
+		"assets":      pluginAssetsMap(spec.Assets),
+		"visibility": map[string]interface{}{
+			"entitlement": spec.Visibility.Entitlement,
+			"featureFlag": spec.Visibility.FeatureFlag,
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: slug,
-			Labels: map[string]string{
-				labelManagedBy:    labelManagedByValue,
-				labelOwnerService: serviceName,
-			},
-		},
-		Spec: portalv1alpha1.ConsumerPortalPluginSpec{
-			Slug:        slug,
-			DisplayName: displayName,
-			Deprecated:  deprecated,
-			Suspend:     spec.Suspend,
-			Assets:      toPortalAssets(spec.Assets),
-			Visibility: portalv1alpha1.PluginVisibility{
-				Entitlement: portalv1alpha1.PluginEntitlementRequirement(spec.Visibility.Entitlement),
-				FeatureFlag: spec.Visibility.FeatureFlag,
-			},
-		},
+	}, "spec"); err != nil {
+		return "", fmt.Errorf("build ConsumerPortalPlugin %q spec: %w", slug, err)
 	}
+
 	if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 		return "", fmt.Errorf("set controller ref on ConsumerPortalPlugin %q: %w", slug, err)
 	}
-	//nolint:staticcheck // client.Apply deprecated; milo portal types have no generated apply configurations yet.
 	if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(portalFieldManagerName), client.ForceOwnership); err != nil {
 		return "", fmt.Errorf("apply ConsumerPortalPlugin %q: %w", slug, err)
 	}
@@ -141,85 +151,59 @@ func (f *UserInterfaceFanOut) applyProviderPlugin(
 		return "", nil
 	}
 
-	obj := &portalv1alpha1.ProviderPortalPlugin{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: portalv1alpha1.GroupVersion.String(),
-			Kind:       "ProviderPortalPlugin",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: slug,
-			Labels: map[string]string{
-				labelManagedBy:    labelManagedByValue,
-				labelOwnerService: serviceName,
-			},
-		},
-		Spec: portalv1alpha1.ProviderPortalPluginSpec{
-			Slug:        slug,
-			DisplayName: displayName,
-			Deprecated:  deprecated,
-			Suspend:     spec.Suspend,
-			Assets:      toPortalAssets(spec.Assets),
-		},
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(portalGVK("ProviderPortalPlugin"))
+	obj.SetName(slug)
+	obj.SetLabels(map[string]string{
+		labelManagedBy:    labelManagedByValue,
+		labelOwnerService: serviceName,
+	})
+	if err := unstructured.SetNestedMap(obj.Object, map[string]interface{}{
+		"slug":        slug,
+		"displayName": displayName,
+		"deprecated":  deprecated,
+		"suspend":     spec.Suspend,
+		"assets":      pluginAssetsMap(spec.Assets),
+	}, "spec"); err != nil {
+		return "", fmt.Errorf("build ProviderPortalPlugin %q spec: %w", slug, err)
 	}
+
 	if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 		return "", fmt.Errorf("set controller ref on ProviderPortalPlugin %q: %w", slug, err)
 	}
-	//nolint:staticcheck // client.Apply deprecated; milo portal types have no generated apply configurations yet.
 	if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(portalFieldManagerName), client.ForceOwnership); err != nil {
 		return "", fmt.Errorf("apply ProviderPortalPlugin %q: %w", slug, err)
 	}
 	return slug, nil
 }
 
-func (f *UserInterfaceFanOut) pruneConsumerPlugin(
+// pruneOne deletes every kind-typed object carrying the fan-out's
+// managed-by label, owned by sc, whose name isn't desiredName (an empty
+// desiredName deletes anything owned by sc). listKind is the Kind's
+// List suffix (e.g. "ConsumerPortalPluginList").
+func (f *UserInterfaceFanOut) pruneOne(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
-	desiredName string,
+	kind, listKind, desiredName string,
 ) error {
-	var list portalv1alpha1.ConsumerPortalPluginList
-	if err := f.Client.List(ctx, &list, client.MatchingLabelsSelector{Selector: managedByFanoutSelector}); err != nil {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(portalGVK(listKind))
+	if err := f.Client.List(ctx, list, client.MatchingLabelsSelector{Selector: managedByFanoutSelector}); err != nil {
 		if meta.IsNoMatchError(err) {
 			return nil
 		}
-		return fmt.Errorf("list ConsumerPortalPlugins: %w", err)
+		return fmt.Errorf("list %s: %w", listKind, err)
 	}
 	for i := range list.Items {
 		obj := &list.Items[i]
-		if !ownedBy(obj.OwnerReferences, sc.UID) {
+		if !ownedBy(obj.GetOwnerReferences(), sc.UID) {
 			continue
 		}
-		if desiredName != "" && obj.Name == desiredName {
-			continue
-		}
-		if err := f.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete stale ConsumerPortalPlugin %q: %w", obj.Name, err)
-		}
-	}
-	return nil
-}
-
-func (f *UserInterfaceFanOut) pruneProviderPlugin(
-	ctx context.Context,
-	sc *servicesv1alpha1.ServiceConfiguration,
-	desiredName string,
-) error {
-	var list portalv1alpha1.ProviderPortalPluginList
-	if err := f.Client.List(ctx, &list, client.MatchingLabelsSelector{Selector: managedByFanoutSelector}); err != nil {
-		if meta.IsNoMatchError(err) {
-			return nil
-		}
-		return fmt.Errorf("list ProviderPortalPlugins: %w", err)
-	}
-	for i := range list.Items {
-		obj := &list.Items[i]
-		if !ownedBy(obj.OwnerReferences, sc.UID) {
-			continue
-		}
-		if desiredName != "" && obj.Name == desiredName {
+		if desiredName != "" && obj.GetName() == desiredName {
 			continue
 		}
 		if err := f.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete stale ProviderPortalPlugin %q: %w", obj.Name, err)
+			return fmt.Errorf("delete stale %s %q: %w", kind, obj.GetName(), err)
 		}
 	}
 	return nil
