@@ -24,18 +24,20 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// testScheme returns a scheme with the services, quota, and
+// testScheme returns a scheme with the services, billing, quota, and
 // resourcemanager API types registered. Resourcemanager is needed by
-// OrganizationDefaultsReconciler tests; pre-existing tests do not
-// reference its types and so are unaffected.
+// OrganizationDefaultsReconciler tests; billing types are needed by
+// BillingEntitlement quota-gating tests.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = billingv1alpha1.AddToScheme(s)
 	_ = quotav1alpha1.AddToScheme(s)
 	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	return s
@@ -132,6 +134,27 @@ func newFakeClient(objs ...client.Object) client.Client {
 				return nil
 			}
 			return []string{sc.Spec.ServiceRef.Name}
+		}).
+		WithIndex(&billingv1alpha1.BillingAccountBinding{}, bindingProjectRefIndex, func(obj client.Object) []string {
+			b := obj.(*billingv1alpha1.BillingAccountBinding)
+			if b.Spec.ProjectRef.Name == "" {
+				return nil
+			}
+			return []string{b.Spec.ProjectRef.Name}
+		}).
+		WithIndex(&billingv1alpha1.BillingAccountBinding{}, bindingBillingAccountRefIndex, func(obj client.Object) []string {
+			b := obj.(*billingv1alpha1.BillingAccountBinding)
+			if b.Spec.BillingAccountRef.Name == "" {
+				return nil
+			}
+			return []string{b.Spec.BillingAccountRef.Name}
+		}).
+		WithIndex(&billingv1alpha1.BillingEntitlement{}, billingEntitlementOfferIndex, func(obj client.Object) []string {
+			be := obj.(*billingv1alpha1.BillingEntitlement)
+			if be.Spec.OfferRef.Name == "" {
+				return nil
+			}
+			return []string{be.Spec.OfferRef.Name}
 		}).
 		Build()
 	return &ssaClient{Client: base}

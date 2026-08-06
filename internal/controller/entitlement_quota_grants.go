@@ -9,12 +9,27 @@ import (
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+)
+
+const (
+	// Field indexes on root-cluster billing objects used by quota gating
+	// lookups and watch fan-out.
+	bindingProjectRefIndex        = ".spec.projectRef.name"
+	bindingBillingAccountRefIndex = ".spec.billingAccountRef.name"
+	billingEntitlementOfferIndex  = ".spec.offerRef.name"
 )
 
 // quotaGrantNamespace is the namespace where ResourceGrants live in project VCPs.
@@ -72,6 +87,25 @@ func (r *ServiceEntitlementReconciler) ensureQuotaGrants(
 	}
 
 	logger := log.FromContext(ctx)
+
+	// Opt-in BillingEntitlement gating: only issue project grants when the
+	// project's billing account is entitled to an Offer that includes this
+	// service. OrganizationDefault (the default) keeps issuing grants as
+	// before. OrganizationDefaultsReconciler is unaffected.
+	if !usesOrganizationDefaultQuotaGating(sc) {
+		entitled, err := r.serviceEntitledViaBilling(ctx, consumerProject, svc.Spec.ServiceName)
+		if err != nil {
+			return err
+		}
+		if !entitled {
+			logger.Info("pruning quota grants; service not covered by BillingEntitlement Offer",
+				"service", svc.Spec.ServiceName,
+				"project", consumerProject,
+				"entitlement", entitlement.Name)
+			return r.pruneStaleQuotaGrants(ctx, consumerClient, entitlement, map[string]struct{}{})
+		}
+	}
+
 	desired := make(map[string]struct{}, len(sc.Spec.Quota.Limits))
 	for i := range sc.Spec.Quota.Limits {
 		limit := &sc.Spec.Quota.Limits[i]
@@ -120,8 +154,7 @@ func (r *ServiceEntitlementReconciler) ensureQuotaGrants(
 			},
 		}
 
-		//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
-		if err := consumerClient.Patch(ctx, grant, client.Apply,
+		if err := consumerClient.Patch(ctx, grant, client.Apply, //nolint:staticcheck // SA1019: migrate to client.Apply() with ApplyConfiguration in a follow-up
 			client.FieldOwner(quotaGrantFieldManager),
 			client.ForceOwnership,
 		); err != nil {
@@ -208,4 +241,283 @@ func (r *ServiceEntitlementReconciler) pruneQuotaGrants(
 func resourceGrantName(serviceName, consumerProject, limitName string) string {
 	sum := sha256.Sum256([]byte(serviceName + "/" + consumerProject + "/" + limitName))
 	return "rg-" + hex.EncodeToString(sum[:8])
+}
+
+// offerIncludesService reports whether any snapshotted ServicePricing on the
+// Offer covers the given canonical service name (Service.spec.serviceName).
+func offerIncludesService(offer *billingv1alpha1.Offer, serviceName string) bool {
+	if offer == nil || serviceName == "" {
+		return false
+	}
+	for i := range offer.Spec.ServicePricings {
+		if offer.Spec.ServicePricings[i].Spec.ServiceRef == serviceName {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceEntitledViaBilling reports whether the project's active billing
+// account has a Ready BillingEntitlement whose Offer snapshot includes
+// serviceName. Transient API errors are returned so callers requeue rather
+// than prune grants on a flaky read. A definitive "not entitled" (no binding,
+// no Ready BE, offer missing the service) returns (false, nil).
+func (r *ServiceEntitlementReconciler) serviceEntitledViaBilling(
+	ctx context.Context,
+	consumerProject string,
+	serviceName string,
+) (bool, error) {
+	binding, err := r.activeBillingAccountBinding(ctx, consumerProject)
+	if err != nil {
+		return false, err
+	}
+	if binding == nil {
+		return false, nil
+	}
+
+	be, err := r.readyBillingEntitlement(ctx, binding.Namespace, binding.Spec.BillingAccountRef.Name)
+	if err != nil {
+		return false, err
+	}
+	if be == nil {
+		return false, nil
+	}
+
+	var offer billingv1alpha1.Offer
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: be.Spec.OfferRef.Name}, &offer); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get Offer %q for BillingEntitlement %q: %w",
+			be.Spec.OfferRef.Name, be.Name, err)
+	}
+
+	return offerIncludesService(&offer, serviceName), nil
+}
+
+// activeBillingAccountBinding returns the Active BillingAccountBinding for
+// the project, or nil when none exists.
+func (r *ServiceEntitlementReconciler) activeBillingAccountBinding(
+	ctx context.Context,
+	consumerProject string,
+) (*billingv1alpha1.BillingAccountBinding, error) {
+	var list billingv1alpha1.BillingAccountBindingList
+	if err := r.rootClient.List(ctx, &list,
+		client.MatchingFields{bindingProjectRefIndex: consumerProject},
+	); err != nil {
+		return nil, fmt.Errorf("list BillingAccountBindings for project %q: %w", consumerProject, err)
+	}
+	for i := range list.Items {
+		b := &list.Items[i]
+		if b.Status.Phase == billingv1alpha1.BillingAccountBindingPhaseActive &&
+			b.DeletionTimestamp.IsZero() {
+			return b, nil
+		}
+	}
+	return nil, nil
+}
+
+// readyBillingEntitlement returns the Ready BillingEntitlement for the
+// billing account in namespace, or nil when none is Ready.
+func (r *ServiceEntitlementReconciler) readyBillingEntitlement(
+	ctx context.Context,
+	namespace, billingAccountName string,
+) (*billingv1alpha1.BillingEntitlement, error) {
+	var list billingv1alpha1.BillingEntitlementList
+	if err := r.rootClient.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list BillingEntitlements in %q: %w", namespace, err)
+	}
+	for i := range list.Items {
+		be := &list.Items[i]
+		if be.DeletionTimestamp.IsZero() &&
+			be.Spec.BillingAccountRef.Name == billingAccountName &&
+			apimeta.IsStatusConditionTrue(be.Status.Conditions, ConditionTypeReady) {
+			return be, nil
+		}
+	}
+	return nil, nil
+}
+
+// mapBillingEntitlementToServiceEntitlements enqueues ServiceEntitlements in
+// every project bound to the BillingEntitlement's billing account.
+func (r *ServiceEntitlementReconciler) mapBillingEntitlementToServiceEntitlements(
+	ctx context.Context,
+	be *billingv1alpha1.BillingEntitlement,
+) []mcreconcile.Request {
+	return r.enqueueServiceEntitlementsForBillingAccount(ctx, be.Namespace, be.Spec.BillingAccountRef.Name)
+}
+
+// mapBillingAccountBindingToServiceEntitlements enqueues ServiceEntitlements
+// in the binding's project when billing responsibility changes.
+func (r *ServiceEntitlementReconciler) mapBillingAccountBindingToServiceEntitlements(
+	ctx context.Context,
+	binding *billingv1alpha1.BillingAccountBinding,
+) []mcreconcile.Request {
+	return r.enqueueServiceEntitlementsForProject(ctx, binding.Spec.ProjectRef.Name)
+}
+
+// mapOfferToServiceEntitlements enqueues ServiceEntitlements for every project
+// whose BillingEntitlement references the Offer.
+func (r *ServiceEntitlementReconciler) mapOfferToServiceEntitlements(
+	ctx context.Context,
+	offer *billingv1alpha1.Offer,
+) []mcreconcile.Request {
+	var beList billingv1alpha1.BillingEntitlementList
+	if err := r.rootClient.List(ctx, &beList,
+		client.MatchingFields{billingEntitlementOfferIndex: offer.Name},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "list BillingEntitlements for Offer fan-out", "offer", offer.Name)
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var out []mcreconcile.Request
+	for i := range beList.Items {
+		be := &beList.Items[i]
+		reqs := r.enqueueServiceEntitlementsForBillingAccount(ctx, be.Namespace, be.Spec.BillingAccountRef.Name)
+		for _, req := range reqs {
+			key := string(req.ClusterName) + "/" + req.Namespace + "/" + req.Name
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// mapServiceConfigurationToServiceEntitlements enqueues ServiceEntitlements
+// for the service named by the configuration so quotaGating / quota limit
+// changes re-evaluate project grants.
+func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitlements(
+	ctx context.Context,
+	sc *servicesv1alpha1.ServiceConfiguration,
+) []mcreconcile.Request {
+	if sc.Spec.ServiceRef.Name == "" {
+		return nil
+	}
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "get Service for ServiceConfiguration fan-out",
+				"serviceConfiguration", sc.Name, "serviceRef", sc.Spec.ServiceRef.Name)
+		}
+		return nil
+	}
+	canonical := svc.Spec.ServiceName
+	if canonical == "" {
+		return nil
+	}
+
+	var projects resourcemanagerv1alpha1.ProjectList
+	if err := r.rootClient.List(ctx, &projects); err != nil {
+		log.FromContext(ctx).Error(err, "list Projects for ServiceConfiguration fan-out",
+			"serviceConfiguration", sc.Name)
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var out []mcreconcile.Request
+	for i := range projects.Items {
+		project := projects.Items[i].Name
+		if project == "" {
+			continue
+		}
+		cluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(project))
+		if err != nil {
+			continue
+		}
+		var list servicesv1alpha1.ServiceEntitlementList
+		if err := cluster.GetClient().List(ctx, &list,
+			client.MatchingFields{entitlementServiceNameIndex: canonical},
+		); err != nil {
+			log.FromContext(ctx).Error(err, "list ServiceEntitlements for ServiceConfiguration fan-out",
+				"project", project, "service", canonical)
+			continue
+		}
+		for j := range list.Items {
+			key := project + "/" + list.Items[j].Name
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, mcreconcile.Request{
+				Request: reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: list.Items[j].Name},
+				},
+				ClusterName: multicluster.ClusterName(project),
+			})
+		}
+	}
+	return out
+}
+
+// enqueueServiceEntitlementsForBillingAccount finds Active bindings for the
+// billing account and enqueues ServiceEntitlements in those projects.
+func (r *ServiceEntitlementReconciler) enqueueServiceEntitlementsForBillingAccount(
+	ctx context.Context,
+	namespace, billingAccountName string,
+) []mcreconcile.Request {
+	var bindings billingv1alpha1.BillingAccountBindingList
+	if err := r.rootClient.List(ctx, &bindings,
+		client.InNamespace(namespace),
+		client.MatchingFields{bindingBillingAccountRefIndex: billingAccountName},
+	); err != nil {
+		log.FromContext(ctx).Error(err, "list BillingAccountBindings for BE fan-out",
+			"namespace", namespace, "billingAccount", billingAccountName)
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var out []mcreconcile.Request
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		if b.Status.Phase != billingv1alpha1.BillingAccountBindingPhaseActive {
+			continue
+		}
+		project := b.Spec.ProjectRef.Name
+		if project == "" {
+			continue
+		}
+		if _, ok := seen[project]; ok {
+			continue
+		}
+		seen[project] = struct{}{}
+		out = append(out, r.enqueueServiceEntitlementsForProject(ctx, project)...)
+	}
+	return out
+}
+
+// enqueueServiceEntitlementsForProject lists ServiceEntitlements in the
+// project's virtual control plane and returns reconcile requests. Projects
+// that are not yet engaged are skipped.
+func (r *ServiceEntitlementReconciler) enqueueServiceEntitlementsForProject(
+	ctx context.Context,
+	project string,
+) []mcreconcile.Request {
+	logger := log.FromContext(ctx)
+	cluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(project))
+	if err != nil {
+		logger.V(1).Info("skipping ServiceEntitlement fan-out; project cluster not engaged",
+			"project", project, "err", err)
+		return nil
+	}
+
+	var list servicesv1alpha1.ServiceEntitlementList
+	if err := cluster.GetClient().List(ctx, &list); err != nil {
+		logger.Error(err, "list ServiceEntitlements for billing fan-out", "project", project)
+		return nil
+	}
+
+	out := make([]mcreconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		out = append(out, mcreconcile.Request{
+			Request: reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: list.Items[i].Name},
+			},
+			ClusterName: multicluster.ClusterName(project),
+		})
+	}
+	return out
 }
