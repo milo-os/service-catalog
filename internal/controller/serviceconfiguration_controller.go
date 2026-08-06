@@ -35,17 +35,33 @@ const (
 	// ServiceConfiguration spec.
 	ConditionTypeChargeFanOutHealthy = "ChargeFanOutHealthy"
 
-	reasonServiceConfigurationReady = "ServiceConfigurationReady"
-	reasonServiceRefNotFound        = "ServiceRefNotFound"
-	reasonBillingFanOutFailed       = "BillingFanOutFailed"
-	reasonBillingFanOutHealthy      = "BillingFanOutHealthy"
-	reasonBillingFanOutSkipped      = "BillingFanOutSkipped"
-	reasonQuotaFanOutFailed         = "QuotaFanOutFailed"
-	reasonQuotaFanOutHealthy        = "QuotaFanOutHealthy"
-	reasonQuotaFanOutSkipped        = "QuotaFanOutSkipped"
-	reasonChargeFanOutFailed        = "ChargeFanOutFailed"
-	reasonChargeFanOutHealthy       = "ChargeFanOutHealthy"
-	reasonChargeFanOutSkipped       = "ChargeFanOutSkipped"
+	// ConditionTypeConsumerPortalFanOutHealthy surfaces whether the
+	// cloud-portal plugin fan-out is up to date with the current
+	// ServiceConfiguration spec.
+	ConditionTypeConsumerPortalFanOutHealthy = "ConsumerPortalFanOutHealthy"
+
+	// ConditionTypeProviderPortalFanOutHealthy surfaces whether the
+	// staff-portal plugin fan-out is up to date with the current
+	// ServiceConfiguration spec.
+	ConditionTypeProviderPortalFanOutHealthy = "ProviderPortalFanOutHealthy"
+
+	reasonServiceConfigurationReady   = "ServiceConfigurationReady"
+	reasonServiceRefNotFound          = "ServiceRefNotFound"
+	reasonBillingFanOutFailed         = "BillingFanOutFailed"
+	reasonBillingFanOutHealthy        = "BillingFanOutHealthy"
+	reasonBillingFanOutSkipped        = "BillingFanOutSkipped"
+	reasonQuotaFanOutFailed           = "QuotaFanOutFailed"
+	reasonQuotaFanOutHealthy          = "QuotaFanOutHealthy"
+	reasonQuotaFanOutSkipped          = "QuotaFanOutSkipped"
+	reasonChargeFanOutFailed          = "ChargeFanOutFailed"
+	reasonChargeFanOutHealthy         = "ChargeFanOutHealthy"
+	reasonChargeFanOutSkipped         = "ChargeFanOutSkipped"
+	reasonConsumerPortalFanOutFailed  = "ConsumerPortalFanOutFailed"
+	reasonConsumerPortalFanOutHealthy = "ConsumerPortalFanOutHealthy"
+	reasonConsumerPortalFanOutSkipped = "ConsumerPortalFanOutSkipped"
+	reasonProviderPortalFanOutFailed  = "ProviderPortalFanOutFailed"
+	reasonProviderPortalFanOutHealthy = "ProviderPortalFanOutHealthy"
+	reasonProviderPortalFanOutSkipped = "ProviderPortalFanOutSkipped"
 )
 
 // ServiceConfigurationReconciler reconciles a ServiceConfiguration
@@ -55,10 +71,11 @@ const (
 // deleted.
 type ServiceConfigurationReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	BillingFanOut *BillingFanOut
-	QuotaFanOut   *QuotaFanOut
-	ChargeFanOut  *ChargeFanOut
+	Scheme              *runtime.Scheme
+	BillingFanOut       *BillingFanOut
+	QuotaFanOut         *QuotaFanOut
+	ChargeFanOut        *ChargeFanOut
+	UserInterfaceFanOut *UserInterfaceFanOut
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch;create;update;patch;delete
@@ -66,6 +83,7 @@ type ServiceConfigurationReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=meterdefinitions;monitoredresourcetypes;servicepricings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceregistrations;claimcreationpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=portal.miloapis.com,resources=consumerportalplugins;providerportalplugins,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -124,6 +142,20 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 					Reason:             reasonServiceRefNotFound,
 					Message:            fanOutMsg,
 				},
+				metav1.Condition{
+					Type:               ConditionTypeConsumerPortalFanOutHealthy,
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: sc.Generation,
+					Reason:             reasonServiceRefNotFound,
+					Message:            fanOutMsg,
+				},
+				metav1.Condition{
+					Type:               ConditionTypeProviderPortalFanOutHealthy,
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: sc.Generation,
+					Reason:             reasonServiceRefNotFound,
+					Message:            fanOutMsg,
+				},
 			)
 		}
 		return ctrl.Result{}, fmt.Errorf("fetch referenced Service %q: %w", sc.Spec.ServiceRef.Name, err)
@@ -147,6 +179,13 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	}
 	chargeFanOutCondition := desiredChargeFanOutCondition(&sc, chargeFanOutErr)
 
+	var userInterfaceFanOutErr error
+	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
+		userInterfaceFanOutErr = r.UserInterfaceFanOut.Reconcile(ctx, &sc)
+	}
+	consumerPortalFanOutCondition := desiredConsumerPortalFanOutCondition(&sc, userInterfaceFanOutErr)
+	providerPortalFanOutCondition := desiredProviderPortalFanOutCondition(&sc, userInterfaceFanOutErr)
+
 	readyCondition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		ObservedGeneration: sc.Generation,
@@ -165,15 +204,19 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonChargeFanOutFailed
 		readyCondition.Message = chargeFanOutCondition.Message
+	case userInterfaceFanOutErr != nil:
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = reasonConsumerPortalFanOutFailed
+		readyCondition.Message = consumerPortalFanOutCondition.Message
 	default:
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
-		readyCondition.Message = "Service configuration is ready; billing, charges, and quota are set up."
+		readyCondition.Message = "Service configuration is ready; billing, charges, quota, and portal plugins are set up."
 	}
 
 	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName,
 		readyCondition, billingFanOutCondition, quotaFanOutCondition,
-		chargeFanOutCondition,
+		chargeFanOutCondition, consumerPortalFanOutCondition, providerPortalFanOutCondition,
 	); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -212,6 +255,9 @@ func (r *ServiceConfigurationReconciler) reconcileDelete(
 	}
 	if err := r.ChargeFanOut.Cleanup(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cleanup charge objects: %w", err)
+	}
+	if err := r.UserInterfaceFanOut.Cleanup(ctx, sc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cleanup portal plugin objects: %w", err)
 	}
 	controllerutil.RemoveFinalizer(sc, serviceConfigurationFinalizer)
 	if err := r.Update(ctx, sc); err != nil {
@@ -272,6 +318,8 @@ func serviceConfigurationStatusNeedsUpdate(current, desired *servicesv1alpha1.Se
 		ConditionTypeBillingFanOutHealthy,
 		ConditionTypeQuotaFanOutHealthy,
 		ConditionTypeChargeFanOutHealthy,
+		ConditionTypeConsumerPortalFanOutHealthy,
+		ConditionTypeProviderPortalFanOutHealthy,
 		ConditionTypePublished,
 	} {
 		if !conditionsEqual(current.Conditions, desired.Conditions, t) {
@@ -350,6 +398,52 @@ func desiredChargeFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err
 	return c
 }
 
+func desiredConsumerPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
+	c := metav1.Condition{
+		Type:               ConditionTypeConsumerPortalFanOutHealthy,
+		ObservedGeneration: sc.Generation,
+	}
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft || sc.Spec.UserInterface == nil || sc.Spec.UserInterface.Consumer == nil {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonConsumerPortalFanOutSkipped
+		c.Message = "No cloud-portal plugin declared, or setup is on hold while this configuration is still a draft."
+		return c
+	}
+	if err != nil {
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonConsumerPortalFanOutFailed
+		c.Message = "Couldn't finish registering this service's cloud-portal plugin; the system will keep retrying."
+	} else {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonConsumerPortalFanOutHealthy
+		c.Message = "This service's cloud-portal plugin is registered."
+	}
+	return c
+}
+
+func desiredProviderPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
+	c := metav1.Condition{
+		Type:               ConditionTypeProviderPortalFanOutHealthy,
+		ObservedGeneration: sc.Generation,
+	}
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft || sc.Spec.UserInterface == nil || sc.Spec.UserInterface.Provider == nil {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonProviderPortalFanOutSkipped
+		c.Message = "No staff-portal plugin declared, or setup is on hold while this configuration is still a draft."
+		return c
+	}
+	if err != nil {
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonProviderPortalFanOutFailed
+		c.Message = "Couldn't finish registering this service's staff-portal plugin; the system will keep retrying."
+	} else {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonProviderPortalFanOutHealthy
+		c.Message = "This service's staff-portal plugin is registered."
+	}
+	return c
+}
+
 // SetupWithManager wires the reconciler into the manager. Client, Scheme,
 // and fan-outs are populated from the manager if not already set so
 // tests can inject fakes without re-wiring.
@@ -375,6 +469,12 @@ func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	if r.ChargeFanOut == nil {
 		r.ChargeFanOut = &ChargeFanOut{
 			Client: mgr.GetClient(),
+		}
+	}
+	if r.UserInterfaceFanOut == nil {
+		r.UserInterfaceFanOut = &UserInterfaceFanOut{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).

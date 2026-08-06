@@ -60,6 +60,19 @@ rules:
   - list
   - watch
 - apiGroups:
+  - portal.miloapis.com
+  resources:
+  - consumerportalplugins
+  - providerportalplugins
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - quota.miloapis.com
   resources:
   - claimcreationpolicies
