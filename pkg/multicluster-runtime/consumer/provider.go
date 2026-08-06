@@ -725,6 +725,10 @@ func (p *Provider) reconcileSuspension(ctx context.Context, project string, cons
 				return err
 			}
 
+			p.log.Info("suspension signal mismatch, dispatching hooks",
+				"consumerProject", project, "consumer", sc.Name,
+				"signalSuspended", signalSuspended, "confirmedPaused", confirmedPaused)
+
 			before := sc.DeepCopy()
 			if signalSuspended {
 				if err := p.runSuspends(ctx, cl, project); err != nil {
@@ -752,8 +756,10 @@ func (p *Provider) reconcileSuspension(ctx context.Context, project string, cons
 			if err := p.providerClient.Status().Patch(ctx, sc, client.MergeFrom(before), client.FieldOwner(pausedConditionFieldManager)); err != nil {
 				return fmt.Errorf("failed to patch ServiceConsumer %q Paused condition: %w", sc.Name, err)
 			}
+
+			p.log.Info("suspension hooks completed, Paused condition updated",
+				"consumerProject", project, "consumer", sc.Name, "paused", signalSuspended)
 		}
 	}
 	return nil
 }
-
