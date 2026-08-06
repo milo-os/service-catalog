@@ -18,12 +18,15 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -76,7 +79,11 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourcegrants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingaccountbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch
+// +kubebuilder:rbac:groups=billing.miloapis.com,resources=offers,verbs=get;list;watch
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -562,6 +569,12 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 // WithEngageWithProviderClusters(true) — and *not* WithEngageWithLocalCluster —
 // because ServiceEntitlements live in project virtual control planes, never
 // the root cluster.
+//
+// BillingEntitlement quota gating also depends on BillingAccountBinding,
+// BillingEntitlement, and Offer objects on the root cluster. Those are
+// watched via WatchesRawSource against rootMgr's cache so map funcs can set
+// ClusterName to the affected project (mchandler.TypedEnqueueRequestsFromMapFunc
+// would overwrite it with the local cluster name).
 func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
 	r.Manager = mcMgr
@@ -614,8 +627,72 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 		return fmt.Errorf("failed to index ServiceConfiguration by spec.serviceRef.name: %w", err)
 	}
 
+	// Billing indexes for quota gating (project → binding → BA → BE → Offer).
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&billingv1alpha1.BillingAccountBinding{},
+		bindingProjectRefIndex,
+		func(obj client.Object) []string {
+			b := obj.(*billingv1alpha1.BillingAccountBinding)
+			if b.Spec.ProjectRef.Name == "" {
+				return nil
+			}
+			return []string{b.Spec.ProjectRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index BillingAccountBinding by %s: %w", bindingProjectRefIndex, err)
+	}
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&billingv1alpha1.BillingAccountBinding{},
+		bindingBillingAccountRefIndex,
+		func(obj client.Object) []string {
+			b := obj.(*billingv1alpha1.BillingAccountBinding)
+			if b.Spec.BillingAccountRef.Name == "" {
+				return nil
+			}
+			return []string{b.Spec.BillingAccountRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index BillingAccountBinding by %s: %w", bindingBillingAccountRefIndex, err)
+	}
+	if err := rootMgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&billingv1alpha1.BillingEntitlement{},
+		billingEntitlementOfferIndex,
+		func(obj client.Object) []string {
+			be := obj.(*billingv1alpha1.BillingEntitlement)
+			if be.Spec.OfferRef.Name == "" {
+				return nil
+			}
+			return []string{be.Spec.OfferRef.Name}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index BillingEntitlement by %s: %w", billingEntitlementOfferIndex, err)
+	}
+
 	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&billingv1alpha1.BillingEntitlement{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingEntitlementToServiceEntitlements),
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&billingv1alpha1.BillingAccountBinding{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingAccountBindingToServiceEntitlements),
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&billingv1alpha1.Offer{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapOfferToServiceEntitlements),
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.ServiceConfiguration{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceConfigurationToServiceEntitlements),
+		)).
 		Complete(r)
 }

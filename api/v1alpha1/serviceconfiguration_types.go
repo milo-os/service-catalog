@@ -74,6 +74,17 @@ type ServiceConfigurationSpec struct {
 	// +listMapKey=name
 	Metrics []MetricSpec `json:"metrics,omitempty"`
 
+	// Charges declares Usage, OneTime, and Recurring charges for this
+	// service. Fans out to ServicePricing resources distinguished by
+	// chargeType. Usage charges reference metrics by name; metrics
+	// themselves stay telemetry/quota-only.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=64
+	// +listType=map
+	// +listMapKey=name
+	Charges []ServiceChargeSpec `json:"charges,omitempty"`
+
 	// Billing declares routing from metrics to monitored resource types.
 	// Fans out into MeterDefinition billing CRDs.
 	//
@@ -95,6 +106,15 @@ type ServiceConfigurationSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Locations *ServiceLocationConfig `json:"locations,omitempty"`
+
+	// DefaultOffer is the Offer name applied to new BillingAccounts.
+	// Typically set only on the billing.miloapis.com ServiceConfiguration.
+	// When set, the referenced Offer must exist, have launchStage GA, and
+	// carry a non-empty servicePricings snapshot.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	DefaultOffer string `json:"defaultOffer,omitempty"`
 }
 
 // ServiceReference identifies the Service a ServiceConfiguration applies
@@ -267,6 +287,13 @@ type ServiceBillingConfig struct {
 	// +listType=map
 	// +listMapKey=monitoredResourceType
 	ConsumerDestinations []BillingConsumerDestination `json:"consumerDestinations,omitempty"`
+
+	// QuotaGating controls whether quota for this service is gated on the
+	// account's active BillingEntitlement Offer.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=OrganizationDefault
+	QuotaGating QuotaGatingMode `json:"quotaGating,omitempty"`
 }
 
 // BillingConsumerDestination routes a set of metrics to a single monitored

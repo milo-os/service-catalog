@@ -30,6 +30,11 @@ const (
 	// fan-out is up to date with the current ServiceConfiguration spec.
 	ConditionTypeQuotaFanOutHealthy = "QuotaFanOutHealthy"
 
+	// ConditionTypeChargeFanOutHealthy surfaces whether the charge
+	// fan-out (Usage/OneTime/Recurring) is up to date with the current
+	// ServiceConfiguration spec.
+	ConditionTypeChargeFanOutHealthy = "ChargeFanOutHealthy"
+
 	reasonServiceConfigurationReady = "ServiceConfigurationReady"
 	reasonServiceRefNotFound        = "ServiceRefNotFound"
 	reasonBillingFanOutFailed       = "BillingFanOutFailed"
@@ -38,25 +43,28 @@ const (
 	reasonQuotaFanOutFailed         = "QuotaFanOutFailed"
 	reasonQuotaFanOutHealthy        = "QuotaFanOutHealthy"
 	reasonQuotaFanOutSkipped        = "QuotaFanOutSkipped"
+	reasonChargeFanOutFailed        = "ChargeFanOutFailed"
+	reasonChargeFanOutHealthy       = "ChargeFanOutHealthy"
+	reasonChargeFanOutSkipped       = "ChargeFanOutSkipped"
 )
 
 // ServiceConfigurationReconciler reconciles a ServiceConfiguration
-// object. It owns the billing fan-out: changes to the document
-// materialize as billing.miloapis.com/MeterDefinition and
-// billing.miloapis.com/MonitoredResourceType objects via server-side
-// apply, and previously-managed objects no longer in the desired set are
+// object. It owns the billing, charge, and quota fan-outs: changes to
+// the document materialize as downstream CRDs via server-side apply,
+// and previously-managed objects no longer in the desired set are
 // deleted.
 type ServiceConfigurationReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	BillingFanOut *BillingFanOut
 	QuotaFanOut   *QuotaFanOut
+	ChargeFanOut  *ChargeFanOut
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations/finalizers,verbs=update
-// +kubebuilder:rbac:groups=billing.miloapis.com,resources=meterdefinitions;monitoredresourcetypes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=billing.miloapis.com,resources=meterdefinitions;monitoredresourcetypes;servicepricings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceregistrations;claimcreationpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -109,6 +117,13 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 					Reason:             reasonServiceRefNotFound,
 					Message:            fanOutMsg,
 				},
+				metav1.Condition{
+					Type:               ConditionTypeChargeFanOutHealthy,
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: sc.Generation,
+					Reason:             reasonServiceRefNotFound,
+					Message:            fanOutMsg,
+				},
 			)
 		}
 		return ctrl.Result{}, fmt.Errorf("fetch referenced Service %q: %w", sc.Spec.ServiceRef.Name, err)
@@ -126,26 +141,40 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	}
 	quotaFanOutCondition := desiredQuotaFanOutCondition(&sc, quotaFanOutErr)
 
+	var chargeFanOutErr error
+	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
+		chargeFanOutErr = r.ChargeFanOut.Reconcile(ctx, &sc)
+	}
+	chargeFanOutCondition := desiredChargeFanOutCondition(&sc, chargeFanOutErr)
+
 	readyCondition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		ObservedGeneration: sc.Generation,
 	}
 
-	if billingFanOutErr != nil {
+	switch {
+	case billingFanOutErr != nil:
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonBillingFanOutFailed
 		readyCondition.Message = billingFanOutCondition.Message
-	} else if quotaFanOutErr != nil {
+	case quotaFanOutErr != nil:
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonQuotaFanOutFailed
 		readyCondition.Message = quotaFanOutCondition.Message
-	} else {
+	case chargeFanOutErr != nil:
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = reasonChargeFanOutFailed
+		readyCondition.Message = chargeFanOutCondition.Message
+	default:
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
-		readyCondition.Message = "Service configuration is ready; billing and quota are set up."
+		readyCondition.Message = "Service configuration is ready; billing, charges, and quota are set up."
 	}
 
-	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName, readyCondition, billingFanOutCondition, quotaFanOutCondition); err != nil {
+	if err := r.writeStatusConditions(ctx, &sc, svc.Spec.ServiceName,
+		readyCondition, billingFanOutCondition, quotaFanOutCondition,
+		chargeFanOutCondition,
+	); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -154,6 +183,9 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	}
 	if quotaFanOutErr != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", quotaFanOutErr)
+	}
+	if chargeFanOutErr != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", chargeFanOutErr)
 	}
 
 	logger.Info("reconciled serviceconfiguration",
@@ -178,6 +210,9 @@ func (r *ServiceConfigurationReconciler) reconcileDelete(
 	if err := r.QuotaFanOut.Cleanup(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("cleanup quota objects: %w", err)
 	}
+	if err := r.ChargeFanOut.Cleanup(ctx, sc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cleanup charge objects: %w", err)
+	}
 	controllerutil.RemoveFinalizer(sc, serviceConfigurationFinalizer)
 	if err := r.Update(ctx, sc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
@@ -201,6 +236,8 @@ func (r *ServiceConfigurationReconciler) writeStatusConditions(
 		apimeta.SetStatusCondition(&newStatus.Conditions, c)
 	}
 	apimeta.SetStatusCondition(&newStatus.Conditions, desiredPublishedCondition(sc.Spec.Phase, sc.Generation))
+	// Drop the legacy PricingFanOutHealthy condition on upgrade.
+	apimeta.RemoveStatusCondition(&newStatus.Conditions, "PricingFanOutHealthy")
 	if sc.Spec.Phase == servicesv1alpha1.PhasePublished && newStatus.PublishedAt == nil {
 		now := metav1.Now()
 		newStatus.PublishedAt = &now
@@ -226,7 +263,17 @@ func serviceConfigurationStatusNeedsUpdate(current, desired *servicesv1alpha1.Se
 	if (current.PublishedAt == nil) != (desired.PublishedAt == nil) {
 		return true
 	}
-	for _, t := range []string{ConditionTypeReady, ConditionTypeBillingFanOutHealthy, ConditionTypeQuotaFanOutHealthy, ConditionTypePublished} {
+	// Detect removals such as the legacy PricingFanOutHealthy condition.
+	if len(current.Conditions) != len(desired.Conditions) {
+		return true
+	}
+	for _, t := range []string{
+		ConditionTypeReady,
+		ConditionTypeBillingFanOutHealthy,
+		ConditionTypeQuotaFanOutHealthy,
+		ConditionTypeChargeFanOutHealthy,
+		ConditionTypePublished,
+	} {
 		if !conditionsEqual(current.Conditions, desired.Conditions, t) {
 			return true
 		}
@@ -280,8 +327,31 @@ func desiredQuotaFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err 
 	return c
 }
 
+func desiredChargeFanOutCondition(sc *servicesv1alpha1.ServiceConfiguration, err error) metav1.Condition {
+	c := metav1.Condition{
+		Type:               ConditionTypeChargeFanOutHealthy,
+		ObservedGeneration: sc.Generation,
+	}
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonChargeFanOutSkipped
+		c.Message = "Fixed-charge setup is on hold while this configuration is still a draft."
+		return c
+	}
+	if err != nil {
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonChargeFanOutFailed
+		c.Message = "Couldn't finish setting up fixed charges for this service; the system will keep retrying."
+	} else {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonChargeFanOutHealthy
+		c.Message = "Fixed charges are set up for this service."
+	}
+	return c
+}
+
 // SetupWithManager wires the reconciler into the manager. Client, Scheme,
-// and BillingFanOut are populated from the manager if not already set so
+// and fan-outs are populated from the manager if not already set so
 // tests can inject fakes without re-wiring.
 func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
@@ -300,6 +370,11 @@ func (r *ServiceConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 			Client:     mgr.GetClient(),
 			Scheme:     mgr.GetScheme(),
 			RESTMapper: mgr.GetRESTMapper(),
+		}
+	}
+	if r.ChargeFanOut == nil {
+		r.ChargeFanOut = &ChargeFanOut{
+			Client: mgr.GetClient(),
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).

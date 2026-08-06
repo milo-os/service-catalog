@@ -15,6 +15,9 @@ status:
     - type: QuotaFanOutHealthy
       status: "True"
       reason: QuotaFanOutHealthy
+    - type: ChargeFanOutHealthy
+      status: "True"
+      reason: ChargeFanOutHealthy
     - type: Published
       status: "True"
   (publishedAt != null): true
