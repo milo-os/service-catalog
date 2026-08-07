@@ -97,6 +97,14 @@ type ServiceConfigurationSpec struct {
 	// +kubebuilder:validation:Optional
 	Quota *ServiceQuotaConfig `json:"quota,omitempty"`
 
+	// UserInterface declares this service's portal plugin(s). Fans out into
+	// ConsumerPortalPlugin (cloud-portal) and/or ProviderPortalPlugin
+	// (staff-portal) portal.miloapis.com CRDs. A service may publish to
+	// either portal, both, or neither.
+	//
+	// +kubebuilder:validation:Optional
+	UserInterface *UserInterfaceSpec `json:"userInterface,omitempty"`
+
 	// Locations declares which location classes this service version
 	// supports. The LocationBindingReconciler uses it together with
 	// Location readiness and ServiceAvailability to decide which locations
@@ -437,6 +445,107 @@ type QuotaMetricRuleSelector struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Kind string `json:"kind"`
+}
+
+// UserInterfaceSpec declares a service's portal plugin(s). At least one of
+// Consumer/Provider is expected to be set for the fan-out to do anything;
+// both may be set to publish to both portals from one ServiceConfiguration.
+type UserInterfaceSpec struct {
+	// Consumer declares a plugin for cloud-portal, the customer-facing
+	// portal. Fans out to a ConsumerPortalPlugin.
+	//
+	// +kubebuilder:validation:Optional
+	Consumer *ConsumerUserInterfaceSpec `json:"consumer,omitempty"`
+
+	// Provider declares a plugin for staff-portal, the internal operator
+	// portal. Fans out to a ProviderPortalPlugin.
+	//
+	// +kubebuilder:validation:Optional
+	Provider *ProviderUserInterfaceSpec `json:"provider,omitempty"`
+}
+
+// PluginAssets locates a plugin's built Module Federation bundle. Mirrors
+// portal.miloapis.com's PluginAssets shape (kept as a separate local type,
+// not imported from milo, so this CRD's schema stays self-contained — the
+// same convention QuotaConsumerType already follows relative to
+// quota.miloapis.com's ConsumerType); the fan-out controller maps between
+// the two when building the downstream CRD.
+type PluginAssets struct {
+	// BaseURL is the HTTPS origin, operated by this service, serving the
+	// plugin's built assets (remoteEntry.js, chunks, and the manifest at
+	// ManifestPath).
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https://`
+	BaseURL string `json:"baseURL"`
+
+	// ManifestPath is the path to plugin-manifest.json under BaseURL.
+	// Defaults to "/plugin-manifest.json".
+	//
+	// +kubebuilder:validation:Optional
+	ManifestPath string `json:"manifestPath,omitempty"`
+
+	// CABundle is an optional PEM-encoded CA certificate bundle for an
+	// internal CA fronting BaseURL.
+	//
+	// +kubebuilder:validation:Optional
+	CABundle string `json:"caBundle,omitempty"`
+}
+
+// PluginVisibility gates whether cloud-portal shows a plugin's extensions
+// for a given project. No provider equivalent — staff-portal has no
+// per-project entitlement concept.
+type PluginVisibility struct {
+	// Entitlement controls project-level gating: "Required" means a project
+	// must have an Active ServiceEntitlement for this service to see the
+	// plugin; "None" means every project sees it.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=Required;None
+	Entitlement string `json:"entitlement"`
+
+	// FeatureFlag, when set, additionally gates visibility on an OpenFeature
+	// flag key evaluated by cloud-portal.
+	//
+	// +kubebuilder:validation:Optional
+	FeatureFlag string `json:"featureFlag,omitempty"`
+}
+
+// ConsumerUserInterfaceSpec declares a cloud-portal plugin. Slug,
+// DisplayName, and Deprecated are not declared here — the fan-out derives
+// them from the resolved Service and this ServiceConfiguration's own
+// spec.phase, the same way other fan-outs resolve serviceName rather than
+// duplicating it per-block.
+type ConsumerUserInterfaceSpec struct {
+	// Suspend is a platform-operator kill switch. A suspended plugin is
+	// never served, regardless of manifest health.
+	//
+	// +kubebuilder:validation:Optional
+	Suspend bool `json:"suspend,omitempty"`
+
+	// Assets locates the plugin's built Module Federation bundle.
+	//
+	// +kubebuilder:validation:Required
+	Assets PluginAssets `json:"assets"`
+
+	// Visibility gates whether a project sees this plugin's extensions.
+	//
+	// +kubebuilder:validation:Required
+	Visibility PluginVisibility `json:"visibility"`
+}
+
+// ProviderUserInterfaceSpec declares a staff-portal plugin.
+type ProviderUserInterfaceSpec struct {
+	// Suspend is a platform-operator kill switch. A suspended plugin is
+	// never served, regardless of manifest health.
+	//
+	// +kubebuilder:validation:Optional
+	Suspend bool `json:"suspend,omitempty"`
+
+	// Assets locates the plugin's built Module Federation bundle.
+	//
+	// +kubebuilder:validation:Required
+	Assets PluginAssets `json:"assets"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

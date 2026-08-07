@@ -699,6 +699,110 @@ spec:
                 required:
                 - name
                 type: object
+              userInterface:
+                description: |-
+                  UserInterface declares this service's portal plugin(s). Fans out into
+                  ConsumerPortalPlugin (cloud-portal) and/or ProviderPortalPlugin
+                  (staff-portal) portal.miloapis.com CRDs. A service may publish to
+                  either portal, both, or neither.
+                properties:
+                  consumer:
+                    description: |-
+                      Consumer declares a plugin for cloud-portal, the customer-facing
+                      portal. Fans out to a ConsumerPortalPlugin.
+                    properties:
+                      assets:
+                        description: Assets locates the plugin's built Module Federation
+                          bundle.
+                        properties:
+                          baseURL:
+                            description: |-
+                              BaseURL is the HTTPS origin, operated by this service, serving the
+                              plugin's built assets (remoteEntry.js, chunks, and the manifest at
+                              ManifestPath).
+                            pattern: ^https://
+                            type: string
+                          caBundle:
+                            description: |-
+                              CABundle is an optional PEM-encoded CA certificate bundle for an
+                              internal CA fronting BaseURL.
+                            type: string
+                          manifestPath:
+                            description: |-
+                              ManifestPath is the path to plugin-manifest.json under BaseURL.
+                              Defaults to "/plugin-manifest.json".
+                            type: string
+                        required:
+                        - baseURL
+                        type: object
+                      suspend:
+                        description: |-
+                          Suspend is a platform-operator kill switch. A suspended plugin is
+                          never served, regardless of manifest health.
+                        type: boolean
+                      visibility:
+                        description: Visibility gates whether a project sees this
+                          plugin's extensions.
+                        properties:
+                          entitlement:
+                            description: |-
+                              Entitlement controls project-level gating: "Required" means a project
+                              must have an Active ServiceEntitlement for this service to see the
+                              plugin; "None" means every project sees it.
+                            enum:
+                            - Required
+                            - None
+                            type: string
+                          featureFlag:
+                            description: |-
+                              FeatureFlag, when set, additionally gates visibility on an OpenFeature
+                              flag key evaluated by cloud-portal.
+                            type: string
+                        required:
+                        - entitlement
+                        type: object
+                    required:
+                    - assets
+                    - visibility
+                    type: object
+                  provider:
+                    description: |-
+                      Provider declares a plugin for staff-portal, the internal operator
+                      portal. Fans out to a ProviderPortalPlugin.
+                    properties:
+                      assets:
+                        description: Assets locates the plugin's built Module Federation
+                          bundle.
+                        properties:
+                          baseURL:
+                            description: |-
+                              BaseURL is the HTTPS origin, operated by this service, serving the
+                              plugin's built assets (remoteEntry.js, chunks, and the manifest at
+                              ManifestPath).
+                            pattern: ^https://
+                            type: string
+                          caBundle:
+                            description: |-
+                              CABundle is an optional PEM-encoded CA certificate bundle for an
+                              internal CA fronting BaseURL.
+                            type: string
+                          manifestPath:
+                            description: |-
+                              ManifestPath is the path to plugin-manifest.json under BaseURL.
+                              Defaults to "/plugin-manifest.json".
+                            type: string
+                        required:
+                        - baseURL
+                        type: object
+                      suspend:
+                        description: |-
+                          Suspend is a platform-operator kill switch. A suspended plugin is
+                          never served, regardless of manifest health.
+                        type: boolean
+                    required:
+                    - assets
+                    type: object
+                type: object
               version:
                 description: |-
                   Version is an optional human-readable version string for this
