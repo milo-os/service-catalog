@@ -603,10 +603,11 @@ func validateServiceConfigurationNamePrefixes(
 }
 
 // validateServiceConfigurationPublishedImmutability rejects changes to
-// core identity fields on meters and monitored resource types that were
-// already present in the Published ServiceConfiguration. New entries
-// are allowed; entries removed while Published fall through to the
-// phase/removal semantics handled elsewhere.
+// core identity fields on meters, monitored resource types, and charges
+// that were already present in the Published ServiceConfiguration. New
+// entries are allowed. spec.defaultOffer is intentionally mutable on
+// Published so staff can switch the platform default Offer without
+// republishing the billing ServiceConfiguration.
 func validateServiceConfigurationPublishedImmutability(
 	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {
@@ -697,13 +698,6 @@ func validateServiceConfigurationPublishedImmutability(
 					"can't be changed once the configuration is published"))
 			}
 		}
-	}
-
-	if oldSC.Spec.DefaultOffer != newSC.Spec.DefaultOffer {
-		allErrs = append(allErrs, field.Forbidden(
-			field.NewPath("spec", "defaultOffer"),
-			"can't be changed once the configuration is published",
-		))
 	}
 
 	if oldSC.Spec.Quota != nil {

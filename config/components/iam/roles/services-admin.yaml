@@ -15,6 +15,7 @@ spec:
     - services.miloapis.com/services.delete
     - services.miloapis.com/serviceconfigurations.create
     - services.miloapis.com/serviceconfigurations.update
+    - services.miloapis.com/serviceconfigurations.patch
     - services.miloapis.com/serviceconfigurations.delete
     - services.miloapis.com/serviceavailabilities.create
     - services.miloapis.com/serviceavailabilities.update
