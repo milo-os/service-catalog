@@ -4,7 +4,12 @@ package v1alpha1
 
 // PricingRateEntry is a single Usage rate. Exactly one of Flat or Tiered
 // must be set. An optional Match filters the rate by dimension value; the
-// last unmatched entry is the default catch-all.
+// last unmatched entry is the default catch-all in Milo.
+//
+// Note: the Amberflo provider cannot materialize mixed match + unmatched
+// catch-all rates today (DimensionMatrixNode has no default bucket). When
+// targeting that backend, price every dimension value explicitly — use a
+// sentinel match value the meter emits (e.g. "other") for fallbacks.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.flat) != has(self.tiered)",message="exactly one of flat or tiered must be set"
 type PricingRateEntry struct {
