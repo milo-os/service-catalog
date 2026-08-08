@@ -134,6 +134,7 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 		return "", fmt.Errorf("set controller ref on ConsumerPortalPlugin %q: %w", slug, err)
 	}
+	//nolint:staticcheck // client.Apply deprecated; portal plugins are applied as unstructured with no generated ApplyConfiguration.
 	if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(portalFieldManagerName), client.ForceOwnership); err != nil {
 		return "", fmt.Errorf("apply ConsumerPortalPlugin %q: %w", slug, err)
 	}
@@ -171,6 +172,7 @@ func (f *UserInterfaceFanOut) applyProviderPlugin(
 	if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 		return "", fmt.Errorf("set controller ref on ProviderPortalPlugin %q: %w", slug, err)
 	}
+	//nolint:staticcheck // client.Apply deprecated; portal plugins are applied as unstructured with no generated ApplyConfiguration.
 	if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(portalFieldManagerName), client.ForceOwnership); err != nil {
 		return "", fmt.Errorf("apply ProviderPortalPlugin %q: %w", slug, err)
 	}
