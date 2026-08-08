@@ -17,6 +17,13 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
+// ServiceConfigurationCaller carries admission identity used to gate
+// portal-owned fields (spec.charges, spec.defaultOffer). Username is the
+// Kubernetes UserInfo.Username from the admission request.
+type ServiceConfigurationCaller struct {
+	Username string
+}
+
 // ValidateServiceConfigurationCreate validates a ServiceConfiguration on
 // creation. Runs intra-document consistency checks plus the Service
 // lookup for name-prefix enforcement.
@@ -25,6 +32,7 @@ func ValidateServiceConfigurationCreate(
 	c client.Reader,
 	sc *servicesv1alpha1.ServiceConfiguration,
 	isDryRun bool,
+	caller ServiceConfigurationCaller,
 ) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -36,6 +44,7 @@ func ValidateServiceConfigurationCreate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
+	allErrs = append(allErrs, validatePortalOwnedFieldsCaller(nil, sc, caller)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
@@ -52,6 +61,7 @@ func ValidateServiceConfigurationUpdate(
 	c client.Reader,
 	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
 	isDryRun bool,
+	caller ServiceConfigurationCaller,
 ) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -63,6 +73,7 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
+	allErrs = append(allErrs, validatePortalOwnedFieldsCaller(oldSC, newSC, caller)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
@@ -598,6 +609,79 @@ func validateServiceConfigurationNamePrefixes(
 					prefix, prefix+"platform-fee"),
 			))
 		}
+	}
+	return allErrs
+}
+
+const serviceAccountUsernamePrefix = "system:serviceaccount:"
+
+// portalOwnedFieldsMessage explains why Flux / other SAs cannot set
+// charges or defaultOffer. Staff portal (interactive users) owns these
+// fields via merge-patch; they must stay out of GitOps manifests.
+const portalOwnedFieldsMessage = "spec.charges and spec.defaultOffer can only be changed by interactive users, not service accounts. Keep them out of Flux-managed manifests; staff-portal owns these fields."
+
+// isServiceAccountUsername reports whether username is a Kubernetes
+// service account identity (system:serviceaccount:<ns>:<name>).
+func isServiceAccountUsername(username string) bool {
+	return strings.HasPrefix(username, serviceAccountUsernamePrefix)
+}
+
+// portalOwnedFieldsPresent reports whether the ServiceConfiguration sets
+// charges or defaultOffer (create-time gate).
+func portalOwnedFieldsPresent(sc *servicesv1alpha1.ServiceConfiguration) bool {
+	if sc == nil {
+		return false
+	}
+	return len(sc.Spec.Charges) > 0 || sc.Spec.DefaultOffer != ""
+}
+
+// portalOwnedFieldsChanged reports whether charges or defaultOffer differ
+// between old and new (update-time gate). oldSC may be nil on create.
+func portalOwnedFieldsChanged(oldSC, newSC *servicesv1alpha1.ServiceConfiguration) bool {
+	if newSC == nil {
+		return false
+	}
+	if oldSC == nil {
+		return portalOwnedFieldsPresent(newSC)
+	}
+	if oldSC.Spec.DefaultOffer != newSC.Spec.DefaultOffer {
+		return true
+	}
+	return !apiequality.Semantic.DeepEqual(oldSC.Spec.Charges, newSC.Spec.Charges)
+}
+
+// validatePortalOwnedFieldsCaller rejects service-account callers (and
+// callers with an empty username) when they set or change spec.charges
+// or spec.defaultOffer. Interactive staff users remain allowed; RBAC
+// still decides who may update ServiceConfigurations at all.
+func validatePortalOwnedFieldsCaller(
+	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
+	caller ServiceConfigurationCaller,
+) field.ErrorList {
+	if !portalOwnedFieldsChanged(oldSC, newSC) {
+		return nil
+	}
+	if caller.Username != "" && !isServiceAccountUsername(caller.Username) {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+	// Attach the error to whichever portal-owned field is present/changed
+	// so API clients see a concrete path.
+	if oldSC == nil {
+		if len(newSC.Spec.Charges) > 0 {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "charges"), portalOwnedFieldsMessage))
+		}
+		if newSC.Spec.DefaultOffer != "" {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "defaultOffer"), portalOwnedFieldsMessage))
+		}
+		return allErrs
+	}
+	if !apiequality.Semantic.DeepEqual(oldSC.Spec.Charges, newSC.Spec.Charges) {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "charges"), portalOwnedFieldsMessage))
+	}
+	if oldSC.Spec.DefaultOffer != newSC.Spec.DefaultOffer {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "defaultOffer"), portalOwnedFieldsMessage))
 	}
 	return allErrs
 }

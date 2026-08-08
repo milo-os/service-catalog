@@ -131,8 +131,82 @@ func TestValidateServiceConfigurationUpdate_AllowsDefaultOfferSwitch(t *testing.
 	oldSC := publishedBillingSC("payg-v1")
 	newSC := publishedBillingSC("payg-v2")
 
-	errs := ValidateServiceConfigurationUpdate(context.Background(), c, oldSC, newSC, false)
+	errs := ValidateServiceConfigurationUpdate(
+		context.Background(), c, oldSC, newSC, false,
+		ServiceConfigurationCaller{Username: "matt@example.com"},
+	)
 	if len(errs) != 0 {
 		t.Fatalf("expected Published defaultOffer switch to succeed, got: %v", errs)
+	}
+}
+
+func TestValidatePortalOwnedFieldsCaller_RejectsServiceAccount(t *testing.T) {
+	oldSC := publishedBillingSC("payg-v1")
+	newSC := publishedBillingSC("payg-v2")
+
+	errs := validatePortalOwnedFieldsCaller(
+		oldSC, newSC,
+		ServiceConfigurationCaller{Username: "system:serviceaccount:flux-system:kustomize-controller"},
+	)
+	if len(errs) == 0 {
+		t.Fatal("expected Flux service account changing defaultOffer to be rejected")
+	}
+}
+
+func TestValidatePortalOwnedFieldsCaller_AllowsInteractiveUser(t *testing.T) {
+	oldSC := publishedBillingSC("payg-v1")
+	newSC := publishedBillingSC("payg-v2")
+
+	errs := validatePortalOwnedFieldsCaller(
+		oldSC, newSC,
+		ServiceConfigurationCaller{Username: "matt@example.com"},
+	)
+	if len(errs) != 0 {
+		t.Fatalf("expected interactive user to change defaultOffer, got: %v", errs)
+	}
+}
+
+func TestValidatePortalOwnedFieldsCaller_AllowsServiceAccountWhenUnchanged(t *testing.T) {
+	oldSC := publishedBillingSC("payg-v1")
+	newSC := publishedBillingSC("payg-v1")
+	newSC.Spec.Phase = servicesv1alpha1.PhasePublished
+
+	errs := validatePortalOwnedFieldsCaller(
+		oldSC, newSC,
+		ServiceConfigurationCaller{Username: "system:serviceaccount:flux-system:kustomize-controller"},
+	)
+	if len(errs) != 0 {
+		t.Fatalf("expected Flux to update unrelated fields while leaving portal fields alone, got: %v", errs)
+	}
+}
+
+func TestValidatePortalOwnedFieldsCaller_RejectsServiceAccountCreateWithCharges(t *testing.T) {
+	sc := publishedBillingSC("")
+	sc.Spec.Charges = []servicesv1alpha1.ServiceChargeSpec{{
+		Name:       "billing.miloapis.com/example",
+		ChargeType: servicesv1alpha1.ServiceChargeTypeOneTime,
+		Currency:   "USD",
+		OneTime: &servicesv1alpha1.OneTimeChargeOptions{
+			Amount:  "10",
+			Trigger: servicesv1alpha1.ChargeTriggerBillingAccountActivation,
+		},
+	}}
+
+	errs := validatePortalOwnedFieldsCaller(
+		nil, sc,
+		ServiceConfigurationCaller{Username: "system:serviceaccount:flux-system:kustomize-controller"},
+	)
+	if len(errs) == 0 {
+		t.Fatal("expected Flux create with charges to be rejected")
+	}
+}
+
+func TestValidatePortalOwnedFieldsCaller_RejectsEmptyUsername(t *testing.T) {
+	oldSC := publishedBillingSC("payg-v1")
+	newSC := publishedBillingSC("payg-v2")
+
+	errs := validatePortalOwnedFieldsCaller(oldSC, newSC, ServiceConfigurationCaller{})
+	if len(errs) == 0 {
+		t.Fatal("expected empty username changing defaultOffer to be rejected")
 	}
 }

@@ -40,20 +40,30 @@ type serviceConfigurationWebhook struct {
 
 var _ admission.Validator[*servicesv1alpha1.ServiceConfiguration] = &serviceConfigurationWebhook{}
 
+func serviceConfigurationCallerFromContext(ctx context.Context) validation.ServiceConfigurationCaller {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return validation.ServiceConfigurationCaller{}
+	}
+	return validation.ServiceConfigurationCaller{Username: req.UserInfo.Username}
+}
+
 // ValidateCreate implements webhook.CustomValidator.
 func (r *serviceConfigurationWebhook) ValidateCreate(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) (admission.Warnings, error) {
 	isDryRun := false
 	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
 		isDryRun = *req.DryRun
 	}
+	caller := serviceConfigurationCallerFromContext(ctx)
 
 	serviceConfigurationLog.Info("validating create",
 		"name", sc.GetName(),
 		"serviceRef", sc.Spec.ServiceRef.Name,
 		"isDryRun", isDryRun,
+		"username", caller.Username,
 	)
 
-	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc, isDryRun); len(errs) > 0 {
+	if errs := validation.ValidateServiceConfigurationCreate(ctx, r.reader, sc, isDryRun, caller); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			sc.GetObjectKind().GroupVersionKind().GroupKind(),
 			sc.Name,
@@ -69,10 +79,15 @@ func (r *serviceConfigurationWebhook) ValidateUpdate(ctx context.Context, oldSC,
 	if req, err := admission.RequestFromContext(ctx); err == nil && req.DryRun != nil {
 		isDryRun = *req.DryRun
 	}
+	caller := serviceConfigurationCallerFromContext(ctx)
 
-	serviceConfigurationLog.Info("validating update", "name", newSC.GetName(), "isDryRun", isDryRun)
+	serviceConfigurationLog.Info("validating update",
+		"name", newSC.GetName(),
+		"isDryRun", isDryRun,
+		"username", caller.Username,
+	)
 
-	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC, isDryRun); len(errs) > 0 {
+	if errs := validation.ValidateServiceConfigurationUpdate(ctx, r.reader, oldSC, newSC, isDryRun, caller); len(errs) > 0 {
 		return nil, apierrors.NewInvalid(
 			newSC.GetObjectKind().GroupVersionKind().GroupKind(),
 			newSC.Name,
