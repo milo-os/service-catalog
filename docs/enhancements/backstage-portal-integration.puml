@@ -1,0 +1,47 @@
+@startuml backstage-portal-integration
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Backstage & docs as downstream consumers of the Service Catalog
+
+Person(provider, "Service provider", "Registers once")
+
+System_Boundary(registry, "Service Catalog registry — services.miloapis.com") {
+    Container(service, "Service", "Cluster-scoped CRD", "Identity: serviceName, displayName, owner, phase, dependencies, documentation")
+    Container(svccfg, "ServiceConfiguration", "Cluster-scoped CRD", "Monitored resource types (GVKs), metrics, billing, quota, locations")
+}
+
+System_Boundary(existing, "Existing downstream consumers") {
+    Container(billing, "Billing", "MeterDefinition fan-out", "Reads meters + billing routing")
+    Container(quota, "Quota", "ResourceRegistration / ClaimCreationPolicy", "Reads limits + metric rules")
+    Container(portal, "Consumer portal", "Marketplace / enablement", "Reads identity + lifecycle")
+}
+
+System_Boundary(newc, "New downstream consumers — this proposal") {
+    Container(entityprovider, "Backstage EntityProvider", "Pull, polled", "Projects Services -> Components / APIs; no catalog-info.yaml")
+    Container(docsctrl, "Docs / generation controller", "Reconciles Published", "Generates service + API reference; builds TechDocs out-of-pod")
+    ContainerDb(objstore, "TechDocs object storage", "Bucket", "Built docs keyed by entity coordinate")
+    Container(backstage, "Backstage catalog + TechDocs", "Developer portal", "Renders entities + generated docs")
+}
+
+Rel(provider, service, "Registers identity")
+Rel(provider, svccfg, "Declares configuration")
+
+Rel(service, billing, "read")
+Rel(service, quota, "read")
+Rel(service, portal, "read")
+
+Rel(service, entityprovider, "Pull (list / watch)")
+Rel(svccfg, entityprovider, "Pull (list / watch)")
+Rel(service, docsctrl, "Reconcile Published")
+Rel(svccfg, docsctrl, "Reconcile Published")
+
+Rel(entityprovider, backstage, "Projects entities")
+Rel(docsctrl, objstore, "Publish built TechDocs")
+Rel(backstage, objstore, "Reads built docs at serve time")
+
+SHOW_LEGEND()
+@enduml
