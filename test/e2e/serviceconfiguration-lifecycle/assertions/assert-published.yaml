@@ -18,6 +18,12 @@ status:
     - type: ChargeFanOutHealthy
       status: "True"
       reason: ChargeFanOutHealthy
+    - type: ConsumerPortalFanOutHealthy
+      status: "True"
+      reason: ConsumerPortalFanOutSkipped
+    - type: ProviderPortalFanOutHealthy
+      status: "True"
+      reason: ProviderPortalFanOutSkipped
     - type: Published
       status: "True"
   (publishedAt != null): true
