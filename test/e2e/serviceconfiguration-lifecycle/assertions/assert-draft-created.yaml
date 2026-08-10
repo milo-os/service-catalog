@@ -22,5 +22,11 @@ status:
     - type: ChargeFanOutHealthy
       status: "True"
       reason: ChargeFanOutSkipped
+    - type: ConsumerPortalFanOutHealthy
+      status: "True"
+      reason: ConsumerPortalFanOutSkipped
+    - type: ProviderPortalFanOutHealthy
+      status: "True"
+      reason: ProviderPortalFanOutSkipped
     - type: Published
       status: "False"
