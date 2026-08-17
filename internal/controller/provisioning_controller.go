@@ -17,7 +17,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -28,13 +30,11 @@ import (
 )
 
 const (
-	// provisioningResyncInterval bounds how long it takes for a change that
-	// cannot enqueue a project-scoped reconcile to reach consumer projects: a
-	// provider labelling a new source object, a newly Published configuration,
-	// or a source object being deleted. multicluster-runtime has no clean way
-	// to turn a root-cluster or source-project event into a request against a
-	// consumer cluster, so this is a convergence latency rather than an
-	// event-driven one — the same trade the location projection already makes.
+	// provisioningResyncInterval bounds how long a change that cannot enqueue a
+	// project-scoped reconcile takes to reach consumer projects — chiefly a
+	// provider labelling, unlabelling, or deleting a source object in its own
+	// project, which no watch here observes. Declaration edits do not wait for
+	// it; SetupWithManager watches ServiceConfiguration directly.
 	provisioningResyncInterval = 5 * time.Minute
 
 	// provisioningFieldManager identifies writes this reconciler makes, both to
@@ -565,15 +565,29 @@ func activePublishedConfiguration(
 
 // SetupWithManager registers the reconciler on the multicluster manager.
 //
-// The only watch is ServiceEntitlement, scoped to engaged project clusters.
-// Source objects live in provider projects and the configuration lives on the
-// root cluster; neither can enqueue a request against a consumer cluster, so
-// both are picked up by the periodic resync instead.
-func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
-	r.rootClient = rootClient
+// The primary watch is ServiceEntitlement, scoped to engaged project clusters.
+// A root-cluster watch on ServiceConfiguration is added on top, because a
+// provider editing its declaration is a first-class trigger: without it a
+// selector change would only reach entitled projects on the next resync, up to
+// provisioningResyncInterval later. The map function fans a root event out into
+// project-scoped requests, which is why it needs the root manager's cache
+// directly — mchandler would overwrite ClusterName with the local cluster.
+//
+// Source objects in provider projects still have no path to enqueue a consumer
+// request, so a newly labelled source object converges on the resync.
+func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
+	r.rootClient = rootMgr.GetClient()
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-provisioning").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.ServiceConfiguration{},
+			handler.TypedEnqueueRequestsFromMapFunc(
+				func(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) []mcreconcile.Request {
+					return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
+				}),
+		)).
 		Complete(r)
 }

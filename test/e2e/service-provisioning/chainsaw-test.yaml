@@ -1,0 +1,167 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning
+spec:
+  description: |
+    Functional coverage of ProvisioningReconciler: a provider declares, in its
+    ServiceConfiguration, classes it owns in its own project; every project
+    holding an Active entitlement receives references to them.
+
+    As with project-suspension-propagation, this cluster has no real Milo
+    control plane, so the e2e Deployment runs with
+    --enable-single-cluster-for-e2e-tests=true and every project name — the
+    consumer project and the provider's source project alike — resolves to this
+    one cluster. The reconciler runs its real loop against a real apiserver, but
+    the isolation between consumer and source projects is collapsed, so this
+    suite cannot show that an unentitled project's plane is untouched. What it
+    can show, and does below, is that delivery is gated on the entitlement being
+    Active and is removed when it stops being so.
+
+    The IPClass CRD installed for e2e is permissive and performs none of the real
+    IPAM API's authorization on spec.source, so the authorization gap the ledger
+    reports is asserted from the ledger rather than observed from a refusal.
+
+  steps:
+    - name: publish-service
+      description: Publish the Service and create the consumer project.
+      try:
+        - apply:
+            file: 01-create-service-and-project.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-provisioning-networking
+              spec:
+                phase: Published
+
+    - name: create-source-classes
+      description: The provider's own classes, in the project it owns.
+      try:
+        - apply:
+            file: 02-create-source-classes.yaml
+
+    - name: reject-kind-outside-allowlist
+      description: |
+        First of the allowlist's two enforcement points. A provider naming a
+        kind the platform does not admit, or one that is denied categorically
+        because installing it would grant access, is refused synchronously at
+        admission rather than failing later in a consumer's status.
+      try:
+        - apply:
+            file: test-data/unlisted-kind.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/denied-kind.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/empty-selector.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/foreign-source-project.yaml
+            expect:
+              - check:
+                  ($error != null): true
+
+    - name: publish-provisioning-declaration
+      description: |
+        Publishing the declaration alone installs nothing: delivery is keyed on
+        a consumer's entitlement, never on the provider's document. A provider
+        cannot target projects.
+      try:
+        - apply:
+            file: 03-publish-configuration.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceConfiguration
+              metadata:
+                name: e2e-provisioning-networking
+              spec:
+                phase: Published
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              found=$(kubectl get ipclasses -l services.miloapis.com/entitlement=e2e-provisioning-networking \
+                --no-headers 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$found" != "0" ]; then
+                echo "declaration alone provisioned $found objects; delivery must require an entitlement"
+                exit 1
+              fi
+
+    - name: entitle-and-receive-classes
+      description: |
+        An Active entitlement receives a reference to each selected class, owned
+        by the entitlement and labelled for pruning, and reports delivery on a
+        Provisioned condition separate from Ready.
+      try:
+        - apply:
+            file: 04-create-entitlement.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-entitlement-provisioned.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-class-projected.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-unselected-class-not-projected.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-authorization-gap-reported.yaml
+
+    - name: converge-on-selector-change
+      description: |
+        A provider changing which of its own classes it offers reaches an
+        already-entitled project without republishing anything, and withdraws
+        the class it no longer offers.
+      try:
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              kubectl patch serviceconfiguration e2e-provisioning-networking --type=json \
+                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/projection/selector","value":{"matchLabels":{"networking.datumapis.com/tier":"premium"}}}]'
+        - assert:
+            timeout: 90s
+            file: assertions/assert-converged-class-projected.yaml
+        - error:
+            timeout: 90s
+            file: assertions/assert-original-class-pruned.yaml
+
+    - name: prune-on-disablement
+      description: |
+        Disabling the service removes what it installed. The reconciler prunes
+        explicitly while the entitlement is terminating rather than relying on
+        garbage collection, so teardown does not depend on the project purger —
+        which does not delete cluster-scoped resources at all.
+      try:
+        - delete:
+            ref:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceEntitlement
+              name: e2e-provisioning-networking
+        - script:
+            timeout: 90s
+            content: |
+              set -e
+              for _ in $(seq 1 45); do
+                found=$(kubectl get ipclasses -l services.miloapis.com/entitlement=e2e-provisioning-networking \
+                  --no-headers 2>/dev/null | wc -l | tr -d ' ')
+                if [ "$found" = "0" ]; then exit 0; fi
+                sleep 2
+              done
+              echo "provisioned objects survived entitlement deletion:"
+              kubectl get ipclasses -l services.miloapis.com/entitlement=e2e-provisioning-networking
+              exit 1

@@ -1,0 +1,22 @@
+# The provider's own classes, in the project it owns. Under e2esingle every
+# project name resolves to this one cluster, so these stand in for objects that
+# would live in a separate platform project's control plane.
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: e2e-public-unicast
+  labels:
+    networking.datumapis.com/shared: "true"
+spec:
+  prefixes:
+    - 192.0.2.0/24
+---
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: e2e-internal-only
+  labels:
+    networking.datumapis.com/tier: premium
+spec:
+  prefixes:
+    - 198.51.100.0/24

@@ -1,0 +1,19 @@
+# An empty selector matches everything, which would project the provider's whole
+# source project into every entitled project.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-empty-selector
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: everything
+        projection:
+          sourceProject: e2e-provisioning-platform
+          kind:
+            group: networking.datumapis.com
+            kind: IPClass
+          selector: {}

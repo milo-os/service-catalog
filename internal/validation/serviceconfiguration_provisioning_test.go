@@ -193,3 +193,24 @@ func TestProvisioningPublishedImmutabilityAllowsWithdrawal(t *testing.T) {
 		t.Fatalf("expected withdrawing a declaration to be allowed, got %v", errs)
 	}
 }
+
+// A declaration can become invalid without being edited — the platform can
+// narrow the allowlist under it, and a document can be admitted while the
+// webhook is absent. Removing the controller's finalizer is an update, so
+// re-validating a terminating configuration would leave it undeletable.
+func TestProvisioningValidationSkipsTerminatingConfiguration(t *testing.T) {
+	oldSC := provTestConfig(provTestAllowedKind(), provTestProducer, provTestSelector())
+	newSC := provTestConfig(servicesv1alpha1.GVKRef{Group: "iam.miloapis.com", Kind: "PolicyBinding"},
+		"someone-elses-project", metav1.LabelSelector{})
+	now := metav1.Now()
+	newSC.DeletionTimestamp = &now
+	newSC.Finalizers = nil
+
+	errs := ValidateServiceConfigurationUpdate(context.Background(),
+		provTestReader(provTestServiceObj()).Build(), oldSC, newSC, false)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "provisioning") {
+			t.Errorf("terminating configuration was blocked by provisioning validation: %v", e)
+		}
+	}
+}

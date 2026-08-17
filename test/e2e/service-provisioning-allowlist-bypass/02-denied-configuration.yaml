@@ -1,0 +1,31 @@
+# Declares an IAM policy binding, which is denied categorically: installing one
+# converts "a provider can create an object" into "a provider can act as someone
+# else after the entitlement is gone".
+#
+# This document only reaches etcd because the step applying it disabled the
+# ServiceConfiguration webhook — standing in for the real cases: a webhook
+# removed from the cluster, and a document admitted under a wider allowlist that
+# has since been narrowed.
+#
+# Note it is an IAM binding rather than a Secret: spec.provisioning kind.group
+# has a MinLength of 1, so core-group kinds cannot be expressed in this field at
+# all, and the deny-list entries for them are unreachable through this path.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-bypass-networking
+spec:
+  serviceRef:
+    name: e2e-bypass-networking
+  phase: Published
+  provisioning:
+    resources:
+      - name: access-bindings
+        projection:
+          sourceProject: e2e-provisioning-platform
+          kind:
+            group: iam.miloapis.com
+            kind: PolicyBinding
+          selector:
+            matchLabels:
+              bypass.e2e.datumapis.com/shared: "true"

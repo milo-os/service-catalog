@@ -1,0 +1,11 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-gated-networking
+status:
+  phase: PendingApproval
+  # Nothing is owed yet, and the entitlement says so in those terms rather than
+  # looking like a delivery failure.
+  (conditions[?type == 'Provisioned']):
+    - status: "False"
+      reason: EntitlementNotActive

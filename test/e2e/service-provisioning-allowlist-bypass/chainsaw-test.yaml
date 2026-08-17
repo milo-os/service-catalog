@@ -1,0 +1,83 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning-allowlist-bypass
+spec:
+  description: |
+    The platform allowlist has to hold when admission does not run.
+
+    The service-provisioning suite covers the admission half. This one covers
+    the other: it disables the ServiceConfiguration webhook, lands a declaration
+    naming a categorically denied kind directly in etcd, and asserts the
+    controller refuses to install it and says so on the consumer's entitlement.
+
+    That is not a hypothetical bypass. The webhook can be removed from the
+    cluster, its failure policy can be relaxed, and a document admitted under an
+    older, wider allowlist stays in etcd unchanged when the allowlist narrows.
+    The check in the controller is what actually bounds what gets written —
+    which matters because RBAC does not: the operator reaches project control
+    planes with a certificate carrying the system:masters organization.
+
+    The webhook is restored by the step's `finally`, including on failure.
+
+  steps:
+    - name: setup
+      try:
+        - apply:
+            file: 01-setup.yaml
+
+    - name: bypass-admission-and-verify-controller-refuses
+      description: |
+        Narrow the ServiceConfiguration webhook to an objectSelector nothing
+        carries, land the denied declaration, and assert the controller refuses
+        it anyway — reporting the refusal per resource and leaving Ready alone,
+        because a refusal to deliver is not a denial of access.
+
+        Disable, exercise, and assert all sit in one step so the step's `finally`
+        restores the webhook even when an assertion fails.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o name \
+                | grep -i services | head -1)
+              idx=$(kubectl get "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceconfiguration.kb.io")')
+              if [ "$idx" = "null" ] || [ -z "$idx" ]; then
+                echo "vserviceconfiguration.kb.io not found on $wh"
+                kubectl get "$wh" -o json | jq '.webhooks | map(.name)'
+                exit 1
+              fi
+              kubectl patch "$wh" --type=json -p "[{\"op\":\"add\",\"path\":\"/webhooks/$idx/objectSelector\",\"value\":{\"matchLabels\":{\"services.miloapis.com/admission\":\"disabled-for-e2e\"}}}]"
+        - apply:
+            file: 02-denied-configuration.yaml
+        - apply:
+            file: 03-create-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-refused-by-controller.yaml
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              found=$(kubectl get ipclasses \
+                -l services.miloapis.com/entitlement=e2e-bypass-networking \
+                --no-headers 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$found" != "0" ]; then
+                echo "the controller installed $found object(s) for a denied declaration"
+                exit 1
+              fi
+      finally:
+        - script:
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o name \
+                | grep -i services | head -1)
+              idx=$(kubectl get "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceconfiguration.kb.io")')
+              if [ "$idx" != "null" ] && [ -n "$idx" ]; then
+                kubectl patch "$wh" --type=json \
+                  -p "[{\"op\":\"remove\",\"path\":\"/webhooks/$idx/objectSelector\"}]" || true
+              fi

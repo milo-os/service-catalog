@@ -1,0 +1,19 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-provisioning-networking
+status:
+  phase: Active
+  # Ready and Provisioned are separate facts: access, and delivery.
+  (conditions[?type == 'Ready']):
+    - status: "True"
+  (conditions[?type == 'Provisioned']):
+    - status: "True"
+      reason: Provisioned
+  provisionedResources:
+    - name: shared-classes
+      state: Installed
+      objectCount: 1
+      kind:
+        group: networking.datumapis.com
+        kind: IPClass

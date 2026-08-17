@@ -1,0 +1,4 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: networking-e2e-datumapis-com-e2e-public-unicast

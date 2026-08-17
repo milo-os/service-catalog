@@ -65,16 +65,29 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
-	allErrs = append(allErrs, validateProvisioning(newSC)...)
+
+	// Removing the controller's finalizer is an update, so re-validating a
+	// terminating configuration would make a document that is already invalid
+	// permanently undeletable — and provisioning declarations become invalid
+	// without being edited, whenever the platform narrows the allowlist under
+	// them. Deleting such a document is the remedy, not something to block.
+	terminating := !newSC.DeletionTimestamp.IsZero()
+	if !terminating {
+		allErrs = append(allErrs, validateProvisioning(newSC)...)
+	}
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
-		allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, newSC)...)
+		if !terminating {
+			allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, newSC)...)
+		}
 	}
 	allErrs = append(allErrs, ValidatePhaseTransition(oldSC.Spec.Phase, newSC.Spec.Phase, field.NewPath("spec", "phase"))...)
 	if oldSC.Spec.Phase == servicesv1alpha1.PhasePublished {
 		allErrs = append(allErrs, validateServiceConfigurationPublishedImmutability(oldSC, newSC)...)
-		allErrs = append(allErrs, validateProvisioningPublishedImmutability(oldSC, newSC)...)
+		if !terminating {
+			allErrs = append(allErrs, validateProvisioningPublishedImmutability(oldSC, newSC)...)
+		}
 	}
 
 	return allErrs

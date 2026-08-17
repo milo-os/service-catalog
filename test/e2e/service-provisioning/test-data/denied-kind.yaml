@@ -1,0 +1,22 @@
+# An IAM policy binding is denied categorically, not merely absent from the
+# allowlist: installing one converts "a provider can create an object" into
+# "a provider can act as someone else after the entitlement is gone".
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-denied-kind
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: bad-kind
+        projection:
+          sourceProject: e2e-provisioning-platform
+          kind:
+            group: iam.miloapis.com
+            kind: PolicyBinding
+          selector:
+            matchLabels:
+              networking.datumapis.com/shared: "true"

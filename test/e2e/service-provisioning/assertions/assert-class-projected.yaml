@@ -1,0 +1,25 @@
+# The projected object is a reference: it names the platform project and the
+# class within it, and carries none of the source's addressing.
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  # Derived from the canonical service name and the source object, so two
+  # providers cannot contend for one name.
+  name: networking-e2e-datumapis-com-e2e-public-unicast
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-provisioning-networking
+    services.miloapis.com/provisioned-resource: shared-classes
+    services.miloapis.com/source-object: e2e-public-unicast
+  # Deleting the entitlement garbage-collects what it provisioned. This is the
+  # teardown path that does not depend on the project purger, which skips
+  # cluster-scoped resources.
+  (ownerReferences[0].kind): ServiceEntitlement
+  (ownerReferences[0].name): e2e-provisioning-networking
+  (ownerReferences[0].controller): true
+spec:
+  source:
+    project: e2e-provisioning-platform
+    name: e2e-public-unicast
+  # The consumer holds a pointer at platform truth, not a copy of the ranges.
+  (prefixes == null): true

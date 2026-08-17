@@ -1,0 +1,21 @@
+# apps/Deployment is not on the platform allowlist. Adding a kind is a platform
+# decision, not a provider one.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-unlisted-kind
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: bad-kind
+        projection:
+          sourceProject: e2e-provisioning-platform
+          kind:
+            group: apps
+            kind: Deployment
+          selector:
+            matchLabels:
+              networking.datumapis.com/shared: "true"

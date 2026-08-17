@@ -1,0 +1,73 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning-approval-gate
+spec:
+  description: |
+    Provisioning follows approval; it does not anticipate it.
+
+    For a GatedByProvider service, an entitlement sits PendingApproval until the
+    provider decides. Nothing may be installed in that window — a project that
+    has asked for a service and not been granted it is, for provisioning
+    purposes, a project without the entitlement. This is the closest this suite
+    can get to "an unentitled project receives nothing": the e2e single-cluster
+    provider collapses every project onto one control plane, so a genuinely
+    separate unentitled plane cannot be observed here.
+
+  steps:
+    - name: setup
+      description: A GatedByProvider service, the consumer project, and a source class.
+      try:
+        - apply:
+            file: 01-setup.yaml
+        - apply:
+            file: 02-publish-configuration.yaml
+
+    - name: request-stays-pending-and-installs-nothing
+      description: |
+        The entitlement is PendingApproval. No class may appear, and the
+        Provisioned condition must attribute that to the pending approval rather
+        than to a delivery failure.
+      try:
+        - apply:
+            file: 03-create-entitlement.yaml
+        - assert:
+            timeout: 60s
+            file: assertions/assert-pending-not-provisioned.yaml
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              found=$(kubectl get ipclasses -l services.miloapis.com/entitlement=e2e-gated-networking \
+                --no-headers 2>/dev/null | wc -l | tr -d ' ')
+              if [ "$found" != "0" ]; then
+                echo "a PendingApproval entitlement provisioned $found objects"
+                kubectl get ipclasses -l services.miloapis.com/entitlement=e2e-gated-networking
+                exit 1
+              fi
+
+    - name: approval-releases-provisioning
+      description: |
+        The provider approves on its own ServiceConsumer record. The entitlement
+        goes Active and only then do the classes arrive.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              consumer=$(kubectl get serviceconsumers \
+                -o jsonpath='{range .items[?(@.spec.serviceRef.name=="e2e-gated-networking")]}{.metadata.name}{"\n"}{end}' \
+                | head -1)
+              if [ -z "$consumer" ]; then
+                echo "no ServiceConsumer was created for the gated service"
+                kubectl get serviceconsumers -o yaml
+                exit 1
+              fi
+              kubectl patch serviceconsumer "$consumer" --type=merge \
+                -p '{"spec":{"approval":{"decision":"Approved"}}}'
+        - assert:
+            timeout: 90s
+            file: assertions/assert-approved-and-provisioned.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-gated-class-projected.yaml

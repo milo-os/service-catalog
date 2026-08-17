@@ -1,0 +1,8 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: gated-e2e-datumapis-com-e2e-gated-class
+spec:
+  source:
+    project: e2e-provisioning-platform
+    name: e2e-gated-class

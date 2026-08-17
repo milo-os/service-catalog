@@ -1,0 +1,21 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-bypass-networking
+spec:
+  serviceName: bypass.e2e.datumapis.com
+  phase: Published
+  displayName: Bypass Fixture
+  description: E2E fixture — the controller re-checks the allowlist itself.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: e2e-single-cluster
+spec:
+  ownerRef:
+    kind: Organization
+    name: e2e-provisioning-org

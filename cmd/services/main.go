@@ -247,7 +247,7 @@ func main() {
 	// project planes per reconcile: the consumer's, and the provider's source
 	// project. The consumer-scoped manager below is deliberately narrower than
 	// that.
-	if err = (&controller.ProvisioningReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+	if err = (&controller.ProvisioningReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Provisioning")
 		os.Exit(1)
 	}
