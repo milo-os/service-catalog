@@ -553,6 +553,147 @@ spec:
                   configuration. Allowed transitions are forward-only:
                   Draft -> Published -> Deprecated -> Retired.
                 type: string
+              provisioning:
+                description: |-
+                  Provisioning declares resources the platform installs into every project
+                  holding an Active ServiceEntitlement for this service, and removes when
+                  that entitlement stops being Active.
+                properties:
+                  resources:
+                    description: |-
+                      Resources declares what to install. The cap bounds the blast radius of a
+                      single configuration: a declaration fans out across every entitled
+                      project, so the per-document and per-project limits are part of the
+                      security model rather than an operational concern.
+                    items:
+                      description: |-
+                        ProvisionedResourceSpec is a single declaration of what to install into
+                        entitled consumer projects.
+                      properties:
+                        name:
+                          description: |-
+                            Name identifies this declaration within the ServiceConfiguration. It is
+                            the ledger key on ServiceEntitlement.status.provisionedResources, so it
+                            is what a consumer sees when a resource does not arrive.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        projection:
+                          description: |-
+                            Projection installs, in each entitled project, one object referencing
+                            each object matching a selector in a project the provider owns.
+
+                            It is the only delivery mode. Inline literal objects and external bundle
+                            references were both considered and rejected for the first version: a
+                            projection derives its content from objects that already exist in a plane
+                            where ordinary authorization applied when the provider created them,
+                            which a provider-authored payload does not.
+                          properties:
+                            kind:
+                              description: |-
+                                Kind selects the objects to project and, through the platform allowlist,
+                                determines the consumer-facing kind installed to reference them. Version
+                                is deliberately absent, matching spec.quota.metricRules[].selector: the
+                                allowlist pins the served version so a declaration need not be
+                                republished when an API version moves.
+
+                                The kind is only usable if the platform allowlist admits it. That check
+                                runs at admission and again in the controller before any write — not via
+                                RBAC, which does not constrain the operator's identity.
+                              properties:
+                                group:
+                                  description: |-
+                                    Group is the Kubernetes API group of the Kind (e.g.
+                                    "compute.miloapis.com").
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                kind:
+                                  description: Kind is the Kubernetes Kind (e.g. "Instance").
+                                  maxLength: 63
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - group
+                              - kind
+                              type: object
+                            selector:
+                              description: |-
+                                Selector chooses which objects in SourceProject to project. A selector
+                                rather than a list of names is what lets a provider offer a new object to
+                                every already-entitled project without republishing its configuration —
+                                the same reasoning spec.locations.supportedClasses already uses.
+
+                                An empty or absent selector matches nothing rather than everything:
+                                projecting a source project's entire contents by omission is never the
+                                intent, and the failure mode is silent and wide.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            sourceProject:
+                              description: |-
+                                SourceProject is the project whose objects are projected. It must be a
+                                project the declaring provider owns; a provider projecting out of a
+                                project it does not own would do so with an identity nothing would stop.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - kind
+                          - selector
+                          - sourceProject
+                          type: object
+                      required:
+                      - name
+                      - projection
+                      type: object
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
               quota:
                 description: |-
                   Quota declares quota limits and metric rules for this service.

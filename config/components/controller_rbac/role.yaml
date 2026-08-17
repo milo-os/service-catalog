@@ -42,6 +42,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - ipclasses
   - locationbindings
   verbs:
   - create

@@ -115,6 +115,13 @@ type ServiceConfigurationSpec struct {
 	// +kubebuilder:validation:Optional
 	Locations *ServiceLocationConfig `json:"locations,omitempty"`
 
+	// Provisioning declares resources the platform installs into every project
+	// holding an Active ServiceEntitlement for this service, and removes when
+	// that entitlement stops being Active.
+	//
+	// +kubebuilder:validation:Optional
+	Provisioning *ServiceProvisioningConfig `json:"provisioning,omitempty"`
+
 	// DefaultOffer is the Offer name applied to new BillingAccounts.
 	// Typically set only on the billing.miloapis.com ServiceConfiguration.
 	// When set, the referenced Offer must exist, have launchStage GA, and
@@ -546,6 +553,93 @@ type ProviderUserInterfaceSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Assets PluginAssets `json:"assets"`
+}
+
+// ServiceProvisioningConfig groups the resources a service needs installed in a
+// consumer project before that project can use it. It is the authoritative
+// declaration of what this service manages in a consumer project.
+//
+// The provider supplies values in a platform-defined schema and never supplies
+// an object: the target kind is drawn from a platform-owned allowlist, the
+// object name is derived, and the content is a reference to an object the
+// provider already owns. That is the property that makes the existing billing,
+// quota, and location fan-outs bounded, and it is preserved deliberately here
+// because the operator writes into consumer planes as system:masters, where
+// RBAC is not an effective ceiling.
+type ServiceProvisioningConfig struct {
+	// Resources declares what to install. The cap bounds the blast radius of a
+	// single configuration: a declaration fans out across every entitled
+	// project, so the per-document and per-project limits are part of the
+	// security model rather than an operational concern.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
+	Resources []ProvisionedResourceSpec `json:"resources,omitempty"`
+}
+
+// ProvisionedResourceSpec is a single declaration of what to install into
+// entitled consumer projects.
+type ProvisionedResourceSpec struct {
+	// Name identifies this declaration within the ServiceConfiguration. It is
+	// the ledger key on ServiceEntitlement.status.provisionedResources, so it
+	// is what a consumer sees when a resource does not arrive.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Projection installs, in each entitled project, one object referencing
+	// each object matching a selector in a project the provider owns.
+	//
+	// It is the only delivery mode. Inline literal objects and external bundle
+	// references were both considered and rejected for the first version: a
+	// projection derives its content from objects that already exist in a plane
+	// where ordinary authorization applied when the provider created them,
+	// which a provider-authored payload does not.
+	//
+	// +kubebuilder:validation:Required
+	Projection ResourceProjectionSpec `json:"projection"`
+}
+
+// ResourceProjectionSpec selects objects in a provider-owned source project and
+// projects references to them into entitled consumer projects.
+type ResourceProjectionSpec struct {
+	// SourceProject is the project whose objects are projected. It must be a
+	// project the declaring provider owns; a provider projecting out of a
+	// project it does not own would do so with an identity nothing would stop.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	SourceProject string `json:"sourceProject"`
+
+	// Kind selects the objects to project and, through the platform allowlist,
+	// determines the consumer-facing kind installed to reference them. Version
+	// is deliberately absent, matching spec.quota.metricRules[].selector: the
+	// allowlist pins the served version so a declaration need not be
+	// republished when an API version moves.
+	//
+	// The kind is only usable if the platform allowlist admits it. That check
+	// runs at admission and again in the controller before any write — not via
+	// RBAC, which does not constrain the operator's identity.
+	//
+	// +kubebuilder:validation:Required
+	Kind GVKRef `json:"kind"`
+
+	// Selector chooses which objects in SourceProject to project. A selector
+	// rather than a list of names is what lets a provider offer a new object to
+	// every already-entitled project without republishing its configuration —
+	// the same reasoning spec.locations.supportedClasses already uses.
+	//
+	// An empty or absent selector matches nothing rather than everything:
+	// projecting a source project's entire contents by omission is never the
+	// intent, and the failure mode is silent and wide.
+	//
+	// +kubebuilder:validation:Required
+	Selector metav1.LabelSelector `json:"selector"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

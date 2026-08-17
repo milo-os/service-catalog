@@ -153,6 +153,19 @@ spec:
                   Active.
                 format: date-time
                 type: string
+              lastProvisioningEvaluation:
+                description: |-
+                  LastProvisioningEvaluation is when provisioning was last evaluated for
+                  this entitlement, successfully or not.
+
+                  Recorded so that a fan-out which has silently stopped running is visible
+                  on the object itself. The failure mode it exists for has already been
+                  observed: location projection stopped in staging and surfaced weeks later
+                  as an unrelated component reporting a downstream symptom, because a
+                  projection that stops reconciling is otherwise indistinguishable from a
+                  project that legitimately has nothing.
+                format: date-time
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed by the
@@ -175,6 +188,80 @@ spec:
                 - Active
                 - Rejected
                 type: string
+              provisionedResources:
+                description: |-
+                  ProvisionedResources is the per-resource delivery ledger for the
+                  service's spec.provisioning declaration.
+                items:
+                  description: |-
+                    ProvisionedResourceStatus is the per-resource ledger entry for one
+                    declaration, in the consumer's own control plane.
+                  properties:
+                    authorizationEstablished:
+                      description: |-
+                        AuthorizationEstablished reports whether the platform established the
+                        consumer project's own authorization to use the referenced source
+                        objects, where the target API performs its own permission check.
+
+                        False means the objects exist and work on the strength of the installing
+                        identity rather than the consumer's. Nothing in this version of
+                        provisioning establishes such a grant, so it is false for every kind
+                        whose target API checks permissions. See the allowlist.
+                      type: boolean
+                    kind:
+                      description: Kind is the group and kind that was installed.
+                      properties:
+                        group:
+                          description: |-
+                            Group is the Kubernetes API group of the Kind (e.g.
+                            "compute.miloapis.com").
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        kind:
+                          description: Kind is the Kubernetes Kind (e.g. "Instance").
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      type: object
+                    message:
+                      description: |-
+                        Message names the service, the resource, and what a consumer can act on
+                        or escalate with. A generic apply error is not an acceptable value here.
+                      maxLength: 1024
+                      type: string
+                    name:
+                      description: Name is the declaration's spec.provisioning.resources[].name.
+                      type: string
+                    objectCount:
+                      description: |-
+                        ObjectCount is how many objects this declaration resolved to and
+                        installed.
+                      format: int32
+                      type: integer
+                    reason:
+                      description: Reason is a machine-readable cause, set when State
+                        is not Installed.
+                      type: string
+                    state:
+                      description: State is the delivery outcome for this declaration.
+                      enum:
+                      - Installed
+                      - Failed
+                      - Unprovisionable
+                      type: string
+                  required:
+                  - name
+                  - state
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               serviceName:
                 description: |-
                   ServiceName is the canonical service identifier resolved from

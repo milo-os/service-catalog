@@ -36,9 +36,11 @@ func ValidateServiceConfigurationCreate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
+	allErrs = append(allErrs, validateProvisioning(sc)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
+		allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, sc)...)
 	}
 
 	return allErrs
@@ -63,13 +65,16 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
+	allErrs = append(allErrs, validateProvisioning(newSC)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
+		allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, newSC)...)
 	}
 	allErrs = append(allErrs, ValidatePhaseTransition(oldSC.Spec.Phase, newSC.Spec.Phase, field.NewPath("spec", "phase"))...)
 	if oldSC.Spec.Phase == servicesv1alpha1.PhasePublished {
 		allErrs = append(allErrs, validateServiceConfigurationPublishedImmutability(oldSC, newSC)...)
+		allErrs = append(allErrs, validateProvisioningPublishedImmutability(oldSC, newSC)...)
 	}
 
 	return allErrs
