@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: services-controller-manager
+spec:
+  # One replica, no leader election: leases would be taken in Milo, and a
+  # standby replica only delays which process observes a change.
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: manager
+          args:
+            - --health-probe-bind-address=:8081
+            - --server-config=/config/config.yaml
+          volumeMounts:
+            - name: milo-kubeconfig
+              mountPath: /etc/milo
+              readOnly: true
+          resources:
+            limits:
+              # The multicluster provider runs a cache per engaged project; the
+              # base 128Mi ceiling is sized for the single-cluster environment.
+              memory: 512Mi
+      volumes:
+        - name: milo-kubeconfig
+          secret:
+            secretName: milo-kubeconfig

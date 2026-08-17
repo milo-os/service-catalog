@@ -1,0 +1,9 @@
+# Used with `error`: no IPClass anywhere in the addressed control plane may
+# carry this fan-out's labels. Written as a label match rather than a name so it
+# holds whatever the projection would have been called.
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-provisioning-networking

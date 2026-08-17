@@ -1,0 +1,22 @@
+# The positive control for every "consumer-b received nothing" assertion in this
+# suite.
+#
+# An empty plane makes those assertions pass for the wrong reason: a project
+# whose control plane is unreachable, or which does not serve IPClass at all,
+# is also a project with no IPClasses in it. This object is created by the test
+# directly in consumer-b, so each absence assertion is made against a plane that
+# is demonstrably reachable, demonstrably serving this kind, and demonstrably
+# returning objects from a list.
+#
+# It carries none of the provisioning labels, so it is never a candidate for
+# pruning and its survival is itself an assertion: nothing the fan-out does to
+# consumer-a reaches into consumer-b.
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: e2e-locally-created
+  labels:
+    e2e.services.miloapis.com/control: "true"
+spec:
+  prefixes:
+    - 203.0.113.0/24

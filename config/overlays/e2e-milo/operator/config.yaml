@@ -1,0 +1,13 @@
+apiVersion: apiserver.config.miloapis.com/v1alpha1
+kind: ServicesOperator
+metricsServer:
+  bindAddress: "0"
+webhookServer: {}
+# The operator's API surface is Milo's, not the hosting cluster's. Without this
+# it would fall back to the in-cluster config and find none of the services
+# types. The kubeconfig is created by the environment bootstrap.
+kubeconfigPath: /etc/milo/kubeconfig
+# Consumer-scoped projection stays off, as in config/overlays/e2e: it is a
+# separate capability with its own gating, and turning it on here would change
+# which manager hosts LocationBinding projection without adding coverage of the
+# property this environment exists to prove.

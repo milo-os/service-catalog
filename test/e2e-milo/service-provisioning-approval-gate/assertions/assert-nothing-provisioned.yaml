@@ -1,0 +1,6 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-gated-networking

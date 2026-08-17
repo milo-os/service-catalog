@@ -12,22 +12,3 @@ spec:
       name: e2e-provisioning-platform
   enablementPolicy:
     mode: GatedByProvider
----
-apiVersion: resourcemanager.miloapis.com/v1alpha1
-kind: Project
-metadata:
-  name: e2e-single-cluster
-spec:
-  ownerRef:
-    kind: Organization
-    name: e2e-provisioning-org
----
-apiVersion: networking.datumapis.com/v1alpha
-kind: IPClass
-metadata:
-  name: e2e-gated-class
-  labels:
-    gated.e2e.datumapis.com/shared: "true"
-spec:
-  prefixes:
-    - 203.0.113.0/24

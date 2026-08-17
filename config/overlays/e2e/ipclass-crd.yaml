@@ -5,6 +5,11 @@
 # projection without depending on the upstream module — the same reasoning as
 # locationbinding-crd.yaml.
 #
+# It lives beside the single-cluster overlay but is installed into Milo by the
+# multi-project environment (hack/e2e-milo/up.sh), which is where the
+# provisioning suites now run. Kept in one place rather than copied, so the two
+# environments cannot disagree about the fixture's schema.
+#
 # The schema is deliberately permissive: it exists to let the API server persist
 # a projected reference, not to validate it. Note what that means for the suite —
 # the real IPAM API additionally authorizes spec.source with a subject access

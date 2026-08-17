@@ -1,0 +1,262 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning-isolation
+spec:
+  description: |
+    Provisioning across genuinely separate project control planes.
+
+    The operator here runs against a real Milo with the Milo multicluster
+    provider — no --enable-single-cluster-for-e2e-tests. Three real Projects
+    exist, and each is addressed over its own control-plane path, which Milo
+    routes to its own storage. So the claim this suite makes about consumer-b is
+    a claim about a different control plane, not a different name for the same
+    one.
+
+    Four properties, in order:
+
+      1. the entitled project receives the projected references;
+      2. the unentitled project receives nothing;
+      3. removing the entitlement prunes from the entitled project and leaves
+         the other untouched;
+      4. the allowlist and selector-convergence behaviour still hold.
+
+    (2) is the one that could pass for the wrong reason. An unreachable plane,
+    or one not serving IPClass, is also a plane with no IPClasses in it. So
+    consumer-b carries a control object the test creates in it directly (see
+    03-seed-unentitled-control.yaml), asserted alongside every absence claim,
+    and at the end consumer-b is entitled and shown to receive — a plane that
+    can receive is a plane whose earlier emptiness meant something.
+
+    What this environment does NOT show is per-project authorization: Milo runs
+    RBAC-only here and a root grant authorizes every project path, so the
+    isolation demonstrated is routing and storage. See test/e2e-milo/README.md.
+
+    The IPClass CRD installed for e2e is permissive and performs none of the
+    real IPAM API's authorization on spec.source, so the authorization gap the
+    ledger reports is asserted from the ledger rather than observed from a
+    refusal.
+
+  steps:
+    - name: publish-service
+      description: Publish the Service. It lives at the platform root, in no project.
+      cluster: root
+      try:
+        - apply:
+            file: 01-create-service.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-provisioning-networking
+              spec:
+                phase: Published
+
+    - name: create-source-classes
+      description: The provider's classes, in the provider project's own control plane.
+      cluster: platform
+      try:
+        - apply:
+            file: 02-create-source-classes.yaml
+
+    - name: seed-unentitled-control
+      description: |
+        The control object in consumer-b, and proof the plane is reachable and
+        serves this kind before anything is claimed about what it does not have.
+      cluster: consumer-b
+      try:
+        - apply:
+            file: 03-seed-unentitled-control.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-control-object-present.yaml
+
+    - name: reject-kind-outside-allowlist
+      description: |
+        First of the allowlist's two enforcement points. A provider naming a
+        kind the platform does not admit, or one denied categorically because
+        installing it would grant access, is refused synchronously at admission
+        rather than failing later in a consumer's status.
+      cluster: root
+      try:
+        - apply:
+            file: test-data/unlisted-kind.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/denied-kind.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/empty-selector.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/foreign-source-project.yaml
+            expect:
+              - check:
+                  ($error != null): true
+
+    - name: publish-provisioning-declaration
+      description: |
+        Publishing the declaration alone installs nothing, in either project:
+        delivery is keyed on a consumer's entitlement, never on the provider's
+        document. A provider cannot target projects.
+      try:
+        - apply:
+            cluster: root
+            file: 04-publish-configuration.yaml
+        - assert:
+            cluster: root
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceConfiguration
+              metadata:
+                name: e2e-provisioning-networking
+              spec:
+                phase: Published
+        - error:
+            cluster: consumer-a
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml
+        - error:
+            cluster: consumer-b
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml
+
+    - name: entitle-and-receive-classes
+      description: |
+        An Active entitlement in consumer-a receives a reference to each
+        selected class, owned by the entitlement and labelled for pruning, and
+        reports delivery on a Provisioned condition separate from Ready.
+      cluster: consumer-a
+      try:
+        - apply:
+            file: 05-create-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-entitlement-provisioned.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-class-projected.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-unselected-class-not-projected.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-authorization-gap-reported.yaml
+
+    - name: unentitled-project-receives-nothing
+      description: |
+        The property the whole capability rests on. consumer-b holds no
+        entitlement for this service and must hold nothing from it — asserted
+        against a plane whose control object is present in the same breath, so
+        an empty answer cannot be mistaken for an absent one.
+      cluster: consumer-b
+      try:
+        - assert:
+            timeout: 30s
+            file: assertions/assert-control-object-present.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml
+        # Named absence as well as labelled absence: the projection consumer-a
+        # actually received, by the exact name it received it under.
+        - error:
+            timeout: 30s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: IPClass
+              metadata:
+                name: networking-e2e-datumapis-com-e2e-public-unicast
+        # consumer-b must not have acquired an entitlement of its own along the
+        # way; without this the absence above could be read as "not yet".
+        - error:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceEntitlement
+              metadata:
+                name: e2e-provisioning-networking
+
+    - name: converge-on-selector-change
+      description: |
+        A provider changing which of its own classes it offers reaches an
+        already-entitled project without republishing anything, withdraws the
+        class it no longer offers, and still reaches no one else.
+      try:
+        - script:
+            cluster: root
+            timeout: 30s
+            content: |
+              set -e
+              kubectl patch serviceconfiguration e2e-provisioning-networking --type=json \
+                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/projection/selector","value":{"matchLabels":{"networking.datumapis.com/tier":"premium"}}}]'
+        - assert:
+            cluster: consumer-a
+            timeout: 90s
+            file: assertions/assert-converged-class-projected.yaml
+        - error:
+            cluster: consumer-a
+            timeout: 90s
+            file: assertions/assert-original-class-pruned.yaml
+        - assert:
+            cluster: consumer-b
+            timeout: 30s
+            file: assertions/assert-control-object-present.yaml
+        - error:
+            cluster: consumer-b
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml
+
+    - name: prune-on-disablement
+      description: |
+        Disabling the service removes what it installed from the project that
+        held it, and touches nothing in the project that never did. The
+        reconciler prunes explicitly while the entitlement is terminating rather
+        than relying on garbage collection, so teardown does not depend on the
+        project purger — which does not delete cluster-scoped resources at all.
+      try:
+        - delete:
+            cluster: consumer-a
+            ref:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: ServiceEntitlement
+              name: e2e-provisioning-networking
+        - error:
+            cluster: consumer-a
+            timeout: 90s
+            file: assertions/assert-nothing-provisioned.yaml
+        - assert:
+            cluster: consumer-b
+            timeout: 30s
+            file: assertions/assert-control-object-present.yaml
+
+    - name: entitling-the-other-project-delivers
+      description: |
+        The closing half of the positive control. consumer-b was empty because
+        it was not entitled, not because it could not receive: entitle it and
+        the class the provider currently offers arrives, in the plane every
+        absence above was asserted against.
+      cluster: consumer-b
+      try:
+        - apply:
+            file: 05-create-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-entitlement-provisioned-premium.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-consumer-b-provisioned.yaml
+        # And consumer-a, now unentitled, is the one holding nothing — the same
+        # claim as before with the projects exchanged.
+        - error:
+            cluster: consumer-a
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml

@@ -1,0 +1,9 @@
+apiVersion: networking.datumapis.com/v1alpha
+kind: IPClass
+metadata:
+  name: e2e-gated-class
+  labels:
+    gated.e2e.datumapis.com/shared: "true"
+spec:
+  prefixes:
+    - 203.0.113.0/24

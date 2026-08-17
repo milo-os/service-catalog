@@ -12,14 +12,3 @@ spec:
     # service can only offer resources out of a project it owns.
     producerProjectRef:
       name: e2e-provisioning-platform
----
-apiVersion: resourcemanager.miloapis.com/v1alpha1
-kind: Project
-metadata:
-  # Must equal e2esingle.ClusterName: the provisioning reconciler derives the
-  # consumer project from req.ClusterName, which e2esingle fixes to this value.
-  name: e2e-single-cluster
-spec:
-  ownerRef:
-    kind: Organization
-    name: e2e-provisioning-org

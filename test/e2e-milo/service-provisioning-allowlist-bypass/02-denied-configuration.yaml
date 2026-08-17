@@ -4,8 +4,8 @@
 #
 # This document only reaches etcd because the step applying it disabled the
 # ServiceConfiguration webhook — standing in for the real cases: a webhook
-# removed from the cluster, and a document admitted under a wider allowlist that
-# has since been narrowed.
+# removed from the control plane, and a document admitted under a wider
+# allowlist that has since been narrowed.
 #
 # Note it is an IAM binding rather than a Secret: spec.provisioning kind.group
 # has a MinLength of 1, so core-group kinds cannot be expressed in this field at

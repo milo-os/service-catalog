@@ -1,6 +1,5 @@
-# The provider's own classes, in the project it owns. Under e2esingle every
-# project name resolves to this one cluster, so these stand in for objects that
-# would live in a separate platform project's control plane.
+# The provider's own classes, in its own project's control plane — a different
+# control plane from either consumer's, reached over its own URL path.
 apiVersion: networking.datumapis.com/v1alpha
 kind: IPClass
 metadata:

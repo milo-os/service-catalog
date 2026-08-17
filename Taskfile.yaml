@@ -233,9 +233,6 @@ tasks:
         echo "Installing LocationBinding CRD..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
 
-        echo "Installing IPClass CRD..."
-        task test-infra:kubectl -- apply -f config/overlays/e2e/ipclass-crd.yaml
-
         echo "Installing resourcemanager CRDs..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml
 
@@ -248,6 +245,45 @@ tasks:
 
         echo ""
         echo "e2e environment ready! Run 'task e2e' to execute the chainsaw suite."
+
+  e2e-milo:setup:
+    desc: Spin up the multi-project e2e environment — a real Milo control plane, three real Projects, and the operator wired to it (see test/e2e-milo/README.md)
+    silent: true
+    cmds:
+      # Built here rather than by the script: the image is this repo's, the
+      # script is about the environment around it. Loading it into kind is the
+      # script's job, because the cluster may not exist yet.
+      - task: dev:build
+      - SERVICES_IMAGE="{{.SERVICES_IMAGE_NAME}}:{{.SERVICES_IMAGE_TAG}}" bash hack/e2e-milo/up.sh
+      - |
+        echo ""
+        echo "e2e-milo environment ready! Run 'task e2e-milo' to execute the chainsaw suites."
+
+  e2e-milo:
+    desc: Run the multi-project chainsaw suites (requires 'task e2e-milo:setup' first)
+    deps:
+      - task: install-go-tool
+        vars:
+          NAME: chainsaw
+          PACKAGE: github.com/kyverno/chainsaw
+          VERSION: "{{.CHAINSAW_VERSION}}"
+    cmds:
+      # The cluster kubeconfig paths in the config are relative to this
+      # directory, so chainsaw has to run from the repository root.
+      #
+      # KUBECONFIG is what chainsaw uses for anything not addressed to a named
+      # cluster — including the ephemeral namespace it creates per test. Without
+      # it that lands in whatever cluster the developer's ambient kubeconfig
+      # happens to point at, which is not this one.
+      - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
+    silent: false
+
+  e2e-milo:down:
+    desc: Delete the multi-project e2e cluster
+    silent: true
+    cmds:
+      - kind delete cluster --name sc-milo
+      - rm -f test/e2e-milo/.kubeconfig
 
   e2e:
     desc: Run chainsaw e2e tests (requires 'task e2e:setup' first)
