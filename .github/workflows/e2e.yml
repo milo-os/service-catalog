@@ -82,6 +82,8 @@ jobs:
   e2e-milo:
     name: Chainsaw E2E (multi-project, real Milo)
     runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,10 +116,10 @@ jobs:
           version: v2.8.2
 
       - name: Set up the environment
-        run: task e2e-milo:setup
+        run: task --yes e2e-milo:setup
 
       - name: Run multi-project E2E tests
-        run: task e2e-milo
+        run: task --yes e2e-milo
 
       - name: Dump operator logs on failure
         if: failure()
