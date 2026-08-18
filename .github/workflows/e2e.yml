@@ -99,13 +99,19 @@ jobs:
 
       # This environment brings up its own kind cluster rather than test-infra's:
       # it needs a host port mapped through to Milo, because the suites address
-      # project control planes from outside the cluster.
+      # project control planes from outside the cluster, and test-infra's
+      # cluster-up creates from a fixed config file in its own repository with
+      # no port mapping to configure.
       - name: Install kind
         run: go install sigs.k8s.io/kind@v0.24.0
 
-      # The Milo and billing manifests are published as Flux OCI artifacts.
-      - name: Install oras
-        uses: oras-project/setup-oras@v1
+      # The Milo and billing manifests are published as Flux OCI artifacts, and
+      # are installed by Flux — as in the job above. The cluster this
+      # environment brings up itself has none, so the setup installs it.
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@v2.8.2
+        with:
+          version: v2.8.2
 
       - name: Set up the environment
         run: task e2e-milo:setup

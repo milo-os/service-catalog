@@ -1,7 +1,7 @@
-# Milo's storage. Upstream ships etcd as a Flux HelmRelease; this environment has
-# no Flux, and installing it to obtain one StatefulSet is more machinery than the
-# StatefulSet itself. The image is the one the kind node already carries, so the
-# node pulls nothing.
+# Milo's storage. Upstream ships etcd as a Flux HelmRelease; this environment
+# runs Flux's source and kustomize controllers only, and adding helm-controller
+# to obtain one StatefulSet is more machinery than the StatefulSet itself. The
+# image is the one the kind node already carries, so the node pulls nothing.
 #
 # Single member, no TLS, emptyDir: this etcd holds only what a run puts in it and
 # is discarded with the cluster.

@@ -10,7 +10,7 @@ nodes:
       #
       # 32460 rather than a lower port because other kind clusters on a
       # developer's machine commonly hold 30443 and 32450. If it collides,
-      # change it here and in config/overlays/e2e-milo/milo/patches.
+      # change it here and in config/overlays/e2e-milo/flux/milo.yaml.
       - containerPort: 32460
         hostPort: 32460
         protocol: TCP

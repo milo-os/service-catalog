@@ -21,14 +21,9 @@ kind: Kustomization
 resources:
   - ../../../base/crd
 
-# The billing CRDs are applied by the setup task from the same published
-# billing-kustomize bundle config/overlays/e2e installs through Flux, rather
-# than being listed here as pinned raw files. The whole set is needed, not the
-# two that overlay names explicitly: ServiceEntitlementReconciler indexes
-# BillingAccountBinding and BillingEntitlement at startup, and the manager
-# exits if either kind is not served. Naming files individually is how this
-# environment first failed — the set grows in the billing repo, and a list here
-# goes stale silently.
+# The billing CRDs are installed by Flux from the same published
+# billing-kustomize bundle config/overlays/e2e installs, rather than being
+# listed here as pinned raw files. See ../flux/billing-crds.yaml.
 
 components:
   - ../../../base/webhook

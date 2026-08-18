@@ -14,7 +14,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WORK_DIR="${REPO_ROOT}/bin/e2e-milo"
 KUBECONFIG_OUT="${REPO_ROOT}/test/e2e-milo/.kubeconfig"
 
 CLUSTER_NAME="sc-milo"
@@ -23,18 +22,16 @@ CLUSTER_NAME="sc-milo"
 # running on the machine, and a context can be rewritten out from under a run.
 HOST_KUBECONFIG="${REPO_ROOT}/bin/e2e-milo/kind.kubeconfig"
 
-# Milo. The bundle tag and the digest in
-# config/overlays/e2e-milo/milo/root-kustomization.yaml must name the same
-# release: the manifests and the binary they configure are one unit.
-MILO_BUNDLE="ghcr.io/milo-os/milo-kustomize"
-MILO_BUNDLE_TAG="v0.32.5"
-
-# The same billing artifact config/overlays/e2e installs through Flux. Pulled
-# directly because this environment runs no Flux.
-BILLING_BUNDLE="ghcr.io/milo-os/billing-kustomize"
-BILLING_BUNDLE_TAG="v0.0.0-main"
+# The Milo and billing manifests are published as Flux OCI artifacts, and Flux
+# is what installs them — the same way config/overlays/e2e installs the billing
+# one. Both artifacts and their pins are declared in
+# config/overlays/e2e-milo/flux.
 
 CERT_MANAGER_VERSION="v1.16.2"
+# Only the two controllers these manifests use. Flux's other controllers would
+# be four more images to pull for nothing.
+FLUX_VERSION="v2.8.2"
+FLUX_COMPONENTS="source-controller,kustomize-controller"
 
 # Built by the caller (`task e2e-milo:setup`).
 SERVICES_IMAGE="${SERVICES_IMAGE:-ghcr.io/milo-os/service-catalog:dev}"
@@ -78,27 +75,24 @@ log "installing cert-manager ${CERT_MANAGER_VERSION}"
 khost apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml" >/dev/null
 khost -n cert-manager wait --for=condition=available deploy --all --timeout=300s
 
+log "installing Flux ${FLUX_VERSION}"
+flux install --kubeconfig "${HOST_KUBECONFIG}" \
+  --version "${FLUX_VERSION}" --components "${FLUX_COMPONENTS}" >/dev/null
+
 # --- milo -------------------------------------------------------------------
-
-mkdir -p "${WORK_DIR}"
-STAGE="${WORK_DIR}/milo-stage"
-rm -rf "${STAGE}"
-mkdir -p "${STAGE}/bundle"
-
-log "fetching ${MILO_BUNDLE}:${MILO_BUNDLE_TAG}"
-# `oras pull` skips layers with no title annotation, which is how Flux publishes
-# these; fetch the layer blob and untar it.
-digest="$(oras manifest fetch "${MILO_BUNDLE}:${MILO_BUNDLE_TAG}" | jq -r '.layers[0].digest')"
-oras blob fetch "${MILO_BUNDLE}@${digest}" --output - | tar xz -C "${STAGE}/bundle"
-
-cp -R "${REPO_ROOT}/config/overlays/e2e-milo/milo/overlay" "${STAGE}/overlay"
-cp -R "${REPO_ROOT}/config/overlays/e2e-milo/milo/patches" "${STAGE}/patches"
-cp "${REPO_ROOT}/config/overlays/e2e-milo/milo/root-kustomization.yaml" "${STAGE}/kustomization.yaml"
+#
+# What this environment adds to the bundle is applied first and directly: those
+# resources are its own, and the bundle's apiserver refers to them only by name.
+# The bundle itself, with the pins and patches that compose it, is Flux's.
 
 log "deploying Milo"
-khost apply -k "${STAGE}"
+khost apply -k "${REPO_ROOT}/config/overlays/e2e-milo/milo/overlay"
 khost -n milo-system rollout status statefulset/etcd --timeout=180s
-khost -n milo-system rollout status deployment/milo-apiserver --timeout=300s
+
+khost apply -f "${REPO_ROOT}/config/overlays/e2e-milo/flux/milo.yaml"
+# The Kustomization waits on what it applies, so ready here means the apiserver
+# is rolled out with its certificate issued, not merely that it was applied.
+khost -n flux-system wait kustomization/milo --for=condition=ready --timeout=300s
 
 # --- host kubeconfig --------------------------------------------------------
 #
@@ -146,15 +140,43 @@ until kroot get --raw /readyz >/dev/null 2>&1; do sleep 2; done
 
 # --- API surface in Milo ----------------------------------------------------
 
-log "fetching ${BILLING_BUNDLE}:${BILLING_BUNDLE_TAG}"
-BILLING_DIR="${WORK_DIR}/billing"
-rm -rf "${BILLING_DIR}"
-mkdir -p "${BILLING_DIR}"
-digest="$(oras manifest fetch "${BILLING_BUNDLE}:${BILLING_BUNDLE_TAG}" | jq -r '.layers[0].digest')"
-oras blob fetch "${BILLING_BUNDLE}@${digest}" --output - | tar xz -C "${BILLING_DIR}"
+# The billing CRDs belong in Milo, not in the hosting cluster, so Flux is given
+# an identity there, under the key name it looks for rather than the operator's
+# `kubeconfig`.
+#
+# This one verifies Milo's certificate where every other client here skips it:
+# kustomize-controller rejects a kubeconfig with insecure-skip-tls-verify unless
+# it is started with --insecure-kubeconfig-tls, and loosening the controller is
+# a worse trade than trusting the CA cert-manager already issued from. It is
+# published alongside the serving certificate, and the certificate names the
+# in-cluster DNS name below.
+log "installing the billing CRDs into Milo"
+milo_ca="$(khost -n milo-system get secret milo-apiserver-tls -o jsonpath='{.data.ca\.crt}')"
+[ -n "${milo_ca}" ] || { echo "milo-apiserver-tls has no ca.crt" >&2; exit 1; }
 
-log "installing CRDs into Milo"
-kroot apply -f "${BILLING_DIR}/base/crd/bases" >/dev/null
+khost -n flux-system create secret generic milo-kubeconfig \
+  --from-file=value=/dev/stdin --dry-run=client -o yaml <<EOF | khost apply -f - >/dev/null
+apiVersion: v1
+kind: Config
+current-context: milo
+clusters:
+  - name: milo
+    cluster:
+      server: https://milo-apiserver.milo-system.svc.cluster.local:6443
+      certificate-authority-data: ${milo_ca}
+users:
+  - name: e2e-admin
+    user:
+      token: e2e-milo-admin-token
+contexts:
+  - name: milo
+    context: {cluster: milo, user: e2e-admin}
+EOF
+
+khost apply -f "${REPO_ROOT}/config/overlays/e2e-milo/flux/billing-crds.yaml"
+khost -n flux-system wait kustomization/billing-crds --for=condition=ready --timeout=300s
+
+log "installing the remaining CRDs into Milo"
 kroot apply -f "${REPO_ROOT}/config/overlays/e2e/ipclass-crd.yaml" >/dev/null
 kroot apply -f "${REPO_ROOT}/config/overlays/e2e/locationbinding-crd.yaml" >/dev/null
 kroot apply -k "${REPO_ROOT}/config/overlays/e2e-milo/milo-resources" >/dev/null
