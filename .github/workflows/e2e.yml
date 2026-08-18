@@ -99,32 +99,22 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # This environment brings up its own kind cluster rather than test-infra's:
-      # it needs a host port mapped through to Milo, because the suites address
-      # project control planes from outside the cluster, and test-infra's
-      # cluster-up creates from a fixed config file in its own repository with
-      # no port mapping to configure.
-      - name: Install kind
-        run: go install sigs.k8s.io/kind@v0.24.0
-
-      # The Milo and billing manifests are published as Flux OCI artifacts, and
-      # are installed by Flux — as in the job above. The cluster this
-      # environment brings up itself has none, so the setup installs it.
-      - name: Install Flux CLI
-        uses: fluxcd/flux2/action@v2.8.2
-        with:
-          version: v2.8.2
-
+      # Same cluster as the job above, brought up the same way. Everything this
+      # environment adds to it — Milo, the projects, and an operator pointed at
+      # Milo rather than at the cluster's own API server — is kustomize applied
+      # with kubectl, so there is nothing to install here that cluster-up and
+      # its own tool bootstrap do not already provide.
       - name: Set up the environment
         run: task --yes e2e-milo:setup
 
       - name: Run multi-project E2E tests
         run: task --yes e2e-milo
 
-      - name: Dump operator logs on failure
+      - name: Dump logs on failure
         if: failure()
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
         run: |
-          kubectl --kubeconfig bin/e2e-milo/kind.kubeconfig -n services-system logs \
-            deployment/services-controller-manager --tail=-1 || true
-          kubectl --kubeconfig bin/e2e-milo/kind.kubeconfig -n milo-system logs \
-            deployment/milo-apiserver --tail=200 || true
+          kubectl -n services-system logs deployment/services-controller-manager --tail=-1 || true
+          kubectl -n milo-system logs deployment/milo-apiserver --tail=200 || true
+          kubectl -n envoy-gateway-system get gateway,httproute -A || true

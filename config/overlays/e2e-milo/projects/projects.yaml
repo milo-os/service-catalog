@@ -1,0 +1,26 @@
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: e2e-provisioning-platform
+spec:
+  ownerRef:
+    kind: Organization
+    name: e2e-provisioning-org
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: e2e-provisioning-consumer-a
+spec:
+  ownerRef:
+    kind: Organization
+    name: e2e-provisioning-org
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: e2e-provisioning-consumer-b
+spec:
+  ownerRef:
+    kind: Organization
+    name: e2e-provisioning-org

@@ -26,18 +26,19 @@ spec:
   # from that path server-side — which is why addressing them separately is a
   # real test of isolation and not a naming convention.
   #
-  # The kubeconfig is written by hack/e2e-milo/up.sh. The path is relative to
-  # the directory chainsaw runs from, which is the repository root.
+  # The kubeconfig is committed at test/e2e-milo/kubeconfig.yaml — nothing in it
+  # is discovered at run time. The path is relative to the directory chainsaw
+  # runs from, which is the repository root.
   clusters:
     root:
-      kubeconfig: test/e2e-milo/.kubeconfig
+      kubeconfig: test/e2e-milo/kubeconfig.yaml
       context: milo-root
     platform:
-      kubeconfig: test/e2e-milo/.kubeconfig
+      kubeconfig: test/e2e-milo/kubeconfig.yaml
       context: e2e-provisioning-platform
     consumer-a:
-      kubeconfig: test/e2e-milo/.kubeconfig
+      kubeconfig: test/e2e-milo/kubeconfig.yaml
       context: e2e-provisioning-consumer-a
     consumer-b:
-      kubeconfig: test/e2e-milo/.kubeconfig
+      kubeconfig: test/e2e-milo/kubeconfig.yaml
       context: e2e-provisioning-consumer-b

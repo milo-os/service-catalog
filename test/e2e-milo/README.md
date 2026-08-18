@@ -17,14 +17,28 @@ storage reached over separate paths.
 ## Running it
 
 ```
-task e2e-milo:setup   # kind cluster, Milo, CRDs, projects, the operator
+task e2e-milo:setup   # test-infra cluster, Milo, CRDs, projects, the operator
 task e2e-milo         # the chainsaw suites
 task e2e-milo:down    # delete the cluster
 ```
 
-`setup` writes `test/e2e-milo/.kubeconfig` with one context per addressable
+`setup` brings up the same test-infra cluster every other environment in this
+repo uses, and adds Milo to it: `config/overlays/e2e-milo/milo` composes the
+published apiserver manifests with this environment's storage, credentials and
+certificates, and attaches Milo to the Gateway test-infra already runs. Because
+that is one kustomization rather than an artifact plus a patch set, it is
+applied with `kubectl apply -k` and nothing here needs Flux.
+
+It is the same `services-system` as `config/overlays/e2e`, so the two
+environments are mutually exclusive on one machine — whichever was set up last
+owns the operator. In CI they run on separate runners.
+
+`test/e2e-milo/kubeconfig.yaml` is committed, with one context per addressable
 control plane (`milo-root` and one per project); the chainsaw configuration
-names them as clusters and each operation selects the one it means.
+names them as clusters and each operation selects the one it means. Nothing in
+it is discovered at run time — Milo is reached at the gateway's host port, a
+project control plane is the same Milo behind its own URL path, and the token is
+the static one `config/overlays/e2e-milo/milo/auth.yaml` installs.
 
 ## What is real here, and what is not
 

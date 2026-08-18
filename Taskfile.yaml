@@ -5,6 +5,7 @@ vars:
   SERVICES_IMAGE_NAME: "ghcr.io/milo-os/service-catalog"
   SERVICES_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
+  MILO_KUBECONFIG: "test/e2e-milo/kubeconfig.yaml"
   TEST_INFRA_REPO_REF: 'v0.6.0'
   CONTROLLER_TOOLS_VERSION: "v0.16.4"
   DEFAULTER_GEN_VERSION: "v0.32.3"
@@ -250,12 +251,94 @@ tasks:
     desc: Spin up the multi-project e2e environment — a real Milo control plane, three real Projects, and the operator wired to it (see test/e2e-milo/README.md)
     silent: true
     cmds:
-      # Built here rather than by the script: the image is this repo's, the
-      # script is about the environment around it. Loading it into kind is the
-      # script's job, because the cluster may not exist yet.
+      # The same cluster every other environment in this repo uses. What makes
+      # this one different is not the cluster: it is that a real Milo runs in it
+      # and the operator is pointed at Milo rather than at the cluster's own API
+      # server, so each project's control plane is separately addressable.
+      #
+      # It is therefore the same services-system as config/overlays/e2e, and the
+      # two are mutually exclusive on one machine — whichever was set up last
+      # owns the operator. In CI they run on separate runners.
+      - task: test-infra:cluster-up
       - task: dev:build
-      - SERVICES_IMAGE="{{.SERVICES_IMAGE_NAME}}:{{.SERVICES_IMAGE_TAG}}" bash hack/e2e-milo/up.sh
+      - task: dev:load
       - |
+        set -e
+        echo "Deploying Milo..."
+        task test-infra:kubectl -- apply -k config/overlays/e2e-milo/milo
+        task test-infra:kubectl -- -n milo-system rollout status statefulset/etcd --timeout=180s
+        task test-infra:kubectl -- -n milo-system rollout status deployment/milo-apiserver --timeout=300s
+
+        # Rolled out is not the same as reachable: this is the first traffic
+        # over the Gateway, and the route is programmed asynchronously.
+        echo "Waiting for Milo to answer through the gateway..."
+        for _ in $(seq 1 60); do
+          kubectl --kubeconfig {{.MILO_KUBECONFIG}} --context milo-root get --raw /readyz >/dev/null 2>&1 && break
+          sleep 2
+        done
+        kubectl --kubeconfig {{.MILO_KUBECONFIG}} --context milo-root get --raw /readyz >/dev/null
+
+        # Before the operator, deliberately. The manager exits at startup if a
+        # kind it indexes is not yet served, and CRD registration reaches
+        # discovery asynchronously.
+        echo "Installing the API surface into Milo..."
+        kubectl --kubeconfig {{.MILO_KUBECONFIG}} apply -k config/overlays/e2e-milo/milo-resources
+        kubectl --kubeconfig {{.MILO_KUBECONFIG}} apply -f config/overlays/e2e/ipclass-crd.yaml
+        kubectl --kubeconfig {{.MILO_KUBECONFIG}} apply -f config/overlays/e2e/locationbinding-crd.yaml
+
+        echo "Creating projects..."
+        kubectl --kubeconfig {{.MILO_KUBECONFIG}} apply -k config/overlays/e2e-milo/projects
+        # Ready is patched here because no Milo controller-manager is deployed.
+        # The provider engages a project only once Ready is true, so this is
+        # what makes the project's control plane reachable to the operator.
+        for p in e2e-provisioning-platform e2e-provisioning-consumer-a e2e-provisioning-consumer-b; do
+          kubectl --kubeconfig {{.MILO_KUBECONFIG}} patch project "$p" --type=merge --subresource=status \
+            -p "{\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"reason\":\"E2EBootstrap\",\"message\":\"set by task e2e-milo:setup\",\"lastTransitionTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}}" >/dev/null
+        done
+
+        echo "Deploying the operator..."
+        task test-infra:kubectl -- apply -k config/overlays/e2e-milo/operator
+        task test-infra:kubectl -- -n services-system wait --for=condition=ready certificate/services-serving-cert --timeout=120s
+
+        # cert-manager's ca-injector only watches the cluster it runs in, and
+        # these webhook configurations live in Milo. Stamp the CA it issued.
+        echo "Injecting the webhook CA into Milo..."
+        ca="$(task test-infra:kubectl -- -n services-system get secret services-webhook-cert -o jsonpath='{.data.ca\.crt}')"
+        [ -n "$ca" ] || { echo "services-webhook-cert has no ca.crt" >&2; exit 1; }
+        for cfg in validatingwebhookconfigurations/services-validating mutatingwebhookconfigurations/services-mutating; do
+          patch="$(kubectl --kubeconfig {{.MILO_KUBECONFIG}} get "$cfg" -o json |
+            jq -c --arg ca "$ca" '[.webhooks | to_entries[] |
+              {op: "replace", path: "/webhooks/\(.key)/clientConfig/caBundle", value: $ca}]')"
+          kubectl --kubeconfig {{.MILO_KUBECONFIG}} patch "$cfg" --type=json -p "$patch" >/dev/null
+        done
+
+        task test-infra:kubectl -- -n services-system rollout status deployment/services-controller-manager --timeout=180s
+
+        # A suite that runs before a project is engaged fails as though the
+        # operator were broken, so wait — and fail here rather than time out
+        # quietly, because a silent wait that never matches is
+        # indistinguishable from one that did.
+        echo "Waiting for the operator to engage every project..."
+        for p in e2e-provisioning-platform e2e-provisioning-consumer-a e2e-provisioning-consumer-b; do
+          engaged=""
+          for _ in $(seq 1 60); do
+            # Captured before matching rather than piped into `grep -q`: under
+            # `pipefail`, grep closing the pipe on its first match kills kubectl
+            # with SIGPIPE and the successful match reads as a failed pipeline.
+            log="$(task test-infra:kubectl -- -n services-system logs deployment/services-controller-manager --tail=-1 2>/dev/null || true)"
+            if printf '%s' "$log" | grep -q "Successfully registered and engaged new cluster.*$p"; then
+              engaged=yes
+              break
+            fi
+            sleep 2
+          done
+          [ -n "$engaged" ] || {
+            echo "project $p was never engaged by the operator" >&2
+            task test-infra:kubectl -- -n services-system logs deployment/services-controller-manager --tail=100 >&2
+            exit 1
+          }
+        done
+
         echo ""
         echo "e2e-milo environment ready! Run 'task e2e-milo' to execute the chainsaw suites."
 
@@ -275,15 +358,14 @@ tasks:
       # cluster — including the ephemeral namespace it creates per test. Without
       # it that lands in whatever cluster the developer's ambient kubeconfig
       # happens to point at, which is not this one.
-      - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
+      - KUBECONFIG={{.MILO_KUBECONFIG}} "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
     silent: false
 
   e2e-milo:down:
-    desc: Delete the multi-project e2e cluster
+    desc: Delete the e2e cluster
     silent: true
     cmds:
-      - kind delete cluster --name sc-milo
-      - rm -f test/e2e-milo/.kubeconfig
+      - task: test-infra:cluster-down
 
   e2e:
     desc: Run chainsaw e2e tests (requires 'task e2e:setup' first)

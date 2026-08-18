@@ -10,7 +10,7 @@ kind: Kustomization
 #
 # The webhook configurations name a Service in the kind cluster, which Milo
 # resolves through cluster DNS because it runs there too. Their caBundle is
-# stamped by the bootstrap: cert-manager's ca-injector watches the cluster it
+# stamped by the setup task: cert-manager's ca-injector watches the cluster it
 # runs in and cannot see a webhook configuration that lives in Milo.
 
 # The IPClass and LocationBinding CRDs config/overlays/e2e hand-authors are
@@ -20,10 +20,16 @@ kind: Kustomization
 # environments drift.
 resources:
   - ../../../base/crd
-
-# The billing CRDs are installed by Flux from the same published
-# billing-kustomize bundle config/overlays/e2e installs, rather than being
-# listed here as pinned raw files. See ../flux/billing-crds.yaml.
+  # The whole published billing CRD set, not the two kinds the suites name:
+  # ServiceEntitlementReconciler indexes BillingAccountBinding and
+  # BillingEntitlement at startup and the manager exits if either is not served.
+  # A directory reference is what keeps that true — the set grows in the billing
+  # repo, and a hand-maintained list goes stale silently.
+  #
+  # Deliberately unpinned, tracking the same branch config/overlays/e2e installs
+  # through its v0.0.0-main artifact: the two environments install one CRD set,
+  # and pinning this one further would let them drift silently.
+  - github.com/milo-os/billing//config/base/crd?ref=main
 
 components:
   - ../../../base/webhook

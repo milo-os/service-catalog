@@ -3,8 +3,8 @@ kind: Kustomization
 
 # The operator, running in the kind cluster but serving no API of its own there.
 #
-# Everything it reads and writes lives in Milo, reached over a kubeconfig
-# (../milo-access). Nothing in this kustomization is a CRD or a webhook
+# Everything it reads and writes lives in Milo, reached over the kubeconfig in
+# milo-kubeconfig.yaml. Nothing in this kustomization is a CRD or a webhook
 # configuration: those are cluster-scoped API surface and belong to the control
 # plane that serves them, which is Milo — see ../milo-resources.
 #
@@ -16,6 +16,7 @@ namespace: services-system
 
 resources:
   - namespace.yaml
+  - milo-kubeconfig.yaml
   - ../../../base/manager
   - ../../../base/certmanager
 

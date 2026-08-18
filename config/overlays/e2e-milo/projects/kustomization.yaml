@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The provider project owning the source objects, and two consumer projects.
+# Only the first consumer is entitled by the suites; the second is what
+# "unentitled" is measured against, and is entitled at the end of the isolation
+# suite to show it was never simply inert.
+#
+# status.Ready is not set here — a status subresource cannot be applied — and no
+# Milo controller-manager is deployed to set it. The setup task patches it, and
+# the provider engages a project only once Ready is true, so that patch is what
+# makes a project's control plane reachable to the operator.
+
+resources:
+  - projects.yaml

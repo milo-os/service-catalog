@@ -1,0 +1,68 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Milo for this environment: the published apiserver manifests, composed with
+# what this environment supplies for the pieces they leave open.
+#
+# The bundle is referenced as a remote base at the commit its OCI artifact is
+# built from, rather than pulled as that artifact by Flux. Both pin the same
+# tree immutably; a plain kustomization can merge local files into it, which a
+# Flux Kustomization cannot — it builds one path in one source. That single
+# limitation is what previously split this environment in two, with the
+# resources here applied separately from the patches that configure them.
+#
+# This is a deliberately small Milo: the apiserver and its storage, and nothing
+# else — no controller-manager, no audit or tracing sinks, no authorization
+# provider. Project control-plane paths serve without any of them, which is all
+# these suites need. Upstream's own overlays/test-infra pulls in argo-events, an
+# audit webhook aimed at a vector sink and tracing aimed at a Tempo endpoint,
+# none of which this cluster runs, which is why this composes the pieces rather
+# than consuming that overlay.
+#
+# Project.status.Ready is set by the setup task rather than by a controller,
+# because the controller-manager is not deployed. See test/e2e-milo/README.md.
+
+namespace: milo-system
+
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - auth.yaml
+  # v0.32.5. By commit rather than by tag: a tag can be republished, and the
+  # tree this resolves to configures the image pinned below — the manifests and
+  # the binary they configure are one unit, and a mismatch is a deployment
+  # configured for a Milo it is not running. Update the two together.
+  - github.com/milo-os/milo//config/apiserver?ref=862dc4d2f1a2327e139536f7a07f3755b9562c3a
+
+components:
+  # The CA everything here chains to: a selfSigned Issuer, a CA Certificate, and
+  # a CA Issuer that signs from it.
+  - github.com/milo-os/milo//config/components/certificates?ref=862dc4d2f1a2327e139536f7a07f3755b9562c3a
+  # Milo's serving certificate, issued by that CA. Upstream keeps it in its
+  # test-infra overlay rather than in a shared component, but it is a plain
+  # Certificate for milo-apiserver.milo-system.svc with no other coupling to
+  # that overlay, so it is taken as-is instead of re-vendored.
+  - github.com/milo-os/milo//config/overlays/test-infra/components/certificates?ref=862dc4d2f1a2327e139536f7a07f3755b9562c3a
+  # How the chainsaw suites reach Milo. They run on the HOST and address project
+  # control planes by URL path, so Milo has to be reachable from outside the
+  # cluster; this attaches it to the Gateway test-infra already runs, which is
+  # also how production reaches it.
+  #
+  # Taken from upstream rather than hand-written because it carries two things
+  # that are easy to get wrong and expensive to debug: an 86400s timeout on the
+  # watch-matched route, without which Envoy's default closes every watch a
+  # client-go informer opens, and a BackendTLSPolicy that re-encrypts to the
+  # apiserver's own certificate instead of speaking plaintext at a TLS port.
+  - github.com/milo-os/milo//config/components/gateway-api?ref=862dc4d2f1a2327e139536f7a07f3755b9562c3a
+
+images:
+  - name: ghcr.io/milo-os/milo
+    # tag v0.32.5, matching the manifest ref above. An index digest, so the node
+    # resolves its own platform.
+    digest: sha256:3b4f2890491220c4c79731d9e9b350881ce15dcca9de15b9f511cd7e5323f609
+
+patches:
+  - path: apiserver-patch.yaml
+    target:
+      kind: Deployment
+      name: milo-apiserver

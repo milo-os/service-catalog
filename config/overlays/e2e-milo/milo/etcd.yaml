@@ -1,7 +1,8 @@
-# Milo's storage. Upstream ships etcd as a Flux HelmRelease; this environment
-# runs Flux's source and kustomize controllers only, and adding helm-controller
-# to obtain one StatefulSet is more machinery than the StatefulSet itself. The
-# image is the one the kind node already carries, so the node pulls nothing.
+# Milo's storage. Upstream ships etcd as a Flux HelmRelease on a bitnami chart
+# whose images have been withdrawn from Docker Hub — it works only because the
+# release overrides them to bitnamilegacy, which the next chart bump would undo.
+# A StatefulSet is less machinery than a chart for one member, and this image is
+# the one the kind node already carries, so the node pulls nothing.
 #
 # Single member, no TLS, emptyDir: this etcd holds only what a run puts in it and
 # is discarded with the cluster.

@@ -1,0 +1,88 @@
+# Everything the published apiserver Deployment leaves to the environment.
+#
+# The bundle drives every flag from an env var and ships no volumes at all, so
+# this is where storage, credentials and certificates are actually wired. A
+# value left at the bundle's default that this environment cannot satisfy is a
+# startup failure, not a fallback: the flags are passed unconditionally with
+# $(VAR) substitution, so a default pointing at a file only an optional
+# component mounts fails, and so does an empty value that has to parse as
+# something. --tracing-config-file and --audit-webhook-initial-backoff are the
+# two clearest cases, and both are noted below.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milo-apiserver
+spec:
+  template:
+    spec:
+      containers:
+        - name: milo-apiserver
+          env:
+            # The single-member etcd in milo/overlay/etcd.yaml. No TLS,
+            # so the bundle's client certificate flags are blanked
+            # rather than left pointing at secrets this environment
+            # never creates.
+            - name: ETCD_SERVERS
+              value: http://etcd.milo-system.svc.cluster.local:2379
+            - name: ETCD_CAFILE
+              value: ""
+            - name: ETCD_CERTFILE
+              value: ""
+            - name: ETCD_KEYFILE
+              value: ""
+            - name: ETCD_PREFIX
+              value: /
+            # RBAC only. The alternative is the OpenFGA authorization
+            # provider, which this environment does not deploy. The
+            # authn/authz webhook configs are blanked for the same
+            # reason: the bundle points them at files only that
+            # provider's deployment supplies.
+            - name: AUTHORIZATION_MODE
+              value: RBAC
+            - name: AUTHORIZATION_WEBHOOK_CONFIG_FILE
+              value: ""
+            - name: AUTHENTICATION_WEBHOOK_CONFIG_FILE
+              value: ""
+            - name: TOKEN_AUTH_FILE
+              value: /etc/kubernetes/auth/tokens.csv
+            # cert-manager writes the issuing CA alongside the serving
+            # cert, so one mount answers both. The bundle's default path
+            # belongs to a trust bundle this environment does not
+            # deploy.
+            - name: CLIENT_CA_FILE
+              value: /etc/kubernetes/pki/apiserver/ca.crt
+            - name: SERVICE_ACCOUNT_KEY_FILE
+              value: /etc/kubernetes/pki/apiserver/ca.crt
+            # No tracing sink here, and the bundle's default path is
+            # mounted only by its apiserver-tracing component, which
+            # this environment does not pull in. Empty is the upstream
+            # default: tracing off.
+            - name: TRACING_CONFIG_FILE
+              value: ""
+            # No audit sink here, so AUDIT_POLICY_FILE stays empty and
+            # nothing is emitted. The backoff still has to parse as a
+            # duration: the flag is passed unconditionally and "" is not
+            # one, so the bundle's own default makes the apiserver exit
+            # at startup before it ever reads the policy file and
+            # discovers auditing is off. Upstream's overlay never hits
+            # this because it always enables auditing.
+            - name: AUDIT_WEBHOOK_INITIAL_BACKOFF
+              value: 10s
+            - name: LOG_LEVEL
+              value: "2"
+            - name: LOGGING_FORMAT
+              value: text
+          volumeMounts:
+            - name: auth-tokens
+              mountPath: /etc/kubernetes/auth
+              readOnly: true
+            - name: tls-certs
+              mountPath: /etc/kubernetes/pki/apiserver
+              readOnly: true
+      volumes:
+        - name: auth-tokens
+          secret:
+            secretName: milo-apiserver-auth-tokens
+        - name: tls-certs
+          secret:
+            secretName: milo-apiserver-tls
