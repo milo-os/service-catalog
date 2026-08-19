@@ -57,13 +57,21 @@ const (
 	maxProvisionedObjectsPerResource = 100
 
 	// Provisioned ledger reasons.
-	reasonKindNotAllowed           = "KindNotAllowed"
+	reasonProjectionInvalid        = "ProjectionInvalid"
+	reasonSourceProjectNotOwned    = "SourceProjectNotOwned"
 	reasonKindNotServed            = "KindNotServed"
 	reasonSelectorEmpty            = "SelectorEmpty"
 	reasonSelectorMatchesTooMany   = "SelectorMatchesTooMany"
 	reasonSourceProjectUnreachable = "SourceProjectUnreachable"
 	reasonSourceListFailed         = "SourceListFailed"
 	reasonApplyFailed              = "ApplyFailed"
+
+	// authorizationCaveat explains the gap to the consumer, on every installed
+	// resource. It reaches the entitlement ledger, so the gap is visible in a
+	// running system rather than only in a design document.
+	authorizationCaveat = "This reference was installed by the platform, which is authorized to use " +
+		"the source object. The project itself was not granted use of it, so the reference works on " +
+		"the platform's authority rather than the project's."
 )
 
 // ProvisioningReconciler installs the resources a service declares in
@@ -75,7 +83,7 @@ const (
 // entitlement, same label-scoped pruning, same periodic resync standing in for
 // cross-plane events. Only the target kind and the source objects differ,
 // coming from a declaration instead of being wired in. That is why this
-// controller re-checks the allowlist rather than trusting admission.
+// controller re-checks the declaration rather than trusting admission.
 //
 // It runs on the multicluster manager, so each reconcile is scoped to one
 // engaged project cluster (req.ClusterName). ServiceConfiguration lives on the
@@ -93,11 +101,12 @@ type ProvisioningReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
-// This controller holds no per-kind RBAC grants. The bound is
-// internal/provisioning.Lookup, checked at admission and before every write.
-// RBAC cannot bound it: the operator's certificate carries system:masters.
-// Narrow that identity and the grants should come from the allowlist, not from
-// hand-written markers.
+// This controller holds no per-kind RBAC grants, and could not: the kinds are
+// named by providers at runtime and the operator's certificate carries
+// system:masters, so RBAC bounds nothing here. What bounds it is the shape of a
+// projection and the provider's ownership of the source project, both checked
+// at admission and again before every write. Whether a given reference is
+// acceptable is the target API's own decision, made when it rejects the write.
 
 func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -158,6 +167,15 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		serviceName = serviceRefName
 	}
 
+	// A projection may read only out of the project the service is published
+	// from. Admission enforces it too; it is re-derived here because that is
+	// the check a document already in etcd can have been admitted without.
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: serviceRefName}, &svc); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get Service %q: %w", serviceRefName, err)
+	}
+	producerProject := svc.Spec.Owner.ProducerProjectRef.Name
+
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
 		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
@@ -171,7 +189,16 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	ledger := make([]servicesv1alpha1.ProvisionedResourceStatus, 0, len(sc.Spec.Provisioning.Resources))
 	for i := range sc.Spec.Provisioning.Resources {
 		decl := &sc.Spec.Provisioning.Resources[i]
-		ledger = append(ledger, r.reconcileResource(ctx, consumerClient, &entitlement, serviceName, decl))
+		ledger = append(ledger, r.reconcileResource(
+			ctx, consumerClient, &entitlement, serviceName, producerProject, decl))
+	}
+
+	// Objects installed by a declaration that is no longer there. The
+	// entitlement's own ledger is what remembers them, so a withdrawn
+	// declaration is still torn down without the platform holding a list of
+	// every kind provisioning has ever written.
+	if err := r.pruneUndeclared(ctx, consumerClient, &entitlement, sc.Spec.Provisioning.Resources); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{RequeueAfter: provisioningResyncInterval},
@@ -186,24 +213,36 @@ func (r *ProvisioningReconciler) reconcileResource(
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
+	producerProject string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
 ) servicesv1alpha1.ProvisionedResourceStatus {
 	kind := decl.Projection.Kind
 	entry := servicesv1alpha1.ProvisionedResourceStatus{
 		Name: decl.Name,
-		Kind: &servicesv1alpha1.GVKRef{Group: kind.Group, Kind: kind.Kind},
+		Kind: &servicesv1alpha1.ProjectedKindRef{Group: kind.Group, Version: kind.Version, Kind: kind.Kind},
 	}
 
-	// Second enforcement point. Admission already rejected an unlisted kind,
-	// but a ServiceConfiguration admitted under an older or wider allowlist
-	// stays in etcd, and the webhook can be absent from the cluster. This check
-	// bounds what gets written.
-	allowed, err := provisioning.Lookup(kind)
+	// Second enforcement point. Admission already refused a declaration that
+	// does not resolve, but one admitted under an earlier schema stays in etcd
+	// and the webhook can be absent from the cluster.
+	projection, err := provisioning.Resolve(decl.Projection)
 	if err != nil {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-		entry.Reason = reasonKindNotAllowed
+		entry.Reason = reasonProjectionInvalid
 		entry.Message = fmt.Sprintf("%s cannot install %s.%s into this project: %s",
 			serviceName, kind.Kind, kind.Group, err.Error())
+		return entry
+	}
+
+	// The other half of that check. A service offers only what it holds in a
+	// project it owns; without this the platform would read a project the
+	// provider was never granted, with an identity nothing stops.
+	if decl.Projection.SourceProject != producerProject {
+		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
+		entry.Reason = reasonSourceProjectNotOwned
+		entry.Message = fmt.Sprintf(
+			"%s declared %q reading out of %q, which is not the project it is published from, so nothing was installed.",
+			serviceName, decl.Name, decl.Projection.SourceProject)
 		return entry
 	}
 
@@ -229,7 +268,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 	}
 
 	var sourceList unstructured.UnstructuredList
-	sourceList.SetGroupVersionKind(listGVK(allowed))
+	sourceList.SetGroupVersionKind(projection.ListGVK())
 	if err := sourceCluster.GetClient().List(ctx, &sourceList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		if apimeta.IsNoMatchError(err) {
 			entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
@@ -257,7 +296,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 	for i := range sourceList.Items {
 		src := &sourceList.Items[i]
 		name := provisionedObjectName(serviceName, src.GetName())
-		if err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl, allowed, src, name); err != nil {
+		if err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl, projection, src, name); err != nil {
 			if apimeta.IsNoMatchError(err) {
 				entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
 				entry.Reason = reasonKindNotServed
@@ -277,7 +316,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 	// Pruning runs only after the source list succeeded, scoped to this
 	// declaration, so a declaration that could not resolve never removes
 	// another's objects.
-	if err := r.prune(ctx, consumerClient, entitlement, allowed, decl.Name, desired); err != nil {
+	if err := r.prune(ctx, consumerClient, entitlement, projection.GVK, decl.Name, desired); err != nil {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 		entry.Reason = reasonApplyFailed
 		entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v", serviceName, kind.Kind, err)
@@ -300,10 +339,12 @@ func (r *ProvisioningReconciler) reconcileResource(
 	// would then accept the write independently. Until then the ledger records
 	// the gap, because revoking access later changes nothing: the check runs at
 	// create, not at use, so an installed reference keeps working.
-	entry.AuthorizationEstablished = !allowed.TargetAPIAuthorizesSource
-	if allowed.TargetAPIAuthorizesSource {
-		entry.Message = allowed.AuthorizationCaveat
-	}
+	//
+	// It is unconditional. Nothing establishes a consumer grant for any kind,
+	// so claiming otherwise for a kind that happens not to check would report
+	// on the target API's rigour rather than on what the platform did.
+	entry.AuthorizationEstablished = false
+	entry.Message = authorizationCaveat
 	return entry
 }
 
@@ -317,12 +358,12 @@ func (r *ProvisioningReconciler) upsert(
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
-	allowed provisioning.AllowedKind,
+	projection provisioning.Projection,
 	source *unstructured.Unstructured,
 	name string,
 ) error {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(objectGVK(allowed))
+	u.SetGroupVersionKind(projection.GVK)
 	u.SetName(name)
 
 	_, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
@@ -346,7 +387,7 @@ func (r *ProvisioningReconciler) upsert(
 		}
 
 		return unstructured.SetNestedMap(u.Object,
-			allowed.ReferenceSpec(decl.Projection.SourceProject, source.GetName()), "spec")
+			projection.Spec(decl.Projection.SourceProject, source.GetName()), "spec")
 	})
 	return err
 }
@@ -361,7 +402,7 @@ func (r *ProvisioningReconciler) prune(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
-	allowed provisioning.AllowedKind,
+	gvk schema.GroupVersionKind,
 	declName string,
 	keep map[string]struct{},
 ) error {
@@ -372,12 +413,12 @@ func (r *ProvisioningReconciler) prune(
 	}
 
 	var list unstructured.UnstructuredList
-	list.SetGroupVersionKind(listGVK(allowed))
+	list.SetGroupVersionKind(provisioning.ListGVK(gvk))
 	if err := consumerClient.List(ctx, &list, match); err != nil {
 		if apimeta.IsNoMatchError(err) {
 			return nil
 		}
-		return fmt.Errorf("failed to list provisioned %s objects: %w", allowed.Kind, err)
+		return fmt.Errorf("failed to list provisioned %s objects: %w", gvk.Kind, err)
 	}
 
 	for i := range list.Items {
@@ -389,26 +430,70 @@ func (r *ProvisioningReconciler) prune(
 			continue
 		}
 		if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete withdrawn %s %q: %w", allowed.Kind, item.GetName(), err)
+			return fmt.Errorf("failed to delete withdrawn %s %q: %w", gvk.Kind, item.GetName(), err)
 		}
 	}
 	return nil
 }
 
-// pruneAll removes everything provisioned for this entitlement, across every
-// allowlisted kind.
+// pruneAll removes everything provisioned for this entitlement.
 //
-// It sweeps the whole allowlist rather than the kinds the current configuration
-// declares, so removing a declaration, or removing a kind from the allowlist,
-// still tears down what it installed.
+// The kinds come from the entitlement's own ledger, not from the configuration:
+// teardown runs when the entitlement stops being Active, which includes the
+// case where nothing declares anything any more. What was installed here is
+// what this project recorded receiving.
 func (r *ProvisioningReconciler) pruneAll(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 ) error {
-	for _, allowed := range provisioning.All() {
+	return r.sweep(ctx, consumerClient, entitlement, ledgerKinds(entitlement), nil)
+}
+
+// pruneUndeclared removes objects installed by a declaration the configuration
+// no longer carries. Per-declaration pruning cannot: it is scoped by the
+// declaration's own label, and a withdrawn declaration is not iterated.
+func (r *ProvisioningReconciler) pruneUndeclared(
+	ctx context.Context,
+	consumerClient client.Client,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	declared []servicesv1alpha1.ProvisionedResourceSpec,
+) error {
+	keep := make(map[string]struct{}, len(declared))
+	kinds := make(map[schema.GroupVersionKind]struct{}, len(declared))
+	for i := range declared {
+		keep[declared[i].Name] = struct{}{}
+		// A declaration that does not resolve installed nothing, and naming a
+		// versionless kind here would make the sweep itself fail.
+		if kind := declared[i].Projection.Kind; kind.Version != "" {
+			kinds[schema.GroupVersionKind{Group: kind.Group, Version: kind.Version, Kind: kind.Kind}] = struct{}{}
+		}
+	}
+	// The ledger still describes the previous reconcile at this point, so a
+	// declaration withdrawn since is named there and nowhere else.
+	for _, gvk := range ledgerKinds(entitlement) {
+		kinds[gvk] = struct{}{}
+	}
+
+	all := make([]schema.GroupVersionKind, 0, len(kinds))
+	for gvk := range kinds {
+		all = append(all, gvk)
+	}
+	return r.sweep(ctx, consumerClient, entitlement, all, keep)
+}
+
+// sweep deletes every object this entitlement owns, of the given kinds, whose
+// declaration is not in keep. A nil keep removes everything.
+func (r *ProvisioningReconciler) sweep(
+	ctx context.Context,
+	consumerClient client.Client,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	kinds []schema.GroupVersionKind,
+	keep map[string]struct{},
+) error {
+	for _, gvk := range kinds {
 		var list unstructured.UnstructuredList
-		list.SetGroupVersionKind(listGVK(allowed))
+		list.SetGroupVersionKind(provisioning.ListGVK(gvk))
 		if err := consumerClient.List(ctx, &list, client.MatchingLabels{
 			labelManagedBy:       labelManagedByValue,
 			labelEntitlementName: entitlement.Name,
@@ -416,19 +501,40 @@ func (r *ProvisioningReconciler) pruneAll(
 			if apimeta.IsNoMatchError(err) {
 				continue
 			}
-			return fmt.Errorf("failed to list provisioned %s objects: %w", allowed.Kind, err)
+			return fmt.Errorf("failed to list provisioned %s objects: %w", gvk.Kind, err)
 		}
 		for i := range list.Items {
 			item := &list.Items[i]
 			if !ownedBy(item.GetOwnerReferences(), entitlement.UID) {
 				continue
 			}
+			if _, ok := keep[item.GetLabels()[labelProvisionedResource]]; ok {
+				continue
+			}
 			if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("failed to delete provisioned %s %q: %w", allowed.Kind, item.GetName(), err)
+				return fmt.Errorf("failed to delete provisioned %s %q: %w", gvk.Kind, item.GetName(), err)
 			}
 		}
 	}
 	return nil
+}
+
+// ledgerKinds is what this project recorded receiving, deduplicated.
+func ledgerKinds(entitlement *servicesv1alpha1.ServiceEntitlement) []schema.GroupVersionKind {
+	seen := make(map[schema.GroupVersionKind]struct{})
+	var out []schema.GroupVersionKind
+	for _, entry := range entitlement.Status.ProvisionedResources {
+		if entry.Kind == nil || entry.Kind.Version == "" {
+			continue
+		}
+		gvk := schema.GroupVersionKind{Group: entry.Kind.Group, Version: entry.Kind.Version, Kind: entry.Kind.Kind}
+		if _, dup := seen[gvk]; dup {
+			continue
+		}
+		seen[gvk] = struct{}{}
+		out = append(out, gvk)
+	}
+	return out
 }
 
 // writeStatus records the ledger and the Provisioned condition on the
@@ -507,14 +613,6 @@ func (r *ProvisioningReconciler) writeStatus(
 // one object, and a service cannot shadow a name a consumer already relies on.
 func provisionedObjectName(serviceName, sourceName string) string {
 	return encodeName(serviceName) + "-" + encodeName(sourceName)
-}
-
-func objectGVK(a provisioning.AllowedKind) schema.GroupVersionKind {
-	return schema.GroupVersionKind{Group: a.Group, Version: a.Version, Kind: a.Kind}
-}
-
-func listGVK(a provisioning.AllowedKind) schema.GroupVersionKind {
-	return objectGVK(a).GroupVersion().WithKind(a.Kind + "List")
 }
 
 // activePublishedConfiguration returns the ServiceConfiguration that governs a

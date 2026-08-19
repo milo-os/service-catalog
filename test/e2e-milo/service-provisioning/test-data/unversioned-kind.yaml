@@ -1,26 +1,25 @@
-# An empty selector matches everything, which would project the provider's whole
-# source project into every entitled project.
+# The provider names the version, because the provider owns the API. Omitting it
+# leaves the platform guessing which version to read and write.
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConfiguration
 metadata:
-  name: e2e-provisioning-empty-selector
+  name: e2e-provisioning-unversioned
 spec:
   serviceRef:
     name: e2e-provisioning-networking
   phase: Draft
   provisioning:
     resources:
-      - name: everything
+      - name: unversioned
         projection:
           sourceProject: e2e-provisioning-platform
           kind:
             group: ipam.miloapis.com
-            version: v1alpha1
             kind: IPClass
-          # The provider states how its API spells a cross-project reference.
-          # The platform writes those two values there and nothing else.
           reference:
             fieldPath: source
             projectKey: project
             nameKey: name
-          selector: {}
+          selector:
+            matchLabels:
+              ipam.miloapis.com/shared: "true"

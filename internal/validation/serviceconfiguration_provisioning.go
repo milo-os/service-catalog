@@ -4,7 +4,9 @@ package validation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -15,14 +17,15 @@ import (
 	"go.miloapis.com/service-catalog/internal/provisioning"
 )
 
-// validateProvisioning checks a spec.provisioning declaration against the
-// platform allowlist and the intra-document rules that do not need a lookup.
+// validateProvisioning checks the intra-document rules for a spec.provisioning
+// declaration: that each projection resolves into a write, and that it names
+// which of the provider's objects to project.
 //
-// This is the first of the allowlist's two enforcement points. It gives the
-// provider a synchronous error instead of a refusal buried in a consumer's
-// status later. It is not the binding one: the controller repeats the check
-// before every write, because this webhook can be absent from the cluster and a
-// configuration admitted under an older allowlist stays in etcd. Enforcing only
+// This is the first of two enforcement points. It gives the provider a
+// synchronous error instead of a refusal buried in a consumer's status later.
+// It is not the binding one: the controller repeats every check before it
+// writes, because this webhook can be absent from the cluster and a
+// configuration admitted under an earlier schema stays in etcd. Enforcing only
 // here, or leaving it to RBAC, would describe a control that is not in force:
 // the operator writes into consumer control planes as system:masters.
 func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
@@ -43,9 +46,15 @@ func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.Error
 		}
 		seen[res.Name] = struct{}{}
 
-		kindPath := itemPath.Child("projection", "kind")
-		if _, err := provisioning.Lookup(res.Projection.Kind); err != nil {
-			allErrs = append(allErrs, field.Invalid(kindPath, res.Projection.Kind, err.Error()))
+		if _, err := provisioning.Resolve(res.Projection); err != nil {
+			var invalid *provisioning.ErrProjectionInvalid
+			path := itemPath.Child("projection")
+			if errors.As(err, &invalid) {
+				for _, segment := range strings.Split(invalid.Field, ".") {
+					path = path.Child(segment)
+				}
+			}
+			allErrs = append(allErrs, field.Invalid(path, res.Projection, err.Error()))
 		}
 
 		// Kubernetes converts an empty selector to "match everything", which
@@ -113,8 +122,9 @@ func validateProvisioningSourceProjects(
 // validateProvisioningPublishedImmutability constrains edits to a Published
 // configuration's provisioning declaration.
 //
-// Changing a retained entry's kind or source project silently re-points
-// everything already installed under that name, so both are frozen. The
+// Changing a retained entry's kind, source project, or reference shape silently
+// re-points or rewrites everything already installed under that name, so all
+// three are frozen. The
 // selector stays mutable: adjusting which of a provider's own objects are
 // offered is how a provider reaches already-entitled projects without
 // republishing. Removing an entry stays permitted; it withdraws the declaration
@@ -146,6 +156,10 @@ func validateProvisioningPublishedImmutability(
 		}
 		if prev.Projection.SourceProject != res.Projection.SourceProject {
 			allErrs = append(allErrs, field.Forbidden(itemPath.Child("sourceProject"),
+				"can't be changed once the configuration is published"))
+		}
+		if prev.Projection.Reference != res.Projection.Reference {
+			allErrs = append(allErrs, field.Forbidden(itemPath.Child("reference"),
 				"can't be changed once the configuration is published"))
 		}
 	}

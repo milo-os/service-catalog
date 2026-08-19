@@ -69,7 +69,7 @@ func ValidateServiceConfigurationUpdate(
 	// Removing the controller's finalizer is an update, so re-validating a
 	// terminating configuration would leave an already-invalid document
 	// undeletable. A provisioning declaration goes invalid without being
-	// edited, whenever the platform narrows the allowlist under it. Deleting
+	// edited, whenever the platform narrows the schema under it. Deleting
 	// the document is the remedy.
 	terminating := !newSC.DeletionTimestamp.IsZero()
 	if !terminating {

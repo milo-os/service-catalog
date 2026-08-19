@@ -131,7 +131,7 @@ const (
 
 	// ProvisionedResourceStateUnprovisionable indicates delivery cannot succeed
 	// as declared and a retry will not help: this project's control plane does
-	// not serve the kind, or the platform allowlist does not admit it. It is
+	// not serve the kind, or the declaration does not resolve into a write. It is
 	// reported rather than skipped, because the consumer has to be told.
 	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
 )
@@ -144,10 +144,12 @@ type ProvisionedResourceStatus struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// Kind is the group and kind that was installed.
+	// Kind is the group, version, and kind that was installed. It is the
+	// entitlement's own record of what this declaration put in this project, so
+	// teardown does not depend on the declaration still being there to say.
 	//
 	// +kubebuilder:validation:Optional
-	Kind *GVKRef `json:"kind,omitempty"`
+	Kind *ProjectedKindRef `json:"kind,omitempty"`
 
 	// State is the delivery outcome for this declaration.
 	//
@@ -177,8 +179,10 @@ type ProvisionedResourceStatus struct {
 	// objects, where the target API performs its own permission check.
 	//
 	// False means the objects work on the installing identity's authority, not
-	// the consumer's. This version establishes no such grant, so it is false
-	// for every kind whose target API checks permissions. See the allowlist.
+	// the consumer's. This version establishes no such grant for any kind, so
+	// it is always false. It stays reported rather than removed: the gap is the
+	// honest limit of this version, and a consumer reading the ledger has to be
+	// able to see it.
 	//
 	// +kubebuilder:validation:Optional
 	AuthorizationEstablished bool `json:"authorizationEstablished,omitempty"`

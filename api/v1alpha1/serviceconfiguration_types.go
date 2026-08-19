@@ -560,11 +560,11 @@ type ProviderUserInterfaceSpec struct {
 // statement of what the service manages there.
 //
 // The provider supplies values in a platform-defined schema, never an object:
-// the target kind comes from a platform-owned allowlist, the object name is
-// derived, and the content references an object the provider already owns. The
-// billing, quota, and location fan-outs are bounded the same way. It matters
-// here because the operator writes into consumer planes as system:masters,
-// where RBAC is no ceiling.
+// the object name is derived, the content is a reference to an object the
+// provider already owns, and the target API decides whether that reference is
+// acceptable. The billing, quota, and location fan-outs are bounded the same
+// way. It matters here because the operator writes into consumer planes as
+// system:masters, where RBAC is no ceiling.
 type ServiceProvisioningConfig struct {
 	// Resources declares what to install. A declaration fans out across every
 	// entitled project, so the cap bounds the blast radius of one configuration
@@ -613,17 +613,27 @@ type ResourceProjectionSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	SourceProject string `json:"sourceProject"`
 
-	// Kind selects the objects to project and, through the platform allowlist,
-	// the consumer-facing kind installed to reference them. Version is absent,
-	// matching spec.quota.metricRules[].selector: the allowlist pins the served
-	// version, so an API version move does not force a republish.
+	// Kind selects the objects to project and names the consumer-facing kind
+	// installed to reference them. The provider names it, including the served
+	// version, because the provider owns the API and the platform does not.
 	//
-	// The platform allowlist must admit the kind. Admission checks it, and the
-	// controller checks it again before every write. RBAC does not, because it
-	// does not constrain the operator's identity.
+	// Whether the projection is acceptable is the target API's decision, not
+	// this document's: a reference it does not accept is refused at the write
+	// and reported on the consumer's entitlement.
 	//
 	// +kubebuilder:validation:Required
-	Kind GVKRef `json:"kind"`
+	Kind ProjectedKindRef `json:"kind"`
+
+	// Reference states where in the installed object's spec the pointer at the
+	// source object is written, and under which two keys.
+	//
+	// This is the whole of what the platform writes into spec. It is
+	// deliberately not a template: a projection may say "this object points at
+	// that one" and may not carry values, so the installed object holds no copy
+	// of anything and a consumer plane gains no data it has to keep in step.
+	//
+	// +kubebuilder:validation:Required
+	Reference ProjectedReferenceSpec `json:"reference"`
 
 	// Selector chooses which objects in SourceProject to project. A selector
 	// rather than a list of names lets a provider offer a new object to every
@@ -635,6 +645,82 @@ type ResourceProjectionSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Selector metav1.LabelSelector `json:"selector"`
+}
+
+// ProjectedKindRef identifies the API kind a projection reads and writes,
+// including the served version.
+//
+// Version is present here and absent from GVKRef because the two answer
+// different questions. A monitored resource type names a billable concept,
+// which outlives any one version. A projection performs reads and writes, which
+// happen at a version — and it is the provider's version to name, since the
+// platform does not own the API.
+type ProjectedKindRef struct {
+	// Group is the API group of the kind (e.g. "ipam.miloapis.com"). The
+	// pattern requires a dotted domain, so the core group cannot be named: no
+	// projection can produce a Secret, a ServiceAccount, or any other core
+	// object.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
+	Group string `json:"group"`
+
+	// Version is the served API version to read and write (e.g. "v1alpha1").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^v[0-9]+((alpha|beta)[0-9]*)?$`
+	Version string `json:"version"`
+
+	// Kind is the Kubernetes Kind (e.g. "IPClass").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[A-Z][A-Za-z0-9]*$`
+	Kind string `json:"kind"`
+}
+
+// ProjectedReferenceSpec describes how the target API spells a cross-project
+// reference: the field the reference sits in, and the two keys naming the
+// source project and the source object.
+//
+// The installed object's spec is exactly that one field, holding exactly those
+// two strings. Both values are supplied by the platform — the source project is
+// the one the service is published from, the name is that of an object the
+// selector matched. A provider chooses where they go, never what they are, and
+// cannot add a third.
+//
+// +kubebuilder:validation:XValidation:rule="self.projectKey != self.nameKey",message="projectKey and nameKey must differ"
+type ProjectedReferenceSpec struct {
+	// FieldPath is the dotted path within spec that holds the reference (e.g.
+	// "source" for IPClass.spec.source). Segments only: no list indexes and no
+	// escape above spec.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`
+	FieldPath string `json:"fieldPath"`
+
+	// ProjectKey is the key under FieldPath holding the source project's name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*$`
+	ProjectKey string `json:"projectKey"`
+
+	// NameKey is the key under FieldPath holding the source object's name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*$`
+	NameKey string `json:"nameKey"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

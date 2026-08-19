@@ -1,21 +1,21 @@
 # The provider's own classes, in its own project's control plane, reached over
 # its own URL path and separate from either consumer's.
-apiVersion: networking.datumapis.com/v1alpha
+apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
   name: e2e-public-unicast
   labels:
-    networking.datumapis.com/shared: "true"
+    ipam.miloapis.com/shared: "true"
 spec:
-  prefixes:
-    - 192.0.2.0/24
+  ipFamily: IPv4
+  defaultPrefixLength: 24
 ---
-apiVersion: networking.datumapis.com/v1alpha
+apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
   name: e2e-internal-only
   labels:
-    networking.datumapis.com/tier: premium
+    ipam.miloapis.com/tier: premium
 spec:
-  prefixes:
-    - 198.51.100.0/24
+  ipFamily: IPv4
+  defaultPrefixLength: 26

@@ -1,24 +1,26 @@
+# The core group cannot be named at all. A projection writes a map at one field
+# path in spec, and no core kind takes its content there — Secret and
+# ServiceAccount have no spec — so the shape excludes them rather than a list of
+# names doing it.
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceConfiguration
 metadata:
-  name: e2e-provisioning-networking
+  name: e2e-provisioning-core-group
 spec:
   serviceRef:
     name: e2e-provisioning-networking
-  phase: Published
+  phase: Draft
   provisioning:
     resources:
-      - name: shared-classes
+      - name: core-kind
         projection:
           sourceProject: e2e-provisioning-platform
           kind:
-            group: ipam.miloapis.com
-            version: v1alpha1
-            kind: IPClass
-          # The provider states how its API spells a cross-project reference.
-          # The platform writes those two values there and nothing else.
+            group: ""
+            version: v1
+            kind: Secret
           reference:
-            fieldPath: source
+            fieldPath: data
             projectKey: project
             nameKey: name
           selector:

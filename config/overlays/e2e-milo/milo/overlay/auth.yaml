@@ -8,7 +8,7 @@
 #                       CRDs and Projects.
 #   services-operator   the operator's own identity. In production it reaches
 #                       project control planes as system:masters, which is why
-#                       ProvisioningReconciler re-checks the allowlist in code
+#                       ProvisioningReconciler re-checks the declaration in code
 #                       rather than relying on RBAC. Anything narrower here
 #                       would test a ceiling production does not have.
 #

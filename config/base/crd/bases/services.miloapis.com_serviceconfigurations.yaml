@@ -589,31 +589,83 @@ spec:
                           properties:
                             kind:
                               description: |-
-                                Kind selects the objects to project and, through the platform allowlist,
-                                the consumer-facing kind installed to reference them. Version is absent,
-                                matching spec.quota.metricRules[].selector: the allowlist pins the served
-                                version, so an API version move does not force a republish.
+                                Kind selects the objects to project and names the consumer-facing kind
+                                installed to reference them. The provider names it, including the served
+                                version, because the provider owns the API and the platform does not.
 
-                                The platform allowlist must admit the kind. Admission checks it, and the
-                                controller checks it again before every write. RBAC does not, because it
-                                does not constrain the operator's identity.
+                                Whether the projection is acceptable is the target API's decision, not
+                                this document's: a reference it does not accept is refused at the write
+                                and reported on the consumer's entitlement.
                               properties:
                                 group:
                                   description: |-
-                                    Group is the Kubernetes API group of the Kind (e.g.
-                                    "compute.miloapis.com").
+                                    Group is the API group of the kind (e.g. "ipam.miloapis.com"). The
+                                    pattern requires a dotted domain, so the core group cannot be named: no
+                                    projection can produce a Secret, a ServiceAccount, or any other core
+                                    object.
                                   maxLength: 253
                                   minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
                                   type: string
                                 kind:
-                                  description: Kind is the Kubernetes Kind (e.g. "Instance").
+                                  description: Kind is the Kubernetes Kind (e.g. "IPClass").
                                   maxLength: 63
                                   minLength: 1
+                                  pattern: ^[A-Z][A-Za-z0-9]*$
+                                  type: string
+                                version:
+                                  description: Version is the served API version to
+                                    read and write (e.g. "v1alpha1").
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^v[0-9]+((alpha|beta)[0-9]*)?$
                                   type: string
                               required:
                               - group
                               - kind
+                              - version
                               type: object
+                            reference:
+                              description: |-
+                                Reference states where in the installed object's spec the pointer at the
+                                source object is written, and under which two keys.
+
+                                This is the whole of what the platform writes into spec. It is
+                                deliberately not a template: a projection may say "this object points at
+                                that one" and may not carry values, so the installed object holds no copy
+                                of anything and a consumer plane gains no data it has to keep in step.
+                              properties:
+                                fieldPath:
+                                  description: |-
+                                    FieldPath is the dotted path within spec that holds the reference (e.g.
+                                    "source" for IPClass.spec.source). Segments only: no list indexes and no
+                                    escape above spec.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$
+                                  type: string
+                                nameKey:
+                                  description: NameKey is the key under FieldPath
+                                    holding the source object's name.
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^[a-z][a-zA-Z0-9]*$
+                                  type: string
+                                projectKey:
+                                  description: ProjectKey is the key under FieldPath
+                                    holding the source project's name.
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^[a-z][a-zA-Z0-9]*$
+                                  type: string
+                              required:
+                              - fieldPath
+                              - nameKey
+                              - projectKey
+                              type: object
+                              x-kubernetes-validations:
+                              - message: projectKey and nameKey must differ
+                                rule: self.projectKey != self.nameKey
                             selector:
                               description: |-
                                 Selector chooses which objects in SourceProject to project. A selector
@@ -677,6 +729,7 @@ spec:
                               type: string
                           required:
                           - kind
+                          - reference
                           - selector
                           - sourceProject
                           type: object

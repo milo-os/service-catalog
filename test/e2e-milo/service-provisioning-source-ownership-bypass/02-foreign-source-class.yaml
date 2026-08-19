@@ -1,0 +1,14 @@
+# A class in a project the bypass service does not own, labelled so the
+# declaration's selector matches it.
+#
+# It is what makes the refusal mean something: if the controller trusted the
+# document, this object is what consumer-a would receive.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-not-the-providers-class
+  labels:
+    bypass.e2e.datumapis.com/shared: "true"
+spec:
+  ipFamily: IPv4
+  defaultPrefixLength: 24

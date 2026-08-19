@@ -40,15 +40,18 @@ project discovery and engagement by the Milo provider, admission webhooks
   suite here may claim that a caller was *refused* access to another project's
   plane — the isolation demonstrated is routing and storage. Note the operator's
   own identity is `system:masters` in production too, which is why
-  `ProvisioningReconciler` re-checks the allowlist in code rather than relying on
-  RBAC to bound it.
+  `ProvisioningReconciler` re-checks the declaration in code rather than relying
+  on RBAC to bound it.
 - **`Project.status.Ready`.** No Milo controller-manager is deployed, so the
   bootstrap sets it. The provider engages only Ready projects, so this is what
   makes a project reachable at all.
-- **The IPClass CRD.** The permissive fixture from `config/overlays/e2e`, not the
-  real IPAM API. It performs none of the authorization on `spec.source` that the
-  ledger's authorization gap is about, so that gap is asserted from the ledger
-  rather than observed from a refusal.
+- **The IPClass CRD.** The fixture from `config/overlays/e2e`, not the real IPAM
+  API. It carries the real `ipam.miloapis.com/v1alpha1` shape, including the rule
+  that a class with `spec.source` states no policy of its own, so a projected
+  object that is not a well-formed reference is refused here as it would be
+  there. It performs none of the authorization on `spec.source` that the ledger's
+  authorization gap is about, so that gap is asserted from the ledger rather than
+  observed from a refusal.
 - **TLS trust.** Clients skip verification of Milo's serving certificate. The
   certificate is real and issued by cert-manager; nothing here is testing PKI.
 
@@ -71,7 +74,7 @@ with a control:
 
 ## Which suites live where
 
-The three provisioning suites moved here, because the property they are about is
+The three provisioning suites live here, because the property they are about is
 the one the single-cluster environment cannot show. Their assertions came with
 them unchanged; what changed is that each operation now names the control plane
 it addresses, and the provider-side ones (the source classes, the ServiceConsumer

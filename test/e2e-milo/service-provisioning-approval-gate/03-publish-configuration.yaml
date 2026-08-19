@@ -12,8 +12,15 @@ spec:
         projection:
           sourceProject: e2e-provisioning-platform
           kind:
-            group: networking.datumapis.com
+            group: ipam.miloapis.com
+            version: v1alpha1
             kind: IPClass
+          # The provider states how its API spells a cross-project reference.
+          # The platform writes those two values there and nothing else.
+          reference:
+            fieldPath: source
+            projectKey: project
+            nameKey: name
           selector:
             matchLabels:
               gated.e2e.datumapis.com/shared: "true"

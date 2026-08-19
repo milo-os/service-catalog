@@ -11,6 +11,6 @@ status:
     - status: "False"
       reason: NotProvisioned
   provisionedResources:
-    - name: access-bindings
+    - name: someone-elses-classes
       state: Unprovisionable
-      reason: KindNotAllowed
+      reason: SourceProjectNotOwned

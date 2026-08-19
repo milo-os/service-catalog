@@ -19,7 +19,7 @@ spec:
       2. the unentitled project receives nothing;
       3. removing the entitlement prunes from the entitled project and leaves
          the other untouched;
-      4. the allowlist and selector-convergence behaviour still hold.
+      4. admission and selector-convergence behaviour still hold.
 
     (2) is the one that could pass for the wrong reason. An unreachable plane,
     or one not serving IPClass, is also a plane with no IPClasses in it. So
@@ -32,10 +32,11 @@ spec:
     RBAC-only here and a root grant authorizes every project path, so the
     isolation demonstrated is routing and storage. See test/e2e-milo/README.md.
 
-    The IPClass CRD installed for e2e is permissive and performs none of the
-    real IPAM API's authorization on spec.source, so the authorization gap the
-    ledger reports is asserted from the ledger rather than observed from a
-    refusal.
+    The IPClass CRD installed for e2e carries the real API's shape — a class is
+    a definition or a source-only reference, never both — so a projected object
+    that is not a well-formed reference is refused. It performs none of the real
+    API's authorization on spec.source, so the authorization gap the ledger
+    reports is asserted from the ledger rather than observed from a refusal.
 
   steps:
     - name: publish-service
@@ -73,21 +74,32 @@ spec:
             timeout: 30s
             file: assertions/assert-control-object-present.yaml
 
-    - name: reject-kind-outside-allowlist
+    - name: reject-declarations-that-do-not-resolve
       description: |
-        First of the allowlist's two enforcement points. A provider naming a
-        kind the platform does not admit, or one denied categorically because
-        installing it would grant access, is refused synchronously at admission
-        rather than failing later in a consumer's status.
+        First of two enforcement points. A declaration that cannot become a
+        write — no version, a core-group kind, a reference that is not two keys
+        at one path in spec — is refused synchronously at admission rather than
+        failing later in a consumer's status. So is one reading out of a project
+        the service is not published from, and one whose selector would project
+        the whole source project.
+
+        Which kinds are acceptable is not decided here. The API that owns a kind
+        decides whether it will accept a reference to another project's object,
+        and it says so by accepting or refusing the write.
       cluster: root
       try:
         - apply:
-            file: test-data/unlisted-kind.yaml
+            file: test-data/unversioned-kind.yaml
             expect:
               - check:
                   ($error != null): true
         - apply:
-            file: test-data/denied-kind.yaml
+            file: test-data/core-group-kind.yaml
+            expect:
+              - check:
+                  ($error != null): true
+        - apply:
+            file: test-data/unresolvable-reference.yaml
             expect:
               - check:
                   ($error != null): true
@@ -171,7 +183,7 @@ spec:
         - error:
             timeout: 30s
             resource:
-              apiVersion: networking.datumapis.com/v1alpha
+              apiVersion: ipam.miloapis.com/v1alpha1
               kind: IPClass
               metadata:
                 name: networking-e2e-datumapis-com-e2e-public-unicast
@@ -197,7 +209,7 @@ spec:
             content: |
               set -e
               kubectl patch serviceconfiguration e2e-provisioning-networking --type=json \
-                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/projection/selector","value":{"matchLabels":{"networking.datumapis.com/tier":"premium"}}}]'
+                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/projection/selector","value":{"matchLabels":{"ipam.miloapis.com/tier":"premium"}}}]'
         - assert:
             cluster: consumer-a
             timeout: 90s

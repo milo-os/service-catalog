@@ -1,5 +1,5 @@
 # The class the selector did not match must not reach the consumer project.
-apiVersion: networking.datumapis.com/v1alpha
+apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
   name: networking-e2e-datumapis-com-e2e-internal-only

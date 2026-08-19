@@ -16,5 +16,6 @@ status:
       state: Installed
       objectCount: 1
       kind:
-        group: networking.datumapis.com
+        group: ipam.miloapis.com
+        version: v1alpha1
         kind: IPClass

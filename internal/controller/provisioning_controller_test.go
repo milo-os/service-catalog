@@ -32,8 +32,8 @@ const (
 )
 
 var ipClassGVK = schema.GroupVersionKind{
-	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
+	Group:   "ipam.miloapis.com",
+	Version: "v1alpha1",
 	Kind:    "IPClass",
 }
 
@@ -43,6 +43,20 @@ func provScheme() *runtime.Scheme {
 	s.AddKnownTypeWithName(ipClassGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(ipClassGVK.GroupVersion().WithKind("IPClassList"), &unstructured.UnstructuredList{})
 	return s
+}
+
+// provRootClient holds what lives at the platform root: the Service, whose
+// producer project bounds every projection, and the configurations.
+func provRootClient(objs ...client.Object) client.Client {
+	svc := &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: provServiceName},
+		Spec: servicesv1alpha1.ServiceSpec{
+			Owner: servicesv1alpha1.ServiceOwner{
+				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: provSourceProject},
+			},
+		},
+	}
+	return provClient(append([]client.Object{svc}, objs...)...)
 }
 
 func provClient(objs ...client.Object) client.Client {
@@ -72,7 +86,7 @@ func provEntitlementObj(phase servicesv1alpha1.EntitlementPhase) *servicesv1alph
 	}
 }
 
-func provConfig(kind servicesv1alpha1.GVKRef, selector metav1.LabelSelector) *servicesv1alpha1.ServiceConfiguration {
+func provConfig(kind servicesv1alpha1.ProjectedKindRef, selector metav1.LabelSelector) *servicesv1alpha1.ServiceConfiguration {
 	return &servicesv1alpha1.ServiceConfiguration{
 		ObjectMeta: metav1.ObjectMeta{Name: provConfigName},
 		Spec: servicesv1alpha1.ServiceConfigurationSpec{
@@ -84,6 +98,7 @@ func provConfig(kind servicesv1alpha1.GVKRef, selector metav1.LabelSelector) *se
 					Projection: servicesv1alpha1.ResourceProjectionSpec{
 						SourceProject: provSourceProject,
 						Kind:          kind,
+						Reference:     ipClassReference(),
 						Selector:      selector,
 					},
 				}},
@@ -93,12 +108,22 @@ func provConfig(kind servicesv1alpha1.GVKRef, selector metav1.LabelSelector) *se
 	}
 }
 
-func ipClassKind() servicesv1alpha1.GVKRef {
-	return servicesv1alpha1.GVKRef{Group: "networking.datumapis.com", Kind: "IPClass"}
+func ipClassKind() servicesv1alpha1.ProjectedKindRef {
+	return servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Version: "v1alpha1", Kind: "IPClass"}
+}
+
+// The shape IPAM gives a cross-project class reference: spec.source, keyed by
+// project and name. The provider states it; the platform does not know it.
+func ipClassReference() servicesv1alpha1.ProjectedReferenceSpec {
+	return servicesv1alpha1.ProjectedReferenceSpec{
+		FieldPath:  "source",
+		ProjectKey: "project",
+		NameKey:    "name",
+	}
 }
 
 func sharedSelector() metav1.LabelSelector {
-	return metav1.LabelSelector{MatchLabels: map[string]string{"networking.datumapis.com/shared": "true"}}
+	return metav1.LabelSelector{MatchLabels: map[string]string{"ipam.miloapis.com/shared": "true"}}
 }
 
 func sourceClass(name string, labels map[string]string) *unstructured.Unstructured {
@@ -107,7 +132,7 @@ func sourceClass(name string, labels map[string]string) *unstructured.Unstructur
 	u.SetName(name)
 	u.SetLabels(labels)
 	_ = unstructured.SetNestedMap(u.Object, map[string]any{
-		"prefixes": []any{"192.0.2.0/24"},
+		"ipFamily": "IPv4",
 	}, "spec")
 	return u
 }
@@ -152,9 +177,9 @@ func getEntitlement(t *testing.T, c client.Client) *servicesv1alpha1.ServiceEnti
 }
 
 func TestProvisioningInstallsReferencesForActiveEntitlement(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
 	source := provClient(
-		sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}),
+		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
 		sourceClass("internal-only", nil),
 	)
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
@@ -206,8 +231,8 @@ func TestProvisioningSkipsEntitlementNotActive(t *testing.T) {
 		servicesv1alpha1.EntitlementPhasePendingApproval,
 		servicesv1alpha1.EntitlementPhaseRejected,
 	} {
-		root := provClient(provConfig(ipClassKind(), sharedSelector()))
-		source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+		root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+		source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 		consumer := provConsumerClient(provEntitlementObj(phase))
 
 		r := newProvReconciler(root, map[string]client.Client{
@@ -230,8 +255,8 @@ func TestProvisioningSkipsEntitlementNotActive(t *testing.T) {
 
 // Losing Active must remove what was installed, not merely stop adding to it.
 func TestProvisioningPrunesWhenEntitlementLeavesActive(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -259,10 +284,10 @@ func TestProvisioningPrunesWhenEntitlementLeavesActive(t *testing.T) {
 // projects without a new configuration.
 func TestProvisioningConvergesOnSelectorChange(t *testing.T) {
 	cfg := provConfig(ipClassKind(), sharedSelector())
-	root := provClient(cfg)
+	root := provRootClient(cfg)
 	source := provClient(
-		sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}),
-		sourceClass("anycast", map[string]string{"networking.datumapis.com/tier": "premium"}),
+		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
+		sourceClass("anycast", map[string]string{"ipam.miloapis.com/tier": "premium"}),
 	)
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
@@ -280,7 +305,7 @@ func TestProvisioningConvergesOnSelectorChange(t *testing.T) {
 		t.Fatalf("get config: %v", err)
 	}
 	live.Spec.Provisioning.Resources[0].Projection.Selector = metav1.LabelSelector{
-		MatchLabels: map[string]string{"networking.datumapis.com/tier": "premium"},
+		MatchLabels: map[string]string{"ipam.miloapis.com/tier": "premium"},
 	}
 	if err := root.Update(context.Background(), &live); err != nil {
 		t.Fatalf("update config: %v", err)
@@ -293,19 +318,40 @@ func TestProvisioningConvergesOnSelectorChange(t *testing.T) {
 	}
 }
 
-// The allowlist has to hold in the controller even when the declaration is
-// already in etcd, because admission can be bypassed, removed, or predate a
-// narrowing of the allowlist.
-func TestProvisioningRefusesKindOutsideAllowlist(t *testing.T) {
+// The declaration's shape has to hold in the controller even when it is already
+// in etcd, because admission can be bypassed, removed, or predate the schema
+// that would have refused it.
+func TestProvisioningRefusesUnresolvableProjection(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		kind servicesv1alpha1.GVKRef
+		kind servicesv1alpha1.ProjectedKindRef
+		ref  servicesv1alpha1.ProjectedReferenceSpec
 	}{
-		{"unlisted", servicesv1alpha1.GVKRef{Group: "apps", Kind: "Deployment"}},
-		{"categorically denied", servicesv1alpha1.GVKRef{Group: "iam.miloapis.com", Kind: "PolicyBinding"}},
+		{
+			name: "core group",
+			kind: servicesv1alpha1.ProjectedKindRef{Group: "", Version: "v1", Kind: "Secret"},
+			ref:  ipClassReference(),
+		},
+		{
+			name: "no version",
+			kind: servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Kind: "IPClass"},
+			ref:  ipClassReference(),
+		},
+		{
+			name: "reference path escapes spec",
+			kind: ipClassKind(),
+			ref:  servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "../metadata", ProjectKey: "project", NameKey: "name"},
+		},
+		{
+			name: "one key for both values",
+			kind: ipClassKind(),
+			ref:  servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "source", ProjectKey: "name", NameKey: "name"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := provClient(provConfig(tc.kind, sharedSelector()))
+			cfg := provConfig(tc.kind, sharedSelector())
+			cfg.Spec.Provisioning.Resources[0].Projection.Reference = tc.ref
+			root := provRootClient(cfg)
 			source := provClient()
 			consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
@@ -321,8 +367,8 @@ func TestProvisioningRefusesKindOutsideAllowlist(t *testing.T) {
 			}
 			entry := ent.Status.ProvisionedResources[0]
 			if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
-				entry.Reason != reasonKindNotAllowed {
-				t.Errorf("expected Unprovisionable/KindNotAllowed, got %+v", entry)
+				entry.Reason != reasonProjectionInvalid {
+				t.Errorf("expected Unprovisionable/ProjectionInvalid, got %+v", entry)
 			}
 			cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
 			if cond == nil || cond.Status != metav1.ConditionFalse {
@@ -332,10 +378,37 @@ func TestProvisioningRefusesKindOutsideAllowlist(t *testing.T) {
 	}
 }
 
+// A service offers only what it holds in a project it owns. Admission enforces
+// it, and so must the controller: this is the bound that stops the platform
+// reading a project the provider was never granted, with an identity nothing
+// constrains.
+func TestProvisioningRefusesForeignSourceProject(t *testing.T) {
+	cfg := provConfig(ipClassKind(), sharedSelector())
+	cfg.Spec.Provisioning.Resources[0].Projection.SourceProject = "someone-elses-project"
+	root := provRootClient(cfg)
+	foreign := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{
+		provConsumerProject:     consumer,
+		"someone-elses-project": foreign,
+	})
+	provReconcile(t, r)
+
+	if list := listProjected(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("a foreign source project projected %d objects", len(list.Items))
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
+		entry.Reason != reasonSourceProjectNotOwned {
+		t.Errorf("expected Unprovisionable/SourceProjectNotOwned, got %+v", entry)
+	}
+}
+
 // An empty selector converts to "match everything", which would project a
 // provider's whole source project. It must be refused, not interpreted.
 func TestProvisioningRefusesEmptySelector(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), metav1.LabelSelector{}))
+	root := provRootClient(provConfig(ipClassKind(), metav1.LabelSelector{}))
 	source := provClient(sourceClass("public-unicast", nil))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
@@ -358,8 +431,8 @@ func TestProvisioningRefusesEmptySelector(t *testing.T) {
 // not only in the source. A projection that the target API would authorize
 // against its creator reports that the consumer does not hold the grant.
 func TestProvisioningReportsUnestablishedAuthorization(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -384,8 +457,8 @@ func TestProvisioningReportsUnestablishedAuthorization(t *testing.T) {
 // A source project that is not engaged is a retryable failure, and must not
 // prune objects that are still legitimately owed.
 func TestProvisioningDoesNotPruneWhenSourceUnreachable(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -414,8 +487,8 @@ func TestProvisioningDoesNotPruneWhenSourceUnreachable(t *testing.T) {
 // Withdrawing a declaration removes what it installed; that is the documented
 // rollback path.
 func TestProvisioningPrunesWhenDeclarationWithdrawn(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -451,8 +524,8 @@ func TestProvisioningPrunesWhenDeclarationWithdrawn(t *testing.T) {
 // stopped is visible on the object rather than inferable from someone else's
 // incident.
 func TestProvisioningRecordsLastEvaluation(t *testing.T) {
-	root := provClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}))
+	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
+	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -477,7 +550,7 @@ func TestProvisioningLeavesReadyConditionAlone(t *testing.T) {
 		LastTransitionTime: metav1.Now(),
 	}}
 
-	root := provClient(provConfig(servicesv1alpha1.GVKRef{Group: "apps", Kind: "Deployment"}, sharedSelector()))
+	root := provRootClient(provConfig(servicesv1alpha1.ProjectedKindRef{Group: "apps.example.com", Kind: "Widget"}, sharedSelector()))
 	consumer := provConsumerClient(ent)
 
 	r := newProvReconciler(root, map[string]client.Client{
@@ -502,15 +575,15 @@ func TestProvisioningSelectsLatestPublishedConfiguration(t *testing.T) {
 	older.CreationTimestamp = metav1.NewTime(metav1.Now().Add(-time.Hour))
 
 	newer := provConfig(ipClassKind(), metav1.LabelSelector{
-		MatchLabels: map[string]string{"networking.datumapis.com/tier": "premium"},
+		MatchLabels: map[string]string{"ipam.miloapis.com/tier": "premium"},
 	})
 	newer.Name = "networking-v2"
 	newer.CreationTimestamp = metav1.Now()
 
-	root := provClient(older, newer)
+	root := provRootClient(older, newer)
 	source := provClient(
-		sourceClass("public-unicast", map[string]string{"networking.datumapis.com/shared": "true"}),
-		sourceClass("anycast", map[string]string{"networking.datumapis.com/tier": "premium"}),
+		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
+		sourceClass("anycast", map[string]string{"ipam.miloapis.com/tier": "premium"}),
 	)
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 

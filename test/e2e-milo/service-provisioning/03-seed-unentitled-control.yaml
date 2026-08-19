@@ -7,12 +7,12 @@
 # It carries none of the provisioning labels, so it is never a pruning
 # candidate. Its survival asserts that nothing the fan-out does to consumer-a
 # reaches consumer-b.
-apiVersion: networking.datumapis.com/v1alpha
+apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
   name: e2e-locally-created
   labels:
     e2e.services.miloapis.com/control: "true"
 spec:
-  prefixes:
-    - 203.0.113.0/24
+  ipFamily: IPv4
+  defaultPrefixLength: 24

@@ -13,8 +13,15 @@ spec:
         projection:
           sourceProject: not-my-project
           kind:
-            group: networking.datumapis.com
+            group: ipam.miloapis.com
+            version: v1alpha1
             kind: IPClass
+          # The provider states how its API spells a cross-project reference.
+          # The platform writes those two values there and nothing else.
+          reference:
+            fieldPath: source
+            projectKey: project
+            nameKey: name
           selector:
             matchLabels:
-              networking.datumapis.com/shared: "true"
+              ipam.miloapis.com/shared: "true"

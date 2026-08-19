@@ -6,7 +6,8 @@ spec:
   serviceName: bypass.e2e.datumapis.com
   phase: Published
   displayName: Bypass Fixture
-  description: E2E fixture — the controller re-checks the allowlist itself.
+  description: E2E fixture — the controller re-checks source ownership itself.
   owner:
+    # The only project this service may project out of.
     producerProjectRef:
       name: e2e-provisioning-platform

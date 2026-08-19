@@ -1,0 +1,8 @@
+# The declaration read out of a project the service does not own, so nothing may
+# be installed for this entitlement.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-bypass-networking
