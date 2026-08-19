@@ -1,0 +1,4 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-shared-unicast

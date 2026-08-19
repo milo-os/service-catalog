@@ -1,0 +1,120 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning-admission-bypass
+spec:
+  description: |
+    The controller, not admission, is what bounds what gets written.
+
+    An embedded object is arbitrary, so the ServiceConfiguration schema can only
+    say that each entry is a well-formed Kubernetes object: the API server
+    validates apiVersion, kind, and metadata, and nothing more. Everything else
+    that bounds a write — a dotted API group, a served version, no namespace, no
+    platform-owned metadata — is a rule about content, and it lives in the
+    webhook and in the controller.
+
+    This suite covers the second. It disables the ServiceConfiguration webhook,
+    lands a declaration carrying a core-group Secret in kube-system directly in
+    etcd, and asserts the controller refuses it and says so on the consumer's
+    entitlement.
+
+    That is not a hypothetical bypass. The webhook can be removed from the
+    control plane, its failure policy can be relaxed, and a document admitted
+    before a check existed stays in etcd unchanged. The check in the controller
+    is what actually bounds what gets written — which matters because RBAC does
+    not: the operator reaches project control planes as an identity in
+    system:masters.
+
+    The refusal is not vacuous. The declaration also carries an IPClass the
+    platform would install, in a plane that serves the kind, so a controller
+    that skipped the bad object would leave the good one behind and this suite
+    would see it. Neither arrives.
+
+    The one bound this suite no longer makes is provider ownership of a source
+    project. With the object embedded there is no source project for the
+    platform to read, so there is nothing to own — see the enhancement's
+    security model for what that gives up.
+
+    The webhook is restored by the step's `finally`, including on failure.
+
+  steps:
+    - name: setup
+      cluster: root
+      try:
+        - apply:
+            file: 01-setup.yaml
+
+    - name: bypass-admission-and-verify-controller-refuses
+      description: |
+        Narrow the ServiceConfiguration webhook to an objectSelector nothing
+        carries, land the forbidden declaration, and assert the controller
+        refuses it anyway — reporting the refusal per resource and leaving Ready
+        alone, because a refusal to deliver is not a denial of access.
+
+        Disable, exercise, and assert all sit in one step so the step's `finally`
+        restores the webhook even when an assertion fails.
+      try:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o name \
+                | grep -i services | head -1)
+              idx=$(kubectl get "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceconfiguration.kb.io")')
+              if [ "$idx" = "null" ] || [ -z "$idx" ]; then
+                echo "vserviceconfiguration.kb.io not found on $wh"
+                kubectl get "$wh" -o json | jq '.webhooks | map(.name)'
+                exit 1
+              fi
+              kubectl patch "$wh" --type=json -p "[{\"op\":\"add\",\"path\":\"/webhooks/$idx/objectSelector\",\"value\":{\"matchLabels\":{\"services.miloapis.com/admission\":\"disabled-for-e2e\"}}}]"
+        - apply:
+            cluster: root
+            file: 02-forbidden-object-configuration.yaml
+        - apply:
+            cluster: consumer-a
+            file: 03-create-entitlement.yaml
+        - assert:
+            cluster: consumer-a
+            timeout: 120s
+            file: assertions/assert-refused-by-controller.yaml
+        - error:
+            cluster: consumer-a
+            timeout: 30s
+            file: assertions/assert-nothing-installed.yaml
+        # The object the platform must never write, by name, in the namespace
+        # the declaration chose.
+        - error:
+            cluster: consumer-a
+            timeout: 30s
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: e2e-bypass-secret
+                namespace: kube-system
+        # And the object it would otherwise have installed: a declaration
+        # carrying something forbidden is refused whole, not in part.
+        - error:
+            cluster: consumer-a
+            timeout: 30s
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClass
+              metadata:
+                name: e2e-bypass-class
+      finally:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o name \
+                | grep -i services | head -1)
+              idx=$(kubectl get "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceconfiguration.kb.io")')
+              if [ "$idx" != "null" ] && [ -n "$idx" ]; then
+                kubectl patch "$wh" --type=json \
+                  -p "[{\"op\":\"remove\",\"path\":\"/webhooks/$idx/objectSelector\"}]" || true
+              fi

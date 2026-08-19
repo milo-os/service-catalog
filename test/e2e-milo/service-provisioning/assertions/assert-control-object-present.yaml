@@ -1,0 +1,12 @@
+# The control object the test created in consumer-b. Asserting it alongside
+# every absence assertion is what separates "consumer-b received nothing" from
+# "consumer-b answers nothing".
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-locally-created
+  labels:
+    e2e.services.miloapis.com/control: "true"
+spec:
+  ipFamily: IPv4
+  defaultPrefixLength: 24

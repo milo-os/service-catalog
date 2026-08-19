@@ -1,0 +1,27 @@
+# The installed object is what the declaration said, under the name the
+# declaration chose.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-shared-unicast
+  # The provider names the object, so the name no longer records where it came
+  # from. These labels do, and they are also what scopes pruning.
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-provisioning-networking
+    services.miloapis.com/provisioned-resource: address-classes
+  # Deleting the entitlement garbage-collects what it provisioned. This is the
+  # teardown path that does not depend on the project purger, which skips
+  # cluster-scoped resources.
+  (ownerReferences[0].kind): ServiceEntitlement
+  (ownerReferences[0].name): e2e-provisioning-networking
+  (ownerReferences[0].controller): true
+spec:
+  source:
+    project: e2e-provisioning-platform
+    name: e2e-public-unicast
+  # The consumer holds a pointer at platform truth, not a policy of its own.
+  # IPAM rejects a reference that states any of these, so this is also what
+  # makes the installed object acceptable to the API that owns the kind.
+  (ipFamily == null): true
+  (defaultPrefixLength == null): true

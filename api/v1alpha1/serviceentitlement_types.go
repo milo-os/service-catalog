@@ -85,7 +85,136 @@ const (
 	// ReasonActive is the Paused=False reason once the provider's Resume
 	// hooks have run after the suspension signal cleared.
 	ReasonActive = "Active"
+
+	// ConditionTypeProvisioned reports whether the resources the service
+	// declared for a consumer project arrived. It stays separate from
+	// ConditionTypeReady, which reports that access was granted and any
+	// approval passed. Collapsing the two would make a transient apply failure
+	// read as a provider denial.
+	ConditionTypeProvisioned = "Provisioned"
+
+	// ReasonProvisioned is the Provisioned=True reason when every declared
+	// resource was installed.
+	ReasonProvisioned = "Provisioned"
+
+	// ReasonNothingToProvision is the Provisioned=True reason when the service
+	// declares no resources. Nothing was owed, so nothing is outstanding.
+	ReasonNothingToProvision = "NothingToProvision"
+
+	// ReasonPartiallyProvisioned is the Provisioned=False reason when some
+	// declared resources were installed and others could not be.
+	ReasonPartiallyProvisioned = "PartiallyProvisioned"
+
+	// ReasonNotProvisioned is the Provisioned=False reason when no declared
+	// resource could be installed.
+	ReasonNotProvisioned = "NotProvisioned"
+
+	// ReasonEntitlementNotActive is the Provisioned=False reason while the
+	// entitlement is not Active. Provisioning follows approval; it does not
+	// anticipate it.
+	ReasonEntitlementNotActive = "EntitlementNotActive"
 )
+
+// ProvisionedResourceState is the delivery state of one declared resource.
+//
+// +kubebuilder:validation:Enum=Installed;Failed;Unprovisionable
+type ProvisionedResourceState string
+
+const (
+	// ProvisionedResourceStateInstalled indicates every object the declaration
+	// resolved to is present in the consumer project.
+	ProvisionedResourceStateInstalled ProvisionedResourceState = "Installed"
+
+	// ProvisionedResourceStateFailed indicates delivery was attempted and
+	// failed for a reason that may be transient; it is retried.
+	ProvisionedResourceStateFailed ProvisionedResourceState = "Failed"
+
+	// ProvisionedResourceStateUnprovisionable indicates delivery cannot succeed
+	// as declared and a retry will not help: this project's control plane does
+	// not serve the kind, or the declaration does not resolve into a write. It is
+	// reported rather than skipped, because the consumer has to be told.
+	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
+)
+
+// ProvisionedKindRef is a group, version, and kind recorded on the ledger.
+//
+// The version is here because teardown reads and deletes, and both happen at a
+// version. It is the provider's version, since the platform does not own the
+// API.
+type ProvisionedKindRef struct {
+	// Group is the API group of the kind (e.g. "ipam.miloapis.com").
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	Group string `json:"group,omitempty"`
+
+	// Version is the API version the object was written at (e.g. "v1alpha1").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Version string `json:"version"`
+
+	// Kind is the Kubernetes Kind (e.g. "IPClass").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+}
+
+// ProvisionedResourceStatus is the per-resource ledger entry for one
+// declaration, in the consumer's own control plane.
+type ProvisionedResourceStatus struct {
+	// Name is the declaration's spec.provisioning.resources[].name.
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Kinds are the group, version, and kind of everything this declaration
+	// installed in this project. It is the entitlement's own record, so teardown
+	// does not depend on the declaration still being there to say what it wrote
+	// — a withdrawn declaration says nothing at all.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	Kinds []ProvisionedKindRef `json:"kinds,omitempty"`
+
+	// State is the delivery outcome for this declaration.
+	//
+	// +kubebuilder:validation:Required
+	State ProvisionedResourceState `json:"state"`
+
+	// ObjectCount is how many objects this declaration resolved to and
+	// installed.
+	//
+	// +kubebuilder:validation:Optional
+	ObjectCount int32 `json:"objectCount,omitempty"`
+
+	// Reason is a machine-readable cause, set when State is not Installed.
+	//
+	// +kubebuilder:validation:Optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message names the service, the resource, and what a consumer can act on
+	// or escalate with. A generic apply error is not an acceptable value here.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message,omitempty"`
+
+	// AuthorizationEstablished reports whether the platform established the
+	// consumer project's own authorization to use the referenced source
+	// objects, where the target API performs its own permission check.
+	//
+	// False means the objects work on the installing identity's authority, not
+	// the consumer's. This version establishes no such grant for any kind, so
+	// it is always false. It stays reported rather than removed: the gap is the
+	// honest limit of this version, and a consumer reading the ledger has to be
+	// able to see it.
+	//
+	// +kubebuilder:validation:Optional
+	AuthorizationEstablished bool `json:"authorizationEstablished,omitempty"`
+}
 
 // EntitlementOrigin describes how a ServiceEntitlement was created.
 //
@@ -162,6 +291,26 @@ type ServiceEntitlementStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ProvisionedResources is the per-resource delivery ledger for the
+	// service's spec.provisioning declaration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
+	ProvisionedResources []ProvisionedResourceStatus `json:"provisionedResources,omitempty"`
+
+	// LastProvisioningEvaluation is when provisioning was last evaluated for
+	// this entitlement, successfully or not.
+	//
+	// A fan-out that has silently stopped is otherwise indistinguishable from a
+	// project that legitimately has nothing. Location projection stopped in
+	// staging once and surfaced weeks later as a downstream symptom in an
+	// unrelated component.
+	//
+	// +kubebuilder:validation:Optional
+	LastProvisioningEvaluation *metav1.Time `json:"lastProvisioningEvaluation,omitempty"`
 }
 
 // ServiceEntitlement is the Schema for the serviceentitlements API. A consumer

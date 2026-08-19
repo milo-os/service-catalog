@@ -1,0 +1,27 @@
+# Milo authenticates by static token here. Its own test-infra overlay does the
+# same; the alternative is the zitadel OIDC provider, which is not what these
+# suites are testing.
+#
+# Both identities carry system:masters:
+#
+#   e2e-admin           the chainsaw suites and the bootstrap that registers
+#                       CRDs and Projects.
+#   services-operator   the operator's own identity. In production it reaches
+#                       project control planes as system:masters, which is why
+#                       ProvisioningReconciler re-checks the declaration in code
+#                       rather than relying on RBAC. Anything narrower here
+#                       would test a ceiling production does not have.
+#
+# Nothing in this environment is authorized per project: under RBAC-only Milo a
+# root grant authorizes every project path, so project isolation here is
+# routing and storage, not authorization. See test/e2e-milo/README.md.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: milo-apiserver-auth-tokens
+  namespace: milo-system
+type: Opaque
+stringData:
+  tokens.csv: |
+    e2e-milo-admin-token,e2e-admin,e2e-admin,"system:masters"
+    e2e-milo-operator-token,services-operator,services-operator,"system:masters"

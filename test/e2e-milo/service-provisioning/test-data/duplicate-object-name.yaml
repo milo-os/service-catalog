@@ -1,0 +1,30 @@
+# The provider chooses the installed name, so one declaration can now contend
+# with itself. The second write would silently win.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-duplicate
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: duplicated
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-contended
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-public-unicast
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-contended
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-internal-only

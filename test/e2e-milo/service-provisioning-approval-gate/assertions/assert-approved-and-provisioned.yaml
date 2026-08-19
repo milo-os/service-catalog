@@ -1,0 +1,9 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-gated-networking
+status:
+  phase: Active
+  (conditions[?type == 'Provisioned']):
+    - status: "True"
+      reason: Provisioned

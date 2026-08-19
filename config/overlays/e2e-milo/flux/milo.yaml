@@ -1,0 +1,194 @@
+# The composed Milo deployment: the published bundle plus what this environment
+# adds to it.
+#
+# A Flux OCIRepository and Kustomization consume the bundle, the way
+# config/overlays/e2e consumes the billing one, rather than unpacking it by
+# hand. Flux reads its own artifact format, so nothing here knows how the layers
+# are laid out.
+#
+# Everything that reaches into the bundle is a field of the Kustomization: the
+# certificate components it ships, the image pin, and the two patches.
+# Everything this environment owns outright, the namespace, etcd, and the static
+# token file, is a plain kustomize overlay applied alongside
+# (config/overlays/e2e-milo/milo/overlay). A Flux Kustomization builds one path
+# in one source and cannot merge local files into it, and the patch below refers
+# to those resources by name only.
+#
+# This Milo is small on purpose: the apiserver and its storage, no
+# controller-manager, gateway, audit or tracing sink, or authorization provider.
+# Project control-plane paths serve without them, which is all these suites
+# need. Upstream's overlays/test-infra pulls all of it in, which is why this
+# composes the bundle's pieces instead of consuming that overlay.
+#
+# The bootstrap sets Project.status.Ready, because the controller-manager is not
+# deployed. See test/e2e-milo/README.md.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: milo
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/milo-os/milo-kustomize
+  ref:
+    # By digest, not by the bundle's tag: a tag can be republished. The tag is
+    # recorded for legibility.
+    #
+    # This digest and the image digest below move together. The manifests and
+    # the binary they configure are one unit, and a mismatch configures a Milo
+    # that is not running.
+    #
+    # tag v0.32.5
+    digest: sha256:975896513b3afda4400eb09f8a5602000c52fd35f14284258803266f5d2ee1a9
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: milo
+  namespace: flux-system
+spec:
+  interval: 1h
+  # The bootstrap waits on this Kustomization, so a first attempt that lands
+  # before cert-manager or the local overlay has settled must be retried in
+  # seconds rather than on the reconcile interval.
+  retryInterval: 10s
+  timeout: 5m
+  # Ready therefore means the apiserver is rolled out and its certificates are
+  # issued, not merely that the manifests were applied.
+  wait: true
+  prune: true
+  targetNamespace: milo-system
+  sourceRef:
+    kind: OCIRepository
+    name: milo
+  path: ./apiserver
+  components:
+    # The CA everything here chains to: a selfSigned Issuer, a CA Certificate,
+    # and a CA Issuer that signs from it.
+    - ../components/certificates
+    # Milo's serving certificate, issued by that CA. Upstream keeps it in its
+    # test-infra overlay rather than in a shared component, but it is a plain
+    # Certificate for milo-apiserver.milo-system.svc with no other coupling to
+    # that overlay, so it is taken as-is instead of re-vendored.
+    - ../overlays/test-infra/components/certificates
+  # Pulled from ghcr by digest for the same reason the bundle is. This is an
+  # index digest, so the node resolves its own platform.
+  images:
+    - name: ghcr.io/milo-os/milo
+      newName: ghcr.io/milo-os/milo
+      # tag v0.32.5
+      digest: sha256:3b4f2890491220c4c79731d9e9b350881ce15dcca9de15b9f511cd7e5323f609
+  patches:
+    # Everything the bundle's apiserver Deployment leaves to the environment.
+    #
+    # The bundle drives every flag from an env var and ships no volumes, so
+    # storage, credentials, and certificates are wired here. A default this
+    # environment cannot satisfy is a startup failure, not a fallback:
+    # --tracing-config-file points at a file only the apiserver-tracing
+    # component mounts.
+    - target:
+        kind: Deployment
+        name: milo-apiserver
+      patch: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: milo-apiserver
+        spec:
+          template:
+            spec:
+              containers:
+                - name: milo-apiserver
+                  env:
+                    # The single-member etcd in milo/overlay/etcd.yaml. No TLS,
+                    # so the bundle's client certificate flags are blanked
+                    # rather than left pointing at secrets this environment
+                    # never creates.
+                    - name: ETCD_SERVERS
+                      value: http://etcd.milo-system.svc.cluster.local:2379
+                    - name: ETCD_CAFILE
+                      value: ""
+                    - name: ETCD_CERTFILE
+                      value: ""
+                    - name: ETCD_KEYFILE
+                      value: ""
+                    - name: ETCD_PREFIX
+                      value: /
+                    # RBAC only. The alternative is the OpenFGA authorization
+                    # provider, which this environment does not deploy. The
+                    # authn/authz webhook configs are blanked for the same
+                    # reason: the bundle points them at files only that
+                    # provider's deployment supplies.
+                    - name: AUTHORIZATION_MODE
+                      value: RBAC
+                    - name: AUTHORIZATION_WEBHOOK_CONFIG_FILE
+                      value: ""
+                    - name: AUTHENTICATION_WEBHOOK_CONFIG_FILE
+                      value: ""
+                    - name: TOKEN_AUTH_FILE
+                      value: /etc/kubernetes/auth/tokens.csv
+                    # cert-manager writes the issuing CA alongside the serving
+                    # cert, so one mount answers both. The bundle's default path
+                    # belongs to a trust bundle this environment does not
+                    # deploy.
+                    - name: CLIENT_CA_FILE
+                      value: /etc/kubernetes/pki/apiserver/ca.crt
+                    - name: SERVICE_ACCOUNT_KEY_FILE
+                      value: /etc/kubernetes/pki/apiserver/ca.crt
+                    # No tracing sink here, and the bundle's default path is
+                    # mounted only by its apiserver-tracing component, which
+                    # this environment does not pull in. Empty is the upstream
+                    # default: tracing off.
+                    - name: TRACING_CONFIG_FILE
+                      value: ""
+                    # No audit sink here, so AUDIT_POLICY_FILE stays empty and
+                    # nothing is emitted. The backoff still has to parse as a
+                    # duration: the flag is passed unconditionally, "" is not
+                    # one, and the apiserver exits at startup before it ever
+                    # reads the policy file. Upstream's overlay always enables
+                    # auditing and never hits this.
+                    - name: AUDIT_WEBHOOK_INITIAL_BACKOFF
+                      value: 10s
+                    - name: LOG_LEVEL
+                      value: "2"
+                    - name: LOGGING_FORMAT
+                      value: text
+                  volumeMounts:
+                    - name: auth-tokens
+                      mountPath: /etc/kubernetes/auth
+                      readOnly: true
+                    - name: tls-certs
+                      mountPath: /etc/kubernetes/pki/apiserver
+                      readOnly: true
+              volumes:
+                - name: auth-tokens
+                  secret:
+                    secretName: milo-apiserver-auth-tokens
+                - name: tls-certs
+                  secret:
+                    secretName: milo-apiserver-tls
+    # NodePort because the chainsaw suites run on the host and address Milo by
+    # project path. On macOS the kind node's cluster network is not
+    # host-routable, so the cluster config maps this port through. The bundle
+    # ships a ClusterIP Service, which production reaches through a Gateway.
+    #
+    # JSON6902 rather than a strategic merge, and the whole ports list rather
+    # than nodePort alone: kustomize merges a Service's ports by `port` and
+    # drops nodePort off the patch entry, so a strategic merge sets
+    # `type: NodePort` and then lets the apiserver assign a random port. The
+    # Service stays healthy on the wrong port.
+    - target:
+        kind: Service
+        name: milo-apiserver
+      patch: |
+        - op: replace
+          path: /spec/type
+          value: NodePort
+        - op: replace
+          path: /spec/ports
+          value:
+            - name: https
+              port: 6443
+              protocol: TCP
+              targetPort: https
+              nodePort: 32460

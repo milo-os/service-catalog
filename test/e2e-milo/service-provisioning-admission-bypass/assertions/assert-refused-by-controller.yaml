@@ -1,0 +1,16 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-bypass-networking
+status:
+  # Access was granted; delivery was refused. The two stay distinct.
+  phase: Active
+  (conditions[?type == 'Ready']):
+    - status: "True"
+  (conditions[?type == 'Provisioned']):
+    - status: "False"
+      reason: NotProvisioned
+  provisionedResources:
+    - name: mixed-objects
+      state: Unprovisionable
+      reason: ObjectInvalid

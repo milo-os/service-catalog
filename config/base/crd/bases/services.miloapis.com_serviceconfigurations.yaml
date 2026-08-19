@@ -553,6 +553,64 @@ spec:
                   configuration. Allowed transitions are forward-only:
                   Draft -> Published -> Deprecated -> Retired.
                 type: string
+              provisioning:
+                description: |-
+                  Provisioning declares resources the platform installs into every project
+                  holding an Active ServiceEntitlement for this service, and removes when
+                  that entitlement stops being Active.
+                properties:
+                  resources:
+                    description: |-
+                      Resources declares what to install. A declaration fans out across every
+                      entitled project, so the cap bounds the blast radius of one configuration
+                      and belongs to the security model, not to operations.
+                    items:
+                      description: |-
+                        ProvisionedResourceSpec is a single declaration of what to install into
+                        entitled consumer projects.
+                      properties:
+                        name:
+                          description: |-
+                            Name identifies this declaration within the ServiceConfiguration. It is
+                            the ledger key on ServiceEntitlement.status.provisionedResources, so it
+                            is what a consumer sees when a resource does not arrive, and it scopes
+                            pruning, so renaming a declaration reinstalls rather than edits.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        objects:
+                          description: |-
+                            Objects are the objects to install, written out in full.
+
+                            Each is stored as authored and applied into every entitled project under
+                            the name it carries. There are no variables, no per-project values, and
+                            no field paths: a provider that wants a different object writes a
+                            different object. The API server validates each entry as an embedded
+                            resource, so a missing or malformed apiVersion, kind, or metadata is
+                            refused with no webhook in the picture. Whether the object is acceptable
+                            is the owning API's decision, made when it accepts or refuses the write.
+
+                            The cap bounds one declaration's fan-out into one project.
+                          items:
+                            description: ProvisionedObject is a Kubernetes object
+                              embedded verbatim.
+                            type: object
+                            x-kubernetes-embedded-resource: true
+                            x-kubernetes-preserve-unknown-fields: true
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - name
+                      - objects
+                      type: object
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
               quota:
                 description: |-
                   Quota declares quota limits and metric rules for this service.

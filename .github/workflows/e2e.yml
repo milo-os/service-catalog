@@ -78,3 +78,53 @@ jobs:
         env:
           KUBECONFIG: .test-infra/kubeconfig
         run: task e2e
+
+  e2e-milo:
+    name: Chainsaw E2E (multi-project, real Milo)
+    runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # This environment brings up its own kind cluster rather than
+      # test-infra's. The suites address project control planes from outside the
+      # cluster, so Milo needs a host port mapped through, and test-infra's
+      # cluster-up creates from a fixed config file in its own repository with
+      # no port mapping to configure.
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@v0.24.0
+
+      # Flux installs the Milo and billing manifests from published OCI
+      # artifacts, as in the job above. The cluster this environment brings up
+      # has no Flux, so the setup installs it.
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@v2.8.2
+        with:
+          version: v2.8.2
+
+      - name: Set up the environment
+        run: task --yes e2e-milo:setup
+
+      - name: Run multi-project E2E tests
+        run: task --yes e2e-milo
+
+      - name: Dump operator logs on failure
+        if: failure()
+        run: |
+          kubectl --kubeconfig bin/e2e-milo/kind.kubeconfig -n services-system logs \
+            deployment/services-controller-manager --tail=-1 || true
+          kubectl --kubeconfig bin/e2e-milo/kind.kubeconfig -n milo-system logs \
+            deployment/milo-apiserver --tail=200 || true

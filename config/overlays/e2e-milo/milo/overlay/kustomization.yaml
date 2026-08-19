@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Everything this environment adds to the published Milo bundle, and nothing
+# from it. Applied directly: a Flux Kustomization builds one path in one source
+# and cannot merge local files into an artifact. None of this needs merging, as
+# the bundle's apiserver refers to all of it by name.
+#
+# The other half of the composition, which does reach into the bundle, is
+# ../../flux/milo.yaml.
+
+namespace: milo-system
+
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - auth.yaml

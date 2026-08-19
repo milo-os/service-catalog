@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-gated-class
+  labels:
+    app.kubernetes.io/managed-by: services.miloapis.com
+    services.miloapis.com/entitlement: e2e-gated-networking
+spec:
+  source:
+    project: e2e-provisioning-platform
+    name: e2e-gated-source

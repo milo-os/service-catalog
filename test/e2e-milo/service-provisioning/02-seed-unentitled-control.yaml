@@ -1,0 +1,18 @@
+# The positive control for every "consumer-b received nothing" assertion in this
+# suite. A project whose plane is unreachable, or which does not serve IPClass,
+# is also a project with no IPClasses in it. The test creates this object
+# directly in consumer-b, so every absence assertion runs against a plane proven
+# reachable, serving this kind, and returning objects from a list.
+#
+# It carries none of the provisioning labels, so it is never a pruning
+# candidate. Its survival asserts that nothing the fan-out does to consumer-a
+# reaches consumer-b.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-locally-created
+  labels:
+    e2e.services.miloapis.com/control: "true"
+spec:
+  ipFamily: IPv4
+  defaultPrefixLength: 24

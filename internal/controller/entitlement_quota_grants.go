@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -394,11 +395,24 @@ func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitleme
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
 ) []mcreconcile.Request {
+	return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
+}
+
+// enqueueEntitlementsForConfiguration turns a root-cluster ServiceConfiguration
+// event into project-scoped requests for every ServiceEntitlement naming that
+// service. The quota and provisioning fan-outs share it; both need a
+// declaration change to reach entitled projects before the next resync.
+func enqueueEntitlementsForConfiguration(
+	ctx context.Context,
+	rootClient client.Client,
+	mgr mcmanager.Manager,
+	sc *servicesv1alpha1.ServiceConfiguration,
+) []mcreconcile.Request {
 	if sc.Spec.ServiceRef.Name == "" {
 		return nil
 	}
 	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
+	if err := rootClient.Get(ctx, types.NamespacedName{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Error(err, "get Service for ServiceConfiguration fan-out",
 				"serviceConfiguration", sc.Name, "serviceRef", sc.Spec.ServiceRef.Name)
@@ -411,7 +425,7 @@ func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitleme
 	}
 
 	var projects resourcemanagerv1alpha1.ProjectList
-	if err := r.rootClient.List(ctx, &projects); err != nil {
+	if err := rootClient.List(ctx, &projects); err != nil {
 		log.FromContext(ctx).Error(err, "list Projects for ServiceConfiguration fan-out",
 			"serviceConfiguration", sc.Name)
 		return nil
@@ -424,7 +438,7 @@ func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitleme
 		if project == "" {
 			continue
 		}
-		cluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(project))
+		cluster, err := mgr.GetCluster(ctx, multicluster.ClusterName(project))
 		if err != nil {
 			continue
 		}

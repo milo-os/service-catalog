@@ -1,0 +1,9 @@
+# The install succeeded, but the consumer project does not hold `use` on the
+# class the object references; the platform's identity satisfied that check. The
+# ledger has to say so, or the object looks properly authorized when it is not.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-provisioning-networking
+status:
+  (provisionedResources[0].authorizationEstablished == `true`): false

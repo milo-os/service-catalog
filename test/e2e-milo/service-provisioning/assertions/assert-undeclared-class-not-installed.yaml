@@ -1,0 +1,5 @@
+# The class the declaration does not carry must not reach the consumer project.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-premium-anycast

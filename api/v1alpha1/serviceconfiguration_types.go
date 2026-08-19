@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ServiceConfigurationSpec defines the desired state of a
@@ -114,6 +115,13 @@ type ServiceConfigurationSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Locations *ServiceLocationConfig `json:"locations,omitempty"`
+
+	// Provisioning declares resources the platform installs into every project
+	// holding an Active ServiceEntitlement for this service, and removes when
+	// that entitlement stops being Active.
+	//
+	// +kubebuilder:validation:Optional
+	Provisioning *ServiceProvisioningConfig `json:"provisioning,omitempty"`
 
 	// DefaultOffer is the Offer name applied to new BillingAccounts.
 	// Typically set only on the billing.miloapis.com ServiceConfiguration.
@@ -546,6 +554,68 @@ type ProviderUserInterfaceSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Assets PluginAssets `json:"assets"`
+}
+
+// ServiceProvisioningConfig declares the resources a service needs installed in
+// a consumer project before that project can use it. It is the authoritative
+// statement of what the service manages there.
+//
+// A provider embeds the objects it wants installed, verbatim. Nothing is
+// substituted: every entitled project receives the same object under the same
+// name. The bound is therefore not on the content but on the destination and
+// the shape. Objects reach only projects that created an entitlement, only once
+// that entitlement is Active, and only in a form the platform can own, label,
+// and reclaim. That matters because the operator writes into consumer control
+// planes as system:masters, where RBAC is no ceiling.
+type ServiceProvisioningConfig struct {
+	// Resources declares what to install. A declaration fans out across every
+	// entitled project, so the cap bounds the blast radius of one configuration
+	// and belongs to the security model, not to operations.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
+	Resources []ProvisionedResourceSpec `json:"resources,omitempty"`
+}
+
+// ProvisionedResourceSpec is a single declaration of what to install into
+// entitled consumer projects.
+type ProvisionedResourceSpec struct {
+	// Name identifies this declaration within the ServiceConfiguration. It is
+	// the ledger key on ServiceEntitlement.status.provisionedResources, so it
+	// is what a consumer sees when a resource does not arrive, and it scopes
+	// pruning, so renaming a declaration reinstalls rather than edits.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Objects are the objects to install, written out in full.
+	//
+	// Each is stored as authored and applied into every entitled project under
+	// the name it carries. There are no variables, no per-project values, and
+	// no field paths: a provider that wants a different object writes a
+	// different object. The API server validates each entry as an embedded
+	// resource, so a missing or malformed apiVersion, kind, or metadata is
+	// refused with no webhook in the picture. Whether the object is acceptable
+	// is the owning API's decision, made when it accepts or refuses the write.
+	//
+	// The cap bounds one declaration's fan-out into one project.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	Objects []ProvisionedObject `json:"objects"`
+}
+
+// ProvisionedObject is a Kubernetes object embedded verbatim.
+type ProvisionedObject struct {
+	// +kubebuilder:validation:EmbeddedResource
+	// +kubebuilder:pruning:PreserveUnknownFields
+	runtime.RawExtension `json:",inline"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

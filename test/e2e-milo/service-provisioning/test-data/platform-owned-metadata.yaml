@@ -1,0 +1,21 @@
+# The platform sets the owner reference that makes deleting the entitlement
+# reclaim the object. A declaration that sets its own would defeat teardown, so
+# owner references and finalizers are refused.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-owned
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: self-owned
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-self-owned
+              finalizers:
+                - e2e.services.miloapis.com/keep-me-forever

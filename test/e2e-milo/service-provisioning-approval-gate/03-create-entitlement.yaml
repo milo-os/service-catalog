@@ -1,0 +1,8 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-gated-networking
+spec:
+  serviceRef:
+    name: e2e-gated-networking
+  requestMessage: E2E approval-gate coverage.

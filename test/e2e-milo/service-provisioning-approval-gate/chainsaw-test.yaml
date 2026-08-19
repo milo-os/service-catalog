@@ -1,0 +1,80 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-provisioning-approval-gate
+spec:
+  description: |
+    Provisioning follows approval; it does not anticipate it.
+
+    For a GatedByProvider service, an entitlement sits PendingApproval until the
+    provider decides. Nothing may be installed in that window — a project that
+    has asked for a service and not been granted it is, for provisioning
+    purposes, a project without the entitlement.
+
+    Against real Milo the approval itself is now made where it belongs: the
+    ServiceConsumer the provider decides on lives in the provider's own project
+    control plane, not in the consumer's. The single-cluster environment could
+    not tell those two planes apart.
+
+  steps:
+    - name: setup
+      description: A GatedByProvider service and its provisioning declaration.
+      cluster: root
+      try:
+        - apply:
+            file: 01-setup.yaml
+        - apply:
+            file: 02-publish-configuration.yaml
+
+    - name: request-stays-pending-and-installs-nothing
+      description: |
+        The entitlement is PendingApproval. Nothing may appear in the
+        requesting project, and the Provisioned condition must attribute that to
+        the pending approval rather than to a delivery failure.
+      cluster: consumer-a
+      try:
+        - apply:
+            file: 03-create-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-pending-not-provisioned.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml
+
+    - name: approval-releases-provisioning
+      description: |
+        The provider approves on the ServiceConsumer record in its own project.
+        The consumer's entitlement goes Active and only then does the declared
+        class arrive in the consumer's project — two different control planes,
+        one decision crossing between them.
+      try:
+        - script:
+            cluster: platform
+            timeout: 60s
+            content: |
+              set -e
+              consumer=$(kubectl get serviceconsumers \
+                -o jsonpath='{range .items[?(@.spec.serviceRef.name=="e2e-gated-networking")]}{.metadata.name}{"\n"}{end}' \
+                | head -1)
+              if [ -z "$consumer" ]; then
+                echo "no ServiceConsumer was created for the gated service in the provider project"
+                kubectl get serviceconsumers -o yaml
+                exit 1
+              fi
+              kubectl patch serviceconsumer "$consumer" --type=merge \
+                -p '{"spec":{"approval":{"decision":"Approved"}}}'
+        - assert:
+            cluster: consumer-a
+            timeout: 120s
+            file: assertions/assert-approved-and-provisioned.yaml
+        - assert:
+            cluster: consumer-a
+            timeout: 120s
+            file: assertions/assert-gated-class-installed.yaml
+        # The other consumer project never asked for this service and must not
+        # have been swept up in the approval.
+        - error:
+            cluster: consumer-b
+            timeout: 30s
+            file: assertions/assert-nothing-provisioned.yaml

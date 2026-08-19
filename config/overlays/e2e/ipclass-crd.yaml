@@ -1,0 +1,97 @@
+# A stand-in CRD for ipam.miloapis.com/v1alpha1 IPClass.
+#
+# IPClass is owned by the IPAM API — an aggregated API server, not a CRD — so
+# there is no upstream CRD to install and this file exists to give the e2e
+# environment the same object shape. It is installed into Milo by the
+# multi-project environment (hack/e2e-milo/up.sh), which is where the
+# provisioning suites run.
+#
+# The schema follows the real type: a class either defines addressing or
+# references one in another project, never both. The CEL rule mirrors
+# validateReference in ipam/internal/registry/ipam/ipclass/strategy.go, so a
+# projected object that is not a well-formed source-only reference is refused
+# here as it would be there.
+#
+# What this cannot reproduce is the authorization: the real API runs a subject
+# access review for `use` on the source class, against whoever creates the
+# object. Nothing here does, which is why the authorization gap is asserted
+# from the entitlement ledger rather than observed from a refusal.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipclasses.ipam.miloapis.com
+spec:
+  group: ipam.miloapis.com
+  scope: Cluster
+  names:
+    kind: IPClass
+    listKind: IPClassList
+    plural: ipclasses
+    singular: ipclass
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Family
+          type: string
+          jsonPath: .spec.ipFamily
+        - name: Source Project
+          type: string
+          jsonPath: .spec.source.project
+        - name: Source
+          type: string
+          jsonPath: .spec.source.name
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              x-kubernetes-validations:
+                - rule: "!has(self.source) || (!has(self.ipFamily) && !has(self.parentClassName) && !has(self.defaultPrefixLength) && !has(self.uniqueWithin) && !has(self.poolPer))"
+                  message: a class with spec.source is a reference and states no policy of its own
+                - rule: "has(self.source) || has(self.ipFamily)"
+                  message: ipFamily is required on a class that is not a reference
+                - rule: "has(self.source) == has(oldSelf.source) && (!has(self.source) || self.source == oldSelf.source)"
+                  message: spec.source is immutable
+              properties:
+                source:
+                  type: object
+                  required: [project, name]
+                  properties:
+                    project:
+                      type: string
+                    name:
+                      type: string
+                ipFamily:
+                  type: string
+                  enum: [IPv4, IPv6]
+                parentClassName:
+                  type: string
+                defaultPrefixLength:
+                  type: integer
+                  minimum: 0
+                  maximum: 128
+                uniqueWithin:
+                  type: array
+                  items:
+                    type: string
+                poolPer:
+                  type: array
+                  items:
+                    type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

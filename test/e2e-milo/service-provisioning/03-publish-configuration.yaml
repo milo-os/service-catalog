@@ -1,0 +1,22 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-networking
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Published
+  provisioning:
+    resources:
+      - name: address-classes
+        # The provider writes the object it wants installed. Every entitled
+        # project receives this, under this name, unchanged.
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-shared-unicast
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-public-unicast

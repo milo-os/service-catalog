@@ -1,0 +1,20 @@
+# Provisioning installs into a project's control plane and creates no namespaces
+# there, so an object that names one would land nowhere or somewhere it was not
+# meant to.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-provisioning-namespaced
+spec:
+  serviceRef:
+    name: e2e-provisioning-networking
+  phase: Draft
+  provisioning:
+    resources:
+      - name: namespaced
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-namespaced
+              namespace: kube-system

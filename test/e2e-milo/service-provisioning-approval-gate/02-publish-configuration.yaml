@@ -1,0 +1,20 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-gated-networking
+spec:
+  serviceRef:
+    name: e2e-gated-networking
+  phase: Published
+  provisioning:
+    resources:
+      - name: gated-classes
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-gated-class
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-gated-source

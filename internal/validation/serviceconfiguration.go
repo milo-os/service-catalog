@@ -36,6 +36,7 @@ func ValidateServiceConfigurationCreate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
+	allErrs = append(allErrs, validateProvisioning(sc)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
@@ -63,6 +64,16 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
+
+	// Removing the controller's finalizer is an update, so re-validating a
+	// terminating configuration would leave an already-invalid document
+	// undeletable. A provisioning declaration goes invalid without being
+	// edited, whenever the platform narrows the schema under it. Deleting
+	// the document is the remedy.
+	terminating := !newSC.DeletionTimestamp.IsZero()
+	if !terminating {
+		allErrs = append(allErrs, validateProvisioning(newSC)...)
+	}
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)

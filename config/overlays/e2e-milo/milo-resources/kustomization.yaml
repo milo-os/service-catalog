@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The API surface that belongs to Milo rather than to the hosting cluster: the
+# catalog's own CRDs, the dependency CRDs Milo does not bootstrap itself, and
+# the admission webhook configurations.
+#
+# Milo bootstraps resourcemanager, iam, quota, notification and discovery at
+# startup, so only what it does not ship is listed here.
+#
+# The webhook configurations name a Service in the kind cluster, which Milo
+# resolves through cluster DNS because it runs there too. Their caBundle is
+# stamped by the bootstrap: cert-manager's ca-injector watches the cluster it
+# runs in and cannot see a webhook configuration that lives in Milo.
+
+# The setup task applies the hand-authored IPClass and LocationBinding CRDs
+# straight from config/overlays/e2e, as the single-cluster environment does.
+# Kustomize refuses to reference a file outside its own tree, and a copy would
+# let the two environments drift.
+resources:
+  - ../../../base/crd
+
+# The billing CRDs are installed by Flux from the same published
+# billing-kustomize bundle config/overlays/e2e installs, rather than being
+# listed here as pinned raw files. See ../flux/billing-crds.yaml.
+
+components:
+  - ../../../base/webhook

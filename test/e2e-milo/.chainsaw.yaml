@@ -1,0 +1,42 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: services-milo-tests-config
+spec:
+  parallel: 1
+  timeouts:
+    apply: 120s
+    assert: 120s
+    cleanup: 120s
+    delete: 60s
+    error: 120s
+    exec: 60s
+  skipDelete: false
+  failFast: false
+  delayBeforeCleanup: 5s
+  # Run in an existing namespace rather than an ephemeral one per test. Every
+  # object these suites create is cluster-scoped, so the namespace is only
+  # scaffolding. This Milo runs no controller-manager, so a namespace it creates
+  # is never finalized and its deletion never completes. Chainsaw waits on that
+  # deletion, so without this the first suite passes and the run hangs.
+  namespace: default
+  # Every control plane these suites address, each a real one. A project control
+  # plane is the same Milo behind its own URL path, and Milo derives tenancy
+  # from that path server-side. Addressing them separately is therefore a real
+  # test of isolation, not a naming convention.
+  #
+  # The kubeconfig is written by hack/e2e-milo/up.sh. The path is relative to
+  # the directory chainsaw runs from, which is the repository root.
+  clusters:
+    root:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: milo-root
+    platform:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-provisioning-platform
+    consumer-a:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-provisioning-consumer-a
+    consumer-b:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-provisioning-consumer-b

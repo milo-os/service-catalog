@@ -1,0 +1,21 @@
+# Same shape as assert-entitlement-provisioned.yaml, asserted against
+# consumer-b after the provider edited the declaration.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-provisioning-networking
+status:
+  phase: Active
+  (conditions[?type == 'Ready']):
+    - status: "True"
+  (conditions[?type == 'Provisioned']):
+    - status: "True"
+      reason: Provisioned
+  provisionedResources:
+    - name: address-classes
+      state: Installed
+      objectCount: 1
+      kinds:
+        - group: ipam.miloapis.com
+          version: v1alpha1
+          kind: IPClass

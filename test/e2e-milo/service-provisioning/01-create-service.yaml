@@ -1,0 +1,12 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-provisioning-networking
+spec:
+  serviceName: networking.e2e.datumapis.com
+  phase: Published
+  displayName: Networking
+  description: E2E fixture for service-provisioned resources.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
