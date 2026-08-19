@@ -4,13 +4,13 @@ kind: Kustomization
 # The operator, running in the kind cluster but serving no API of its own there.
 #
 # Everything it reads and writes lives in Milo, reached over a kubeconfig
-# (../milo-access). Nothing in this kustomization is a CRD or a webhook
-# configuration: those are cluster-scoped API surface and belong to the control
-# plane that serves them, which is Milo — see ../milo-resources.
+# (../milo-access). Nothing here is a CRD or a webhook configuration: those are
+# cluster-scoped API surface and belong to the control plane that serves them,
+# which is Milo. See ../milo-resources.
 #
-# The single-cluster e2e provider is deliberately NOT set here. That is the
-# whole point of this environment: the Milo multicluster provider discovers real
-# Projects and engages each one's control plane separately.
+# The single-cluster e2e provider is not set here. This environment exists so
+# the Milo multicluster provider discovers real Projects and engages each one's
+# control plane separately.
 
 namespace: services-system
 

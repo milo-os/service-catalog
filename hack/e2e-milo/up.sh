@@ -3,12 +3,12 @@
 # Stands up the multi-project e2e environment: a kind cluster hosting a real
 # Milo control plane, the operator wired to it, and three real Projects.
 #
-# The difference from config/overlays/e2e is the whole point of it. There the
-# operator runs with --enable-single-cluster-for-e2e-tests and every project
-# name resolves to one cluster, so a project's control plane is not separable
-# from any other's. Here the Milo multicluster provider discovers real Projects
-# and engages each one's control plane over its own URL path, which is what
-# makes "an unentitled project receives nothing" a statement about anything.
+# config/overlays/e2e runs the operator with
+# --enable-single-cluster-for-e2e-tests, where every project name resolves to
+# one cluster and no project's control plane is separable from another's. Here
+# the Milo multicluster provider discovers real Projects and engages each one's
+# control plane over its own URL path, which is what makes "an unentitled
+# project receives nothing" mean anything.
 #
 # Idempotent: safe to re-run against an existing cluster.
 set -euo pipefail
@@ -22,10 +22,9 @@ CLUSTER_NAME="sc-milo"
 # running on the machine, and a context can be rewritten out from under a run.
 HOST_KUBECONFIG="${REPO_ROOT}/bin/e2e-milo/kind.kubeconfig"
 
-# The Milo and billing manifests are published as Flux OCI artifacts, and Flux
-# is what installs them — the same way config/overlays/e2e installs the billing
-# one. Both artifacts and their pins are declared in
-# config/overlays/e2e-milo/flux.
+# Flux installs the Milo and billing manifests from published OCI artifacts, the
+# same way config/overlays/e2e installs the billing one. Both artifacts and
+# their pins are declared in config/overlays/e2e-milo/flux.
 
 CERT_MANAGER_VERSION="v1.16.2"
 # Only the two controllers these manifests use. Flux's other controllers would
@@ -40,9 +39,8 @@ MILO_HOST="https://127.0.0.1:32460"
 PROJECT_PATH="/apis/resourcemanager.miloapis.com/v1alpha1/projects"
 
 # The provider project owning the source objects, and two consumer projects.
-# Only the first consumer is entitled by the suites; the second is what
-# "unentitled" is measured against, and is entitled at the end of the isolation
-# suite to show it was never simply inert.
+# The suites entitle only the first consumer. The second measures "unentitled",
+# and the isolation suite entitles it at the end to show it was never inert.
 PROJECTS=(
   e2e-provisioning-platform
   e2e-provisioning-consumer-a
@@ -140,16 +138,16 @@ until kroot get --raw /readyz >/dev/null 2>&1; do sleep 2; done
 
 # --- API surface in Milo ----------------------------------------------------
 
-# The billing CRDs belong in Milo, not in the hosting cluster, so Flux is given
-# an identity there, under the key name it looks for rather than the operator's
+# The billing CRDs belong in Milo, not in the hosting cluster, so Flux gets an
+# identity there, under the key name it looks for rather than the operator's
 # `kubeconfig`.
 #
-# This one verifies Milo's certificate where every other client here skips it:
-# kustomize-controller rejects a kubeconfig with insecure-skip-tls-verify unless
-# it is started with --insecure-kubeconfig-tls, and loosening the controller is
-# a worse trade than trusting the CA cert-manager already issued from. It is
-# published alongside the serving certificate, and the certificate names the
-# in-cluster DNS name below.
+# This kubeconfig embeds a CA where every other client here skips verification:
+# kustomize-controller rejects insecure-skip-tls-verify unless started with
+# --insecure-kubeconfig-tls, and loosening the controller is a worse trade than
+# trusting the CA cert-manager already issued from. cert-manager publishes that
+# CA alongside the serving certificate, which names the in-cluster DNS name
+# below.
 log "installing the billing CRDs into Milo"
 milo_ca="$(khost -n milo-system get secret milo-apiserver-tls -o jsonpath='{.data.ca\.crt}')"
 [ -n "${milo_ca}" ] || { echo "milo-apiserver-tls has no ca.crt" >&2; exit 1; }
@@ -246,14 +244,14 @@ khost -n services-system rollout restart deployment/services-controller-manager 
 khost -n services-system rollout status deployment/services-controller-manager --timeout=180s
 
 # A suite that runs before a project is engaged fails as though the operator
-# were broken, so wait — and fail here rather than time out quietly, because a
-# silent wait that never matches is indistinguishable from one that did.
+# were broken. Wait, and fail loudly here: a silent wait that never matches
+# looks like one that did.
 log "waiting for the operator to engage every project"
-# The running pod is re-resolved every iteration rather than named once.
-# `logs deployment/...` picks an arbitrary pod, which during a restart can be
-# the departing one; and the manager exits and is restarted if it starts before
-# a kind it indexes has reached discovery, so the pod that eventually engages is
-# often not the one running when this wait began.
+# The running pod is re-resolved every iteration. `logs deployment/...` picks an
+# arbitrary pod, which during a restart can be the departing one, and the
+# manager exits and restarts if it starts before a kind it indexes has reached
+# discovery. The pod that engages is often not the one running when this wait
+# began.
 for p in "${PROJECTS[@]}"; do
   engaged=""
   for _ in $(seq 1 60); do
@@ -261,9 +259,9 @@ for p in "${PROJECTS[@]}"; do
       --field-selector=status.phase=Running \
       --sort-by=.metadata.creationTimestamp -o name | tail -1)"
     # Logs are captured before matching rather than piped into `grep -q`: under
-    # `pipefail`, grep closing the pipe on its first match kills kubectl with
-    # SIGPIPE and the successful match reads as a failed pipeline — a wait that
-    # never ends however long the thing it waits for has been true.
+    # `pipefail`, grep closes the pipe on its first match, kubectl dies of
+    # SIGPIPE, and the successful match reads as a failed pipeline. The wait
+    # then never ends, however long the thing it waits for has been true.
     manager_log="$([ -n "${manager_pod}" ] && khost -n services-system logs "${manager_pod}" --tail=-1 2>/dev/null || true)"
     if printf '%s' "${manager_log}" |
       grep -q "Successfully registered and engaged new cluster.*${p}"; then

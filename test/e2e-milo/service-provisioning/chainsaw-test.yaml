@@ -167,7 +167,7 @@ spec:
             timeout: 30s
             file: assertions/assert-nothing-provisioned.yaml
         # Named absence as well as labelled absence: the projection consumer-a
-        # actually received, by the exact name it received it under.
+        # received, by the exact name it received it under.
         - error:
             timeout: 30s
             resource:
@@ -254,7 +254,7 @@ spec:
         - assert:
             timeout: 90s
             file: assertions/assert-consumer-b-provisioned.yaml
-        # And consumer-a, now unentitled, is the one holding nothing — the same
+        # And consumer-a, now unentitled, is the one holding nothing: the same
         # claim as before with the projects exchanged.
         - error:
             cluster: consumer-a

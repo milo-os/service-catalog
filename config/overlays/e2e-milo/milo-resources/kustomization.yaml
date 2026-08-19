@@ -13,11 +13,10 @@ kind: Kustomization
 # stamped by the bootstrap: cert-manager's ca-injector watches the cluster it
 # runs in and cannot see a webhook configuration that lives in Milo.
 
-# The IPClass and LocationBinding CRDs config/overlays/e2e hand-authors are
-# applied by the setup task straight from that directory, exactly as the
-# single-cluster environment applies them — kustomize refuses to reference a
-# file outside its own tree, and duplicating them would let the two
-# environments drift.
+# The setup task applies the hand-authored IPClass and LocationBinding CRDs
+# straight from config/overlays/e2e, as the single-cluster environment does.
+# Kustomize refuses to reference a file outside its own tree, and a copy would
+# let the two environments drift.
 resources:
   - ../../../base/crd
 

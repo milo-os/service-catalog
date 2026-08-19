@@ -30,17 +30,16 @@ import (
 )
 
 const (
-	// provisioningResyncInterval bounds how long a change that cannot enqueue a
-	// project-scoped reconcile takes to reach consumer projects — chiefly a
-	// provider labelling, unlabelling, or deleting a source object in its own
-	// project, which no watch here observes. Declaration edits do not wait for
-	// it; SetupWithManager watches ServiceConfiguration directly.
+	// provisioningResyncInterval bounds how long a change no watch here observes
+	// takes to reach consumer projects: a provider labelling, unlabelling, or
+	// deleting a source object in its own project. Declaration edits do not
+	// wait for it, because SetupWithManager watches ServiceConfiguration.
 	provisioningResyncInterval = 5 * time.Minute
 
-	// provisioningFieldManager identifies writes this reconciler makes, both to
-	// projected objects and to the entitlement's provisioning status. It is
-	// distinct from the entitlement reconciler's manager so the two do not
-	// contend for the ledger and the Ready condition respectively.
+	// provisioningFieldManager identifies writes this reconciler makes, to
+	// projected objects and to the entitlement's provisioning status. It
+	// differs from the entitlement reconciler's manager so the two do not
+	// contend over the ledger and the Ready condition.
 	provisioningFieldManager = "services-operator-provisioning"
 
 	// labelProvisionedResource records which spec.provisioning.resources[].name
@@ -54,8 +53,7 @@ const (
 
 	// maxProvisionedObjectsPerResource caps how many objects one declaration
 	// may install into one project. Exceeding it is refused and reported, never
-	// truncated: a silent truncation is a correctness failure that looks like a
-	// working system.
+	// truncated: a truncated fan-out looks like a working system.
 	maxProvisionedObjectsPerResource = 100
 
 	// Provisioned ledger reasons.
@@ -72,13 +70,12 @@ const (
 // spec.provisioning into every project holding an Active ServiceEntitlement for
 // it, and removes them when the entitlement stops being Active.
 //
-// It is a generalization of the location-binding projection rather than a
-// second mechanism beside it: same gating on Active, same owner reference to
-// the cluster-scoped entitlement, same label-scoped pruning, same periodic
-// resync standing in for cross-plane events. The difference is that the target
-// kind and the source objects come from a declaration instead of being wired in
-// — which is exactly why the allowlist below is re-checked here and not left to
-// admission alone.
+// It generalizes the location-binding projection rather than sitting beside it:
+// same gating on Active, same owner reference to the cluster-scoped
+// entitlement, same label-scoped pruning, same periodic resync standing in for
+// cross-plane events. Only the target kind and the source objects differ,
+// coming from a declaration instead of being wired in. That is why this
+// controller re-checks the allowlist rather than trusting admission.
 //
 // It runs on the multicluster manager, so each reconcile is scoped to one
 // engaged project cluster (req.ClusterName). ServiceConfiguration lives on the
@@ -96,15 +93,11 @@ type ProvisioningReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
-// There are deliberately no per-kind grants for the kinds this controller
-// installs. What may be installed is platform-owned configuration, not compiled
-// in, and the bound on it is internal/provisioning.Lookup, applied at admission
-// and again before every write here. A hand-written grant per allowlist entry
-// would make adding an entry a code change and would imply a ceiling that does
-// not exist: the operator authenticates with a certificate carrying the
-// system:masters organization, so RBAC does not constrain it. If that identity
-// is ever narrowed, the grants should be derived from the allowlist rather than
-// written by hand.
+// This controller holds no per-kind RBAC grants. The bound is
+// internal/provisioning.Lookup, checked at admission and before every write.
+// RBAC cannot bound it: the operator's certificate carries system:masters.
+// Narrow that identity and the grants should come from the allowlist, not from
+// hand-written markers.
 
 func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -131,8 +124,8 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, fmt.Errorf("failed to get ServiceEntitlement: %w", err)
 	}
 
-	// Provisioning follows approval; it does not anticipate it. Anything other
-	// than Active — pending approval, rejected, deleting — tears down.
+	// Provisioning follows approval; it does not anticipate it. Any phase other
+	// than Active tears down: pending approval, rejected, deleting.
 	if !entitlement.DeletionTimestamp.IsZero() ||
 		entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
 		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
@@ -201,10 +194,10 @@ func (r *ProvisioningReconciler) reconcileResource(
 		Kind: &servicesv1alpha1.GVKRef{Group: kind.Group, Kind: kind.Kind},
 	}
 
-	// Allowlist enforcement, second layer. Admission already rejected an
-	// unlisted kind, but a ServiceConfiguration admitted under an older or
-	// wider allowlist stays in etcd, and the webhook can be absent from the
-	// cluster entirely. This check is what actually bounds what gets written.
+	// Second enforcement point. Admission already rejected an unlisted kind,
+	// but a ServiceConfiguration admitted under an older or wider allowlist
+	// stays in etcd, and the webhook can be absent from the cluster. This check
+	// bounds what gets written.
 	allowed, err := provisioning.Lookup(kind)
 	if err != nil {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
@@ -214,9 +207,9 @@ func (r *ProvisioningReconciler) reconcileResource(
 		return entry
 	}
 
-	// An absent or empty selector matches everything in Kubernetes' default
-	// conversion. Projecting a provider's entire source project by omission is
-	// never the intent and fails silently and widely, so it is refused.
+	// Kubernetes converts an absent or empty selector to "match everything".
+	// Projecting a provider's whole source project by omission fails silently
+	// and widely, so it is refused.
 	selector, err := metav1.LabelSelectorAsSelector(&decl.Projection.Selector)
 	if err != nil || selector.Empty() {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
@@ -281,9 +274,9 @@ func (r *ProvisioningReconciler) reconcileResource(
 		desired[name] = struct{}{}
 	}
 
-	// Pruning happens only after the source list succeeded, and is scoped to
-	// this declaration, so a declaration that could not resolve never causes
-	// another's objects to be removed.
+	// Pruning runs only after the source list succeeded, scoped to this
+	// declaration, so a declaration that could not resolve never removes
+	// another's objects.
 	if err := r.prune(ctx, consumerClient, entitlement, allowed, decl.Name, desired); err != nil {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 		entry.Reason = reasonApplyFailed
@@ -294,23 +287,19 @@ func (r *ProvisioningReconciler) reconcileResource(
 	entry.State = servicesv1alpha1.ProvisionedResourceStateInstalled
 	entry.ObjectCount = int32(len(desired))
 
-	// AUTHORIZATION GAP — deliberately reported, not worked around.
+	// AUTHORIZATION GAP: reported, not closed.
 	//
-	// Where the target API authorizes the reference itself, it does so against
-	// whoever creates the object. That is this operator, whose certificate
-	// carries the system:masters organization, so the check passes trivially
-	// and the consumer project never actually holds the permission. The objects
-	// below exist and function on the strength of the installer's authority
-	// rather than the consumer's.
+	// A target API that authorizes the reference does so against whoever
+	// creates the object. That is this operator, running as system:masters, so
+	// the check passes and the consumer project never holds the permission.
+	// These objects work on the installer's authority, not the consumer's.
 	//
-	// This is not closed by anything in this version. Closing it requires the
-	// platform to establish a real grant — a platform-authored IAM binding, in
-	// a separate typed fan-out where the provider names only its own resources
-	// and the platform chooses the subject, scope, and verb — so that the
-	// target API's own check would independently accept the write. Until then
-	// the fact is recorded on the ledger rather than left implicit, because
-	// revoking access later does not undo it: the check runs at create, not at
-	// use, so an already-installed reference keeps working.
+	// Closing the gap needs a platform-authored IAM binding, from a separate
+	// typed fan-out where the provider names only its own resources and the
+	// platform chooses the subject, scope, and verb. The target API's own check
+	// would then accept the write independently. Until then the ledger records
+	// the gap, because revoking access later changes nothing: the check runs at
+	// create, not at use, so an installed reference keeps working.
 	entry.AuthorizationEstablished = !allowed.TargetAPIAuthorizesSource
 	if allowed.TargetAPIAuthorizesSource {
 		entry.Message = allowed.AuthorizationCaveat
@@ -409,9 +398,9 @@ func (r *ProvisioningReconciler) prune(
 // pruneAll removes everything provisioned for this entitlement, across every
 // allowlisted kind.
 //
-// It sweeps the whole allowlist rather than only the kinds the current
-// configuration declares, so that removing a declaration — or removing a kind
-// from the allowlist — still tears down what it installed.
+// It sweeps the whole allowlist rather than the kinds the current configuration
+// declares, so removing a declaration, or removing a kind from the allowlist,
+// still tears down what it installed.
 func (r *ProvisioningReconciler) pruneAll(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -446,10 +435,10 @@ func (r *ProvisioningReconciler) pruneAll(
 // entitlement, in the consumer's own control plane.
 //
 // The condition is patched rather than written with the rest of the status:
-// ServiceEntitlementReconciler owns Ready and ProjectSuspensionPropagation
-// owns Suspended on the same object, and a full status update would have the
-// three clobbering each other. Ready is deliberately untouched here — a
-// delivery failure is not a denial of access.
+// ServiceEntitlementReconciler owns Ready and ProjectSuspensionPropagation owns
+// Suspended on the same object, so a full status update would have the three
+// clobbering each other. Ready stays untouched here, because a delivery failure
+// is not a denial of access.
 func (r *ProvisioningReconciler) writeStatus(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -532,12 +521,11 @@ func listGVK(a provisioning.AllowedKind) schema.GroupVersionKind {
 // service: the most recently created Published one, breaking ties on the higher
 // name for determinism.
 //
-// The two existing fan-outs disagree on this — the location reconciler selects
-// the latest Published, the quota fan-out takes the first Published in list
-// order. This follows the location rule, because it is deterministic and
-// independent of list ordering whereas "first returned" is neither, and because
-// this reconciler is a generalization of that one. Reconciling the quota
-// fan-out onto the same rule is a separate change and is not made here.
+// The two existing fan-outs disagree: the location reconciler selects the
+// latest Published, the quota fan-out takes the first Published in list order.
+// This follows the location rule, which does not depend on list ordering, and
+// which this reconciler generalizes. Moving the quota fan-out onto it is a
+// separate change.
 func activePublishedConfiguration(
 	ctx context.Context,
 	rootClient client.Client,
@@ -563,15 +551,14 @@ func activePublishedConfiguration(
 // SetupWithManager registers the reconciler on the multicluster manager.
 //
 // The primary watch is ServiceEntitlement, scoped to engaged project clusters.
-// A root-cluster watch on ServiceConfiguration is added on top, because a
-// provider editing its declaration is a first-class trigger: without it a
-// selector change would only reach entitled projects on the next resync, up to
-// provisioningResyncInterval later. The map function fans a root event out into
-// project-scoped requests, which is why it needs the root manager's cache
-// directly — mchandler would overwrite ClusterName with the local cluster.
+// A root-cluster watch on ServiceConfiguration sits on top: without it a
+// selector change would reach entitled projects only on the next resync, up to
+// provisioningResyncInterval later. The map function fans a root event into
+// project-scoped requests, so it needs the root manager's cache directly;
+// mchandler would overwrite ClusterName with the local cluster.
 //
-// Source objects in provider projects still have no path to enqueue a consumer
-// request, so a newly labelled source object converges on the resync.
+// Source objects in provider projects cannot enqueue a consumer request, so a
+// newly labelled source object converges on the resync.
 func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
 	r.Manager = mgr

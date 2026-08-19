@@ -400,9 +400,8 @@ func (r *ServiceEntitlementReconciler) mapServiceConfigurationToServiceEntitleme
 
 // enqueueEntitlementsForConfiguration turns a root-cluster ServiceConfiguration
 // event into project-scoped requests for every ServiceEntitlement naming that
-// service. Shared by the quota and provisioning fan-outs, which both need a
-// declaration change to reach entitled projects promptly rather than on the
-// next resync.
+// service. The quota and provisioning fan-outs share it; both need a
+// declaration change to reach entitled projects before the next resync.
 func enqueueEntitlementsForConfiguration(
 	ctx context.Context,
 	rootClient client.Client,

@@ -1,16 +1,12 @@
 # The positive control for every "consumer-b received nothing" assertion in this
-# suite.
+# suite. A project whose plane is unreachable, or which does not serve IPClass,
+# is also a project with no IPClasses in it. The test creates this object
+# directly in consumer-b, so every absence assertion runs against a plane proven
+# reachable, serving this kind, and returning objects from a list.
 #
-# An empty plane makes those assertions pass for the wrong reason: a project
-# whose control plane is unreachable, or which does not serve IPClass at all,
-# is also a project with no IPClasses in it. This object is created by the test
-# directly in consumer-b, so each absence assertion is made against a plane that
-# is demonstrably reachable, demonstrably serving this kind, and demonstrably
-# returning objects from a list.
-#
-# It carries none of the provisioning labels, so it is never a candidate for
-# pruning and its survival is itself an assertion: nothing the fan-out does to
-# consumer-a reaches into consumer-b.
+# It carries none of the provisioning labels, so it is never a pruning
+# candidate. Its survival asserts that nothing the fan-out does to consumer-a
+# reaches consumer-b.
 apiVersion: networking.datumapis.com/v1alpha
 kind: IPClass
 metadata:

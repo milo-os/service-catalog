@@ -555,22 +555,20 @@ type ProviderUserInterfaceSpec struct {
 	Assets PluginAssets `json:"assets"`
 }
 
-// ServiceProvisioningConfig groups the resources a service needs installed in a
-// consumer project before that project can use it. It is the authoritative
-// declaration of what this service manages in a consumer project.
+// ServiceProvisioningConfig declares the resources a service needs installed in
+// a consumer project before that project can use it. It is the authoritative
+// statement of what the service manages there.
 //
-// The provider supplies values in a platform-defined schema and never supplies
-// an object: the target kind is drawn from a platform-owned allowlist, the
-// object name is derived, and the content is a reference to an object the
-// provider already owns. That is the property that makes the existing billing,
-// quota, and location fan-outs bounded, and it is preserved deliberately here
-// because the operator writes into consumer planes as system:masters, where
-// RBAC is not an effective ceiling.
+// The provider supplies values in a platform-defined schema, never an object:
+// the target kind comes from a platform-owned allowlist, the object name is
+// derived, and the content references an object the provider already owns. The
+// billing, quota, and location fan-outs are bounded the same way. It matters
+// here because the operator writes into consumer planes as system:masters,
+// where RBAC is no ceiling.
 type ServiceProvisioningConfig struct {
-	// Resources declares what to install. The cap bounds the blast radius of a
-	// single configuration: a declaration fans out across every entitled
-	// project, so the per-document and per-project limits are part of the
-	// security model rather than an operational concern.
+	// Resources declares what to install. A declaration fans out across every
+	// entitled project, so the cap bounds the blast radius of one configuration
+	// and belongs to the security model, not to operations.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=16
@@ -594,11 +592,10 @@ type ProvisionedResourceSpec struct {
 	// Projection installs, in each entitled project, one object referencing
 	// each object matching a selector in a project the provider owns.
 	//
-	// It is the only delivery mode. Inline literal objects and external bundle
-	// references were both considered and rejected for the first version: a
-	// projection derives its content from objects that already exist in a plane
-	// where ordinary authorization applied when the provider created them,
-	// which a provider-authored payload does not.
+	// This is the only delivery mode. Inline literal objects and external
+	// bundle references were rejected: a projection derives its content from
+	// objects the provider created under ordinary authorization, which a
+	// provider-authored payload does not.
 	//
 	// +kubebuilder:validation:Required
 	Projection ResourceProjectionSpec `json:"projection"`
@@ -607,9 +604,9 @@ type ProvisionedResourceSpec struct {
 // ResourceProjectionSpec selects objects in a provider-owned source project and
 // projects references to them into entitled consumer projects.
 type ResourceProjectionSpec struct {
-	// SourceProject is the project whose objects are projected. It must be a
-	// project the declaring provider owns; a provider projecting out of a
-	// project it does not own would do so with an identity nothing would stop.
+	// SourceProject is the project whose objects are projected. The declaring
+	// provider must own it. Projecting out of a project it does not own would
+	// read that project with an identity nothing constrains.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -617,26 +614,24 @@ type ResourceProjectionSpec struct {
 	SourceProject string `json:"sourceProject"`
 
 	// Kind selects the objects to project and, through the platform allowlist,
-	// determines the consumer-facing kind installed to reference them. Version
-	// is deliberately absent, matching spec.quota.metricRules[].selector: the
-	// allowlist pins the served version so a declaration need not be
-	// republished when an API version moves.
+	// the consumer-facing kind installed to reference them. Version is absent,
+	// matching spec.quota.metricRules[].selector: the allowlist pins the served
+	// version, so an API version move does not force a republish.
 	//
-	// The kind is only usable if the platform allowlist admits it. That check
-	// runs at admission and again in the controller before any write — not via
-	// RBAC, which does not constrain the operator's identity.
+	// The platform allowlist must admit the kind. Admission checks it, and the
+	// controller checks it again before every write. RBAC does not, because it
+	// does not constrain the operator's identity.
 	//
 	// +kubebuilder:validation:Required
 	Kind GVKRef `json:"kind"`
 
 	// Selector chooses which objects in SourceProject to project. A selector
-	// rather than a list of names is what lets a provider offer a new object to
-	// every already-entitled project without republishing its configuration —
-	// the same reasoning spec.locations.supportedClasses already uses.
+	// rather than a list of names lets a provider offer a new object to every
+	// already-entitled project without republishing its configuration, as
+	// spec.locations.supportedClasses does.
 	//
-	// An empty or absent selector matches nothing rather than everything:
-	// projecting a source project's entire contents by omission is never the
-	// intent, and the failure mode is silent and wide.
+	// An empty or absent selector matches nothing, not everything. Projecting a
+	// source project's whole contents by omission fails silently and widely.
 	//
 	// +kubebuilder:validation:Required
 	Selector metav1.LabelSelector `json:"selector"`

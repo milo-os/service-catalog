@@ -87,11 +87,10 @@ const (
 	ReasonActive = "Active"
 
 	// ConditionTypeProvisioned reports whether the resources the service
-	// declared for a consumer project actually arrived. It is deliberately
-	// separate from ConditionTypeReady: Ready means access was granted and any
-	// approval passed, Provisioned means delivery happened. Collapsing them
-	// would make a transient apply failure indistinguishable from a provider
-	// denial, which is the misattribution this reporting exists to prevent.
+	// declared for a consumer project arrived. It stays separate from
+	// ConditionTypeReady, which reports that access was granted and any
+	// approval passed. Collapsing the two would make a transient apply failure
+	// read as a provider denial.
 	ConditionTypeProvisioned = "Provisioned"
 
 	// ReasonProvisioned is the Provisioned=True reason when every declared
@@ -131,10 +130,9 @@ const (
 	ProvisionedResourceStateFailed ProvisionedResourceState = "Failed"
 
 	// ProvisionedResourceStateUnprovisionable indicates delivery cannot succeed
-	// as declared and retrying will not help — the kind is not served by this
-	// project's control plane, or the platform allowlist does not admit it.
-	// This is reported rather than skipped: "your plane does not serve the kind
-	// this service says you need" is precisely what a consumer must be told.
+	// as declared and a retry will not help: this project's control plane does
+	// not serve the kind, or the platform allowlist does not admit it. It is
+	// reported rather than skipped, because the consumer has to be told.
 	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
 )
 
@@ -178,10 +176,9 @@ type ProvisionedResourceStatus struct {
 	// consumer project's own authorization to use the referenced source
 	// objects, where the target API performs its own permission check.
 	//
-	// False means the objects exist and work on the strength of the installing
-	// identity rather than the consumer's. Nothing in this version of
-	// provisioning establishes such a grant, so it is false for every kind
-	// whose target API checks permissions. See the allowlist.
+	// False means the objects work on the installing identity's authority, not
+	// the consumer's. This version establishes no such grant, so it is false
+	// for every kind whose target API checks permissions. See the allowlist.
 	//
 	// +kubebuilder:validation:Optional
 	AuthorizationEstablished bool `json:"authorizationEstablished,omitempty"`
@@ -275,12 +272,10 @@ type ServiceEntitlementStatus struct {
 	// LastProvisioningEvaluation is when provisioning was last evaluated for
 	// this entitlement, successfully or not.
 	//
-	// Recorded so that a fan-out which has silently stopped running is visible
-	// on the object itself. The failure mode it exists for has already been
-	// observed: location projection stopped in staging and surfaced weeks later
-	// as an unrelated component reporting a downstream symptom, because a
-	// projection that stops reconciling is otherwise indistinguishable from a
-	// project that legitimately has nothing.
+	// A fan-out that has silently stopped is otherwise indistinguishable from a
+	// project that legitimately has nothing. Location projection stopped in
+	// staging once and surfaced weeks later as a downstream symptom in an
+	// unrelated component.
 	//
 	// +kubebuilder:validation:Optional
 	LastProvisioningEvaluation *metav1.Time `json:"lastProvisioningEvaluation,omitempty"`

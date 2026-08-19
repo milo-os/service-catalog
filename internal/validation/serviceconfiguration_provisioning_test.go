@@ -194,10 +194,10 @@ func TestProvisioningPublishedImmutabilityAllowsWithdrawal(t *testing.T) {
 	}
 }
 
-// A declaration can become invalid without being edited — the platform can
-// narrow the allowlist under it, and a document can be admitted while the
-// webhook is absent. Removing the controller's finalizer is an update, so
-// re-validating a terminating configuration would leave it undeletable.
+// A declaration can go invalid without being edited: the platform can narrow
+// the allowlist under it, and a document can be admitted while the webhook is
+// absent. Removing the controller's finalizer is an update, so re-validating a
+// terminating configuration would leave it undeletable.
 func TestProvisioningValidationSkipsTerminatingConfiguration(t *testing.T) {
 	oldSC := provTestConfig(provTestAllowedKind(), provTestProducer, provTestSelector())
 	newSC := provTestConfig(servicesv1alpha1.GVKRef{Group: "iam.miloapis.com", Kind: "PolicyBinding"},

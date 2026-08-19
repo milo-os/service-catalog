@@ -1,15 +1,15 @@
-# The same published billing artifact, at the same tag, that
-# config/overlays/e2e/billing-crds.yaml installs — and installed the same way.
+# The same published billing artifact, at the same tag, installed the same way
+# as config/overlays/e2e/billing-crds.yaml.
 #
-# The one difference is where it lands. There the CRDs belong in the hosting
-# cluster, because that is where the operator's single-cluster mode resolves
-# every project. Here they belong in Milo, so this Kustomization is pointed at
-# it with a kubeConfig: the hosting cluster serves no catalog API at all.
+# Only the destination differs. There the CRDs land in the hosting cluster,
+# where the operator's single-cluster mode resolves every project. Here they
+# land in Milo, so this Kustomization carries a kubeConfig: the hosting cluster
+# serves no catalog API.
 #
-# The whole CRD set is installed, not the two kinds the suites name:
+# It installs the whole CRD set, not the two kinds the suites name.
 # ServiceEntitlementReconciler indexes BillingAccountBinding and
-# BillingEntitlement at startup and the manager exits if either is not served.
-# Naming files individually is how this environment first failed — the set grows
+# BillingEntitlement at startup, and the manager exits if either is not served.
+# Naming files individually is how this environment first failed: the set grows
 # in the billing repo, and a list goes stale silently.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
@@ -19,9 +19,8 @@ metadata:
 spec:
   interval: 1h
   url: oci://ghcr.io/milo-os/billing-kustomize
-  # Deliberately the same floating tag config/overlays/e2e uses: the two
-  # environments install one artifact, and pinning this one further would let
-  # them drift silently.
+  # The same floating tag config/overlays/e2e uses. The two environments install
+  # one artifact, and pinning this one further would let them drift silently.
   ref:
     tag: v0.0.0-main
 ---

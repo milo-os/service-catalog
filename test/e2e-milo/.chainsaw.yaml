@@ -16,15 +16,14 @@ spec:
   delayBeforeCleanup: 5s
   # Run in an existing namespace rather than an ephemeral one per test. Every
   # object these suites create is cluster-scoped, so the namespace is only
-  # scaffolding — and this Milo runs no controller-manager, so a namespace it
-  # creates is never finalized and its deletion never completes. Chainsaw waits
-  # on that deletion, so without this the first suite passes and the run then
-  # hangs.
+  # scaffolding. This Milo runs no controller-manager, so a namespace it creates
+  # is never finalized and its deletion never completes. Chainsaw waits on that
+  # deletion, so without this the first suite passes and the run hangs.
   namespace: default
   # Every control plane these suites address, each a real one. A project control
   # plane is the same Milo behind its own URL path, and Milo derives tenancy
-  # from that path server-side — which is why addressing them separately is a
-  # real test of isolation and not a naming convention.
+  # from that path server-side. Addressing them separately is therefore a real
+  # test of isolation, not a naming convention.
   #
   # The kubeconfig is written by hack/e2e-milo/up.sh. The path is relative to
   # the directory chainsaw runs from, which is the repository root.

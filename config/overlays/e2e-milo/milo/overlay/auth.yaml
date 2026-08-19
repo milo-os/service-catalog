@@ -2,18 +2,15 @@
 # same; the alternative is the zitadel OIDC provider, which is not what these
 # suites are testing.
 #
-# Both identities carry system:masters, and that is deliberate rather than
-# convenient:
+# Both identities carry system:masters:
 #
 #   e2e-admin           the chainsaw suites and the bootstrap that registers
 #                       CRDs and Projects.
 #   services-operator   the operator's own identity. In production it reaches
-#                       project control planes with a certificate carrying the
-#                       system:masters organization — the reason
+#                       project control planes as system:masters, which is why
 #                       ProvisioningReconciler re-checks the allowlist in code
-#                       rather than relying on RBAC to bound it. Giving it
-#                       anything narrower here would test a ceiling production
-#                       does not have.
+#                       rather than relying on RBAC. Anything narrower here
+#                       would test a ceiling production does not have.
 #
 # Nothing in this environment is authorized per project: under RBAC-only Milo a
 # root grant authorizes every project path, so project isolation here is

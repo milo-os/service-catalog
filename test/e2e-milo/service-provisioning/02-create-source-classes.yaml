@@ -1,5 +1,5 @@
-# The provider's own classes, in its own project's control plane — a different
-# control plane from either consumer's, reached over its own URL path.
+# The provider's own classes, in its own project's control plane, reached over
+# its own URL path and separate from either consumer's.
 apiVersion: networking.datumapis.com/v1alpha
 kind: IPClass
 metadata:

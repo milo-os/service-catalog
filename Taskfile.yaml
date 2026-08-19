@@ -269,12 +269,11 @@ tasks:
           VERSION: "{{.CHAINSAW_VERSION}}"
     cmds:
       # The cluster kubeconfig paths in the config are relative to this
-      # directory, so chainsaw has to run from the repository root.
+      # directory, so chainsaw runs from the repository root.
       #
-      # KUBECONFIG is what chainsaw uses for anything not addressed to a named
-      # cluster — including the ephemeral namespace it creates per test. Without
-      # it that lands in whatever cluster the developer's ambient kubeconfig
-      # happens to point at, which is not this one.
+      # Chainsaw uses KUBECONFIG for anything not addressed to a named cluster,
+      # including the ephemeral namespace it creates per test. Without it that
+      # lands in whatever cluster the developer's ambient kubeconfig points at.
       - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
     silent: false
 

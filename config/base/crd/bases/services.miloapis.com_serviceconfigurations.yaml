@@ -561,10 +561,9 @@ spec:
                 properties:
                   resources:
                     description: |-
-                      Resources declares what to install. The cap bounds the blast radius of a
-                      single configuration: a declaration fans out across every entitled
-                      project, so the per-document and per-project limits are part of the
-                      security model rather than an operational concern.
+                      Resources declares what to install. A declaration fans out across every
+                      entitled project, so the cap bounds the blast radius of one configuration
+                      and belongs to the security model, not to operations.
                     items:
                       description: |-
                         ProvisionedResourceSpec is a single declaration of what to install into
@@ -583,23 +582,21 @@ spec:
                             Projection installs, in each entitled project, one object referencing
                             each object matching a selector in a project the provider owns.
 
-                            It is the only delivery mode. Inline literal objects and external bundle
-                            references were both considered and rejected for the first version: a
-                            projection derives its content from objects that already exist in a plane
-                            where ordinary authorization applied when the provider created them,
-                            which a provider-authored payload does not.
+                            This is the only delivery mode. Inline literal objects and external
+                            bundle references were rejected: a projection derives its content from
+                            objects the provider created under ordinary authorization, which a
+                            provider-authored payload does not.
                           properties:
                             kind:
                               description: |-
                                 Kind selects the objects to project and, through the platform allowlist,
-                                determines the consumer-facing kind installed to reference them. Version
-                                is deliberately absent, matching spec.quota.metricRules[].selector: the
-                                allowlist pins the served version so a declaration need not be
-                                republished when an API version moves.
+                                the consumer-facing kind installed to reference them. Version is absent,
+                                matching spec.quota.metricRules[].selector: the allowlist pins the served
+                                version, so an API version move does not force a republish.
 
-                                The kind is only usable if the platform allowlist admits it. That check
-                                runs at admission and again in the controller before any write — not via
-                                RBAC, which does not constrain the operator's identity.
+                                The platform allowlist must admit the kind. Admission checks it, and the
+                                controller checks it again before every write. RBAC does not, because it
+                                does not constrain the operator's identity.
                               properties:
                                 group:
                                   description: |-
@@ -620,13 +617,12 @@ spec:
                             selector:
                               description: |-
                                 Selector chooses which objects in SourceProject to project. A selector
-                                rather than a list of names is what lets a provider offer a new object to
-                                every already-entitled project without republishing its configuration —
-                                the same reasoning spec.locations.supportedClasses already uses.
+                                rather than a list of names lets a provider offer a new object to every
+                                already-entitled project without republishing its configuration, as
+                                spec.locations.supportedClasses does.
 
-                                An empty or absent selector matches nothing rather than everything:
-                                projecting a source project's entire contents by omission is never the
-                                intent, and the failure mode is silent and wide.
+                                An empty or absent selector matches nothing, not everything. Projecting a
+                                source project's whole contents by omission fails silently and widely.
                               properties:
                                 matchExpressions:
                                   description: matchExpressions is a list of label
@@ -673,9 +669,9 @@ spec:
                               x-kubernetes-map-type: atomic
                             sourceProject:
                               description: |-
-                                SourceProject is the project whose objects are projected. It must be a
-                                project the declaring provider owns; a provider projecting out of a
-                                project it does not own would do so with an identity nothing would stop.
+                                SourceProject is the project whose objects are projected. The declaring
+                                provider must own it. Projecting out of a project it does not own would
+                                read that project with an identity nothing constrains.
                               maxLength: 253
                               minLength: 1
                               type: string

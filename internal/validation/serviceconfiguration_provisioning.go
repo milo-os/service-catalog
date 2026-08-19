@@ -18,14 +18,13 @@ import (
 // validateProvisioning checks a spec.provisioning declaration against the
 // platform allowlist and the intra-document rules that do not need a lookup.
 //
-// This is the first of the allowlist's two enforcement points. It exists so a
-// provider gets a synchronous error rather than discovering the refusal in a
-// consumer's status later. It is not the binding one: the controller repeats
-// the check before any write, because this webhook can be absent from the
-// cluster and a configuration admitted under an older allowlist stays in etcd.
-// Enforcing it here alone — or delegating it to RBAC — would describe a control
-// that is not in force, since the operator writes into consumer control planes
-// as system:masters.
+// This is the first of the allowlist's two enforcement points. It gives the
+// provider a synchronous error instead of a refusal buried in a consumer's
+// status later. It is not the binding one: the controller repeats the check
+// before every write, because this webhook can be absent from the cluster and a
+// configuration admitted under an older allowlist stays in etcd. Enforcing only
+// here, or leaving it to RBAC, would describe a control that is not in force:
+// the operator writes into consumer control planes as system:masters.
 func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -49,10 +48,9 @@ func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.Error
 			allErrs = append(allErrs, field.Invalid(kindPath, res.Projection.Kind, err.Error()))
 		}
 
-		// A selector that matches everything would project a provider's entire
-		// source project into every entitled project. Kubernetes converts an
-		// empty selector to "match everything", so the safe reading has to be
-		// required explicitly rather than assumed.
+		// Kubernetes converts an empty selector to "match everything", which
+		// would project a provider's entire source project into every entitled
+		// project. Require a selector rather than assume the safe reading.
 		selector, err := metav1.LabelSelectorAsSelector(&res.Projection.Selector)
 		if err != nil {
 			allErrs = append(allErrs, field.Invalid(itemPath.Child("projection", "selector"),
@@ -71,10 +69,9 @@ func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.Error
 // of the project the declaring service is published from.
 //
 // Without it a provider could name any project as a source and have the
-// platform read it — with an identity that nothing would stop, since the
-// operator holds system:masters in every project control plane. The proof is
-// available cheaply here because the Service already records its producer
-// project, so ownership is a comparison rather than a new concept.
+// platform read it, with an identity nothing stops: the operator holds
+// system:masters in every project control plane. The Service already records
+// its producer project, so ownership is a comparison rather than a new concept.
 func validateProvisioningSourceProjects(
 	ctx context.Context,
 	c client.Reader,
@@ -116,12 +113,12 @@ func validateProvisioningSourceProjects(
 // validateProvisioningPublishedImmutability constrains edits to a Published
 // configuration's provisioning declaration.
 //
-// Changing the kind or the source project of a retained entry silently
-// re-points everything already installed under that name, so both are frozen.
-// The selector stays mutable on purpose: adjusting which of a provider's own
-// objects are offered is the intended way to reach already-entitled projects
-// without republishing. Removing an entry stays permitted because it is the
-// documented way to withdraw a declaration, and it prunes what it installed.
+// Changing a retained entry's kind or source project silently re-points
+// everything already installed under that name, so both are frozen. The
+// selector stays mutable: adjusting which of a provider's own objects are
+// offered is how a provider reaches already-entitled projects without
+// republishing. Removing an entry stays permitted; it withdraws the declaration
+// and prunes what it installed.
 func validateProvisioningPublishedImmutability(
 	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {

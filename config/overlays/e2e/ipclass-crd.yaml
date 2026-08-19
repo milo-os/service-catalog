@@ -2,7 +2,7 @@
 #
 # IPClass is owned by the IPAM API, not service-catalog. It is the one kind on
 # the platform provisioning allowlist, so e2e needs it installed to exercise the
-# projection without depending on the upstream module — the same reasoning as
+# projection without depending on the upstream module, as with
 # locationbinding-crd.yaml.
 #
 # It lives beside the single-cluster overlay but is installed into Milo by the
@@ -10,12 +10,11 @@
 # provisioning suites now run. Kept in one place rather than copied, so the two
 # environments cannot disagree about the fixture's schema.
 #
-# The schema is deliberately permissive: it exists to let the API server persist
-# a projected reference, not to validate it. Note what that means for the suite —
-# the real IPAM API additionally authorizes spec.source with a subject access
-# review for `use` on the source class, evaluated against whoever creates the
-# object. This CRD performs no such check, so the e2e suite cannot observe that
-# behaviour at all; see the authorization note in the provisioning reconciler.
+# The schema is permissive: it lets the API server persist a projected
+# reference, not validate it. The real IPAM API also authorizes spec.source with
+# a subject access review for `use` on the source class, against whoever creates
+# the object. This CRD runs no such check, so the e2e suite cannot observe that
+# behaviour. See the authorization note in the provisioning reconciler.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:

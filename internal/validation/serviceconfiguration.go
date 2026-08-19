@@ -67,10 +67,10 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
 
 	// Removing the controller's finalizer is an update, so re-validating a
-	// terminating configuration would make a document that is already invalid
-	// permanently undeletable — and provisioning declarations become invalid
-	// without being edited, whenever the platform narrows the allowlist under
-	// them. Deleting such a document is the remedy, not something to block.
+	// terminating configuration would leave an already-invalid document
+	// undeletable. A provisioning declaration goes invalid without being
+	// edited, whenever the platform narrows the allowlist under it. Deleting
+	// the document is the remedy.
 	terminating := !newSC.DeletionTimestamp.IsZero()
 	if !terminating {
 		allErrs = append(allErrs, validateProvisioning(newSC)...)

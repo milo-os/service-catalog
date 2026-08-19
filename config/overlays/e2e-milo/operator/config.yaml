@@ -7,7 +7,7 @@ webhookServer: {}
 # it would fall back to the in-cluster config and find none of the services
 # types. The kubeconfig is created by the environment bootstrap.
 kubeconfigPath: /etc/milo/kubeconfig
-# Consumer-scoped projection stays off, as in config/overlays/e2e: it is a
-# separate capability with its own gating, and turning it on here would change
-# which manager hosts LocationBinding projection without adding coverage of the
-# property this environment exists to prove.
+# Consumer-scoped projection stays off, as in config/overlays/e2e. It is a
+# separate capability with its own gating, and enabling it would move
+# LocationBinding projection to another manager without covering what this
+# environment proves.

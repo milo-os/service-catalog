@@ -243,10 +243,9 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ProjectSuspensionPropagation")
 		os.Exit(1)
 	}
-	// Provisioning runs on the all-projects manager because it must reach two
-	// project planes per reconcile: the consumer's, and the provider's source
-	// project. The consumer-scoped manager below is deliberately narrower than
-	// that.
+	// Provisioning runs on the all-projects manager because each reconcile
+	// reaches two project planes: the consumer's and the provider's source
+	// project. The consumer-scoped manager below is narrower.
 	if err = (&controller.ProvisioningReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Provisioning")
 		os.Exit(1)
