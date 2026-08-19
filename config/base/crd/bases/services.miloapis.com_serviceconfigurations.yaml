@@ -573,169 +573,37 @@ spec:
                           description: |-
                             Name identifies this declaration within the ServiceConfiguration. It is
                             the ledger key on ServiceEntitlement.status.provisionedResources, so it
-                            is what a consumer sees when a resource does not arrive.
+                            is what a consumer sees when a resource does not arrive, and it scopes
+                            pruning, so renaming a declaration reinstalls rather than edits.
                           maxLength: 253
                           minLength: 1
                           type: string
-                        projection:
+                        objects:
                           description: |-
-                            Projection installs, in each entitled project, one object referencing
-                            each object matching a selector in a project the provider owns.
+                            Objects are the objects to install, written out in full.
 
-                            This is the only delivery mode. Inline literal objects and external
-                            bundle references were rejected: a projection derives its content from
-                            objects the provider created under ordinary authorization, which a
-                            provider-authored payload does not.
-                          properties:
-                            kind:
-                              description: |-
-                                Kind selects the objects to project and names the consumer-facing kind
-                                installed to reference them. The provider names it, including the served
-                                version, because the provider owns the API and the platform does not.
+                            Each is stored as authored and applied into every entitled project under
+                            the name it carries. There are no variables, no per-project values, and
+                            no field paths: a provider that wants a different object writes a
+                            different object. The API server validates each entry as an embedded
+                            resource, so a missing or malformed apiVersion, kind, or metadata is
+                            refused with no webhook in the picture. Whether the object is acceptable
+                            is the owning API's decision, made when it accepts or refuses the write.
 
-                                Whether the projection is acceptable is the target API's decision, not
-                                this document's: a reference it does not accept is refused at the write
-                                and reported on the consumer's entitlement.
-                              properties:
-                                group:
-                                  description: |-
-                                    Group is the API group of the kind (e.g. "ipam.miloapis.com"). The
-                                    pattern requires a dotted domain, so the core group cannot be named: no
-                                    projection can produce a Secret, a ServiceAccount, or any other core
-                                    object.
-                                  maxLength: 253
-                                  minLength: 1
-                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
-                                  type: string
-                                kind:
-                                  description: Kind is the Kubernetes Kind (e.g. "IPClass").
-                                  maxLength: 63
-                                  minLength: 1
-                                  pattern: ^[A-Z][A-Za-z0-9]*$
-                                  type: string
-                                version:
-                                  description: Version is the served API version to
-                                    read and write (e.g. "v1alpha1").
-                                  maxLength: 63
-                                  minLength: 1
-                                  pattern: ^v[0-9]+((alpha|beta)[0-9]*)?$
-                                  type: string
-                              required:
-                              - group
-                              - kind
-                              - version
-                              type: object
-                            reference:
-                              description: |-
-                                Reference states where in the installed object's spec the pointer at the
-                                source object is written, and under which two keys.
-
-                                This is the whole of what the platform writes into spec. It is
-                                deliberately not a template: a projection may say "this object points at
-                                that one" and may not carry values, so the installed object holds no copy
-                                of anything and a consumer plane gains no data it has to keep in step.
-                              properties:
-                                fieldPath:
-                                  description: |-
-                                    FieldPath is the dotted path within spec that holds the reference (e.g.
-                                    "source" for IPClass.spec.source). Segments only: no list indexes and no
-                                    escape above spec.
-                                  maxLength: 253
-                                  minLength: 1
-                                  pattern: ^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$
-                                  type: string
-                                nameKey:
-                                  description: NameKey is the key under FieldPath
-                                    holding the source object's name.
-                                  maxLength: 63
-                                  minLength: 1
-                                  pattern: ^[a-z][a-zA-Z0-9]*$
-                                  type: string
-                                projectKey:
-                                  description: ProjectKey is the key under FieldPath
-                                    holding the source project's name.
-                                  maxLength: 63
-                                  minLength: 1
-                                  pattern: ^[a-z][a-zA-Z0-9]*$
-                                  type: string
-                              required:
-                              - fieldPath
-                              - nameKey
-                              - projectKey
-                              type: object
-                              x-kubernetes-validations:
-                              - message: projectKey and nameKey must differ
-                                rule: self.projectKey != self.nameKey
-                            selector:
-                              description: |-
-                                Selector chooses which objects in SourceProject to project. A selector
-                                rather than a list of names lets a provider offer a new object to every
-                                already-entitled project without republishing its configuration, as
-                                spec.locations.supportedClasses does.
-
-                                An empty or absent selector matches nothing, not everything. Projecting a
-                                source project's whole contents by omission fails silently and widely.
-                              properties:
-                                matchExpressions:
-                                  description: matchExpressions is a list of label
-                                    selector requirements. The requirements are ANDed.
-                                  items:
-                                    description: |-
-                                      A label selector requirement is a selector that contains values, a key, and an operator that
-                                      relates the key and values.
-                                    properties:
-                                      key:
-                                        description: key is the label key that the
-                                          selector applies to.
-                                        type: string
-                                      operator:
-                                        description: |-
-                                          operator represents a key's relationship to a set of values.
-                                          Valid operators are In, NotIn, Exists and DoesNotExist.
-                                        type: string
-                                      values:
-                                        description: |-
-                                          values is an array of string values. If the operator is In or NotIn,
-                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                          the values array must be empty. This array is replaced during a strategic
-                                          merge patch.
-                                        items:
-                                          type: string
-                                        type: array
-                                        x-kubernetes-list-type: atomic
-                                    required:
-                                    - key
-                                    - operator
-                                    type: object
-                                  type: array
-                                  x-kubernetes-list-type: atomic
-                                matchLabels:
-                                  additionalProperties:
-                                    type: string
-                                  description: |-
-                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
-                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
-                                  type: object
-                              type: object
-                              x-kubernetes-map-type: atomic
-                            sourceProject:
-                              description: |-
-                                SourceProject is the project whose objects are projected. The declaring
-                                provider must own it. Projecting out of a project it does not own would
-                                read that project with an identity nothing constrains.
-                              maxLength: 253
-                              minLength: 1
-                              type: string
-                          required:
-                          - kind
-                          - reference
-                          - selector
-                          - sourceProject
-                          type: object
+                            The cap bounds one declaration's fan-out into one project.
+                          items:
+                            description: ProvisionedObject is a Kubernetes object
+                              embedded verbatim.
+                            type: object
+                            x-kubernetes-embedded-resource: true
+                            x-kubernetes-preserve-unknown-fields: true
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
                       required:
                       - name
-                      - projection
+                      - objects
                       type: object
                     maxItems: 16
                     type: array

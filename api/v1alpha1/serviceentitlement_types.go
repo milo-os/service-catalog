@@ -136,6 +136,31 @@ const (
 	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
 )
 
+// ProvisionedKindRef is a group, version, and kind recorded on the ledger.
+//
+// The version is here because teardown reads and deletes, and both happen at a
+// version. It is the provider's version, since the platform does not own the
+// API.
+type ProvisionedKindRef struct {
+	// Group is the API group of the kind (e.g. "ipam.miloapis.com").
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	Group string `json:"group,omitempty"`
+
+	// Version is the API version the object was written at (e.g. "v1alpha1").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Version string `json:"version"`
+
+	// Kind is the Kubernetes Kind (e.g. "IPClass").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+}
+
 // ProvisionedResourceStatus is the per-resource ledger entry for one
 // declaration, in the consumer's own control plane.
 type ProvisionedResourceStatus struct {
@@ -144,12 +169,15 @@ type ProvisionedResourceStatus struct {
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
-	// Kind is the group, version, and kind that was installed. It is the
-	// entitlement's own record of what this declaration put in this project, so
-	// teardown does not depend on the declaration still being there to say.
+	// Kinds are the group, version, and kind of everything this declaration
+	// installed in this project. It is the entitlement's own record, so teardown
+	// does not depend on the declaration still being there to say what it wrote
+	// — a withdrawn declaration says nothing at all.
 	//
 	// +kubebuilder:validation:Optional
-	Kind *ProjectedKindRef `json:"kind,omitempty"`
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	Kinds []ProvisionedKindRef `json:"kinds,omitempty"`
 
 	// State is the delivery outcome for this declaration.
 	//

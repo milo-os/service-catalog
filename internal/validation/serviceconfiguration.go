@@ -40,7 +40,6 @@ func ValidateServiceConfigurationCreate(
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
-		allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, sc)...)
 	}
 
 	return allErrs
@@ -78,16 +77,10 @@ func ValidateServiceConfigurationUpdate(
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
-		if !terminating {
-			allErrs = append(allErrs, validateProvisioningSourceProjects(ctx, c, newSC)...)
-		}
 	}
 	allErrs = append(allErrs, ValidatePhaseTransition(oldSC.Spec.Phase, newSC.Spec.Phase, field.NewPath("spec", "phase"))...)
 	if oldSC.Spec.Phase == servicesv1alpha1.PhasePublished {
 		allErrs = append(allErrs, validateServiceConfigurationPublishedImmutability(oldSC, newSC)...)
-		if !terminating {
-			allErrs = append(allErrs, validateProvisioningPublishedImmutability(oldSC, newSC)...)
-		}
 	}
 
 	return allErrs

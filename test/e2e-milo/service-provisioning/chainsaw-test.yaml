@@ -15,16 +15,17 @@ spec:
 
     Four properties, in order:
 
-      1. the entitled project receives the projected references;
+      1. the entitled project receives the declared objects;
       2. the unentitled project receives nothing;
       3. removing the entitlement prunes from the entitled project and leaves
          the other untouched;
-      4. admission and selector-convergence behaviour still hold.
+      4. admission refuses objects the platform will not write, and an edited
+         declaration converges.
 
     (2) is the one that could pass for the wrong reason. An unreachable plane,
     or one not serving IPClass, is also a plane with no IPClasses in it. So
     consumer-b carries a control object the test creates in it directly (see
-    03-seed-unentitled-control.yaml), asserted alongside every absence claim,
+    02-seed-unentitled-control.yaml), asserted alongside every absence claim,
     and at the end consumer-b is entitled and shown to receive — a plane that
     can receive is a plane whose earlier emptiness meant something.
 
@@ -33,7 +34,7 @@ spec:
     isolation demonstrated is routing and storage. See test/e2e-milo/README.md.
 
     The IPClass CRD installed for e2e carries the real API's shape — a class is
-    a definition or a source-only reference, never both — so a projected object
+    a definition or a source-only reference, never both — so an installed object
     that is not a well-formed reference is refused. It performs none of the real
     API's authorization on spec.source, so the authorization gap the ledger
     reports is asserted from the ledger rather than observed from a refusal.
@@ -55,13 +56,6 @@ spec:
               spec:
                 phase: Published
 
-    - name: create-source-classes
-      description: The provider's classes, in the provider project's own control plane.
-      cluster: platform
-      try:
-        - apply:
-            file: 02-create-source-classes.yaml
-
     - name: seed-unentitled-control
       description: |
         The control object in consumer-b, and proof the plane is reachable and
@@ -69,47 +63,47 @@ spec:
       cluster: consumer-b
       try:
         - apply:
-            file: 03-seed-unentitled-control.yaml
+            file: 02-seed-unentitled-control.yaml
         - assert:
             timeout: 30s
             file: assertions/assert-control-object-present.yaml
 
-    - name: reject-declarations-that-do-not-resolve
+    - name: reject-objects-the-platform-will-not-write
       description: |
-        First of two enforcement points. A declaration that cannot become a
-        write — no version, a core-group kind, a reference that is not two keys
-        at one path in spec — is refused synchronously at admission rather than
-        failing later in a consumer's status. So is one reading out of a project
-        the service is not published from, and one whose selector would project
-        the whole source project.
+        First of two enforcement points. An embedded object is arbitrary, so
+        what admission checks is whether the platform can write it: a dotted API
+        group, a served version, a name it can install under, no namespace it
+        does not create, and none of the metadata the platform itself owns. A
+        declaration contending with itself over one name is refused too, because
+        the provider now chooses the name.
 
-        Which kinds are acceptable is not decided here. The API that owns a kind
-        decides whether it will accept a reference to another project's object,
-        and it says so by accepting or refusing the write.
+        Which objects are acceptable is not decided here. The API that owns a
+        kind decides whether it will accept the object, and it says so by
+        accepting or refusing the write.
       cluster: root
       try:
         - apply:
-            file: test-data/unversioned-kind.yaml
+            file: test-data/unversioned-api-version.yaml
             expect:
               - check:
                   ($error != null): true
         - apply:
-            file: test-data/core-group-kind.yaml
+            file: test-data/core-group-object.yaml
             expect:
               - check:
                   ($error != null): true
         - apply:
-            file: test-data/unresolvable-reference.yaml
+            file: test-data/namespaced-object.yaml
             expect:
               - check:
                   ($error != null): true
         - apply:
-            file: test-data/empty-selector.yaml
+            file: test-data/platform-owned-metadata.yaml
             expect:
               - check:
                   ($error != null): true
         - apply:
-            file: test-data/foreign-source-project.yaml
+            file: test-data/duplicate-object-name.yaml
             expect:
               - check:
                   ($error != null): true
@@ -122,7 +116,7 @@ spec:
       try:
         - apply:
             cluster: root
-            file: 04-publish-configuration.yaml
+            file: 03-publish-configuration.yaml
         - assert:
             cluster: root
             timeout: 30s
@@ -142,24 +136,24 @@ spec:
             timeout: 30s
             file: assertions/assert-nothing-provisioned.yaml
 
-    - name: entitle-and-receive-classes
+    - name: entitle-and-receive-objects
       description: |
-        An Active entitlement in consumer-a receives a reference to each
-        selected class, owned by the entitlement and labelled for pruning, and
-        reports delivery on a Provisioned condition separate from Ready.
+        An Active entitlement in consumer-a receives the declared object, owned
+        by the entitlement and labelled for pruning, and reports delivery on a
+        Provisioned condition separate from Ready.
       cluster: consumer-a
       try:
         - apply:
-            file: 05-create-entitlement.yaml
+            file: 04-create-entitlement.yaml
         - assert:
             timeout: 90s
             file: assertions/assert-entitlement-provisioned.yaml
         - assert:
             timeout: 90s
-            file: assertions/assert-class-projected.yaml
+            file: assertions/assert-class-installed.yaml
         - error:
             timeout: 30s
-            file: assertions/assert-unselected-class-not-projected.yaml
+            file: assertions/assert-undeclared-class-not-installed.yaml
         - assert:
             timeout: 30s
             file: assertions/assert-authorization-gap-reported.yaml
@@ -178,7 +172,7 @@ spec:
         - error:
             timeout: 30s
             file: assertions/assert-nothing-provisioned.yaml
-        # Named absence as well as labelled absence: the projection consumer-a
+        # Named absence as well as labelled absence: the object consumer-a
         # received, by the exact name it received it under.
         - error:
             timeout: 30s
@@ -186,7 +180,7 @@ spec:
               apiVersion: ipam.miloapis.com/v1alpha1
               kind: IPClass
               metadata:
-                name: networking-e2e-datumapis-com-e2e-public-unicast
+                name: e2e-shared-unicast
         # consumer-b must not have acquired an entitlement of its own along the
         # way; without this the absence above could be read as "not yet".
         - error:
@@ -197,11 +191,11 @@ spec:
               metadata:
                 name: e2e-provisioning-networking
 
-    - name: converge-on-selector-change
+    - name: converge-on-declaration-change
       description: |
-        A provider changing which of its own classes it offers reaches an
-        already-entitled project without republishing anything, withdraws the
-        class it no longer offers, and still reaches no one else.
+        Editing the embedded object is how a provider changes what consumers
+        hold. It reaches an already-entitled project, withdraws the object it no
+        longer declares, and still reaches no one else.
       try:
         - script:
             cluster: root
@@ -209,11 +203,11 @@ spec:
             content: |
               set -e
               kubectl patch serviceconfiguration e2e-provisioning-networking --type=json \
-                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/projection/selector","value":{"matchLabels":{"ipam.miloapis.com/tier":"premium"}}}]'
+                -p '[{"op":"replace","path":"/spec/provisioning/resources/0/objects/0","value":{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"e2e-premium-anycast"},"spec":{"source":{"project":"e2e-provisioning-platform","name":"e2e-internal-only"}}}}]'
         - assert:
             cluster: consumer-a
             timeout: 90s
-            file: assertions/assert-converged-class-projected.yaml
+            file: assertions/assert-converged-class-installed.yaml
         - error:
             cluster: consumer-a
             timeout: 90s
@@ -254,12 +248,12 @@ spec:
       description: |
         The closing half of the positive control. consumer-b was empty because
         it was not entitled, not because it could not receive: entitle it and
-        the class the provider currently offers arrives, in the plane every
+        the object the provider currently declares arrives, in the plane every
         absence above was asserted against.
       cluster: consumer-b
       try:
         - apply:
-            file: 05-create-entitlement.yaml
+            file: 04-create-entitlement.yaml
         - assert:
             timeout: 90s
             file: assertions/assert-entitlement-provisioned-premium.yaml

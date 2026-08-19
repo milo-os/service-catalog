@@ -1,5 +1,5 @@
 # Same shape as assert-entitlement-provisioned.yaml, asserted against
-# consumer-b after the provider narrowed its selector to the premium class.
+# consumer-b after the provider edited the declaration.
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceEntitlement
 metadata:
@@ -12,10 +12,10 @@ status:
     - status: "True"
       reason: Provisioned
   provisionedResources:
-    - name: shared-classes
+    - name: address-classes
       state: Installed
       objectCount: 1
-      kind:
-        group: ipam.miloapis.com
-        version: v1alpha1
-        kind: IPClass
+      kinds:
+        - group: ipam.miloapis.com
+          version: v1alpha1
+          kind: IPClass

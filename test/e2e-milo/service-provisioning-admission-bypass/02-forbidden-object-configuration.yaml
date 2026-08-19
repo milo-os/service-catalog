@@ -1,0 +1,42 @@
+# Declares two objects: one the platform would install, and one it must never
+# write. A core-group Secret is refused because an embedded object's group must
+# be a dotted domain, and it names a namespace, which provisioning does not
+# create.
+#
+# The declaration is refused whole. That is the point of the pairing: a
+# controller that skipped the bad object and installed the good one would leave
+# a consumer holding half a declaration and no signal that the rest was dropped.
+#
+# This document only reaches etcd because the step applying it disabled the
+# ServiceConfiguration webhook. That stands in for the real cases: a webhook
+# removed from the control plane, and a document admitted before the check
+# existed. The ServiceConfiguration schema cannot catch either object — an
+# embedded resource needs a valid apiVersion, kind, and metadata, and both of
+# these have them — so the controller is the only thing left.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-bypass-networking
+spec:
+  serviceRef:
+    name: e2e-bypass-networking
+  phase: Published
+  provisioning:
+    resources:
+      - name: mixed-objects
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              name: e2e-bypass-class
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-public-unicast
+          - apiVersion: v1
+            kind: Secret
+            metadata:
+              name: e2e-bypass-secret
+              namespace: kube-system
+            stringData:
+              token: hunter2

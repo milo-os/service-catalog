@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
-	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -31,47 +30,44 @@ import (
 
 const (
 	// provisioningResyncInterval bounds how long a change no watch here observes
-	// takes to reach consumer projects: a provider labelling, unlabelling, or
-	// deleting a source object in its own project. Declaration edits do not
-	// wait for it, because SetupWithManager watches ServiceConfiguration.
+	// takes to reach consumer projects. Declaration edits do not wait for it,
+	// because SetupWithManager watches ServiceConfiguration.
 	provisioningResyncInterval = 5 * time.Minute
 
 	// provisioningFieldManager identifies writes this reconciler makes, to
-	// projected objects and to the entitlement's provisioning status. It
+	// installed objects and to the entitlement's provisioning status. It
 	// differs from the entitlement reconciler's manager so the two do not
 	// contend over the ledger and the Ready condition.
 	provisioningFieldManager = "services-operator-provisioning"
 
 	// labelProvisionedResource records which spec.provisioning.resources[].name
 	// produced an object. Pruning is scoped by it so a declaration that failed
-	// to resolve cannot cause another declaration's objects to be removed.
+	// to decode cannot cause another declaration's objects to be removed.
+	//
+	// With the service and entitlement labels beside it, this is what answers
+	// "why is this object here": the provider no longer has to encode the answer
+	// in the name, because it chooses the name.
 	labelProvisionedResource = "services.miloapis.com/provisioned-resource"
 
-	// labelSourceObject records the source object a projection references,
-	// making "why is this here" answerable from the object alone.
-	labelSourceObject = "services.miloapis.com/source-object"
-
 	// maxProvisionedObjectsPerResource caps how many objects one declaration
-	// may install into one project. Exceeding it is refused and reported, never
-	// truncated: a truncated fan-out looks like a working system.
-	maxProvisionedObjectsPerResource = 100
+	// may install into one project. It matches the schema's MaxItems and is
+	// re-checked here for a document admitted under an earlier schema.
+	// Exceeding it is refused and reported, never truncated: a truncated
+	// fan-out looks like a working system.
+	maxProvisionedObjectsPerResource = 32
 
 	// Provisioned ledger reasons.
-	reasonProjectionInvalid        = "ProjectionInvalid"
-	reasonSourceProjectNotOwned    = "SourceProjectNotOwned"
-	reasonKindNotServed            = "KindNotServed"
-	reasonSelectorEmpty            = "SelectorEmpty"
-	reasonSelectorMatchesTooMany   = "SelectorMatchesTooMany"
-	reasonSourceProjectUnreachable = "SourceProjectUnreachable"
-	reasonSourceListFailed         = "SourceListFailed"
-	reasonApplyFailed              = "ApplyFailed"
+	reasonObjectInvalid  = "ObjectInvalid"
+	reasonTooManyObjects = "TooManyObjects"
+	reasonKindNotServed  = "KindNotServed"
+	reasonApplyFailed    = "ApplyFailed"
 
 	// authorizationCaveat explains the gap to the consumer, on every installed
 	// resource. It reaches the entitlement ledger, so the gap is visible in a
 	// running system rather than only in a design document.
-	authorizationCaveat = "This reference was installed by the platform, which is authorized to use " +
-		"the source object. The project itself was not granted use of it, so the reference works on " +
-		"the platform's authority rather than the project's."
+	authorizationCaveat = "This resource was installed by the platform, which is authorized to use " +
+		"the objects it references. The project itself was not granted use of them, so the resource " +
+		"works on the platform's authority rather than the project's."
 )
 
 // ProvisioningReconciler installs the resources a service declares in
@@ -81,14 +77,13 @@ const (
 // It generalizes the location-binding projection rather than sitting beside it:
 // same gating on Active, same owner reference to the cluster-scoped
 // entitlement, same label-scoped pruning, same periodic resync standing in for
-// cross-plane events. Only the target kind and the source objects differ,
-// coming from a declaration instead of being wired in. That is why this
-// controller re-checks the declaration rather than trusting admission.
+// cross-plane events. Only the objects differ, coming from a declaration
+// instead of being wired in. That is why this controller re-checks the
+// declaration rather than trusting admission.
 //
 // It runs on the multicluster manager, so each reconcile is scoped to one
 // engaged project cluster (req.ClusterName). ServiceConfiguration lives on the
-// root cluster and is read through rootClient; source objects live in the
-// provider's own project and are read through that project's engaged cluster.
+// root cluster and is read through rootClient.
 type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
@@ -103,10 +98,11 @@ type ProvisioningReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
 // This controller holds no per-kind RBAC grants, and could not: the kinds are
 // named by providers at runtime and the operator's certificate carries
-// system:masters, so RBAC bounds nothing here. What bounds it is the shape of a
-// projection and the provider's ownership of the source project, both checked
-// at admission and again before every write. Whether a given reference is
-// acceptable is the target API's own decision, made when it rejects the write.
+// system:masters, so RBAC bounds nothing here. What bounds it is where the
+// objects go — only projects that created an entitlement, only once it is
+// Active — and the shape each object must take, both checked at admission and
+// again before every write. Whether a given object is acceptable is the owning
+// API's own decision, made when it accepts or rejects the write.
 
 func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -167,15 +163,6 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		serviceName = serviceRefName
 	}
 
-	// A projection may read only out of the project the service is published
-	// from. Admission enforces it too; it is re-derived here because that is
-	// the check a document already in etcd can have been admitted without.
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: serviceRefName}, &svc); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to get Service %q: %w", serviceRefName, err)
-	}
-	producerProject := svc.Spec.Owner.ProducerProjectRef.Name
-
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
 		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
@@ -186,11 +173,15 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 			fmt.Sprintf("%s does not install any resources into projects.", serviceName))
 	}
 
+	// What this project recorded receiving last time, so a declaration that
+	// renamed or re-kinded an object still withdraws the old one.
+	installed := installedKinds(&entitlement)
+
 	ledger := make([]servicesv1alpha1.ProvisionedResourceStatus, 0, len(sc.Spec.Provisioning.Resources))
 	for i := range sc.Spec.Provisioning.Resources {
 		decl := &sc.Spec.Provisioning.Resources[i]
 		ledger = append(ledger, r.reconcileResource(
-			ctx, consumerClient, &entitlement, serviceName, producerProject, decl))
+			ctx, consumerClient, &entitlement, serviceName, decl, installed[decl.Name]))
 	}
 
 	// Objects installed by a declaration that is no longer there. The
@@ -208,127 +199,89 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 // reconcileResource installs one declaration's objects and returns its ledger
 // entry. It never returns an error: a failure against one declaration must not
 // abandon the others, and every outcome has to be reportable to the consumer.
+//
+// installed is what this declaration put in this project on the last pass. It
+// is carried on any path that does not converge, so a declaration that stops
+// resolving does not erase the record teardown depends on.
 func (r *ProvisioningReconciler) reconcileResource(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
-	producerProject string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
+	installed []schema.GroupVersionKind,
 ) servicesv1alpha1.ProvisionedResourceStatus {
-	kind := decl.Projection.Kind
-	entry := servicesv1alpha1.ProvisionedResourceStatus{
-		Name: decl.Name,
-		Kind: &servicesv1alpha1.ProjectedKindRef{Group: kind.Group, Version: kind.Version, Kind: kind.Kind},
-	}
+	entry := servicesv1alpha1.ProvisionedResourceStatus{Name: decl.Name, Kinds: kindRefs(installed)}
 
-	// Second enforcement point. Admission already refused a declaration that
-	// does not resolve, but one admitted under an earlier schema stays in etcd
-	// and the webhook can be absent from the cluster.
-	projection, err := provisioning.Resolve(decl.Projection)
-	if err != nil {
+	if len(decl.Objects) > maxProvisionedObjectsPerResource {
 		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-		entry.Reason = reasonProjectionInvalid
-		entry.Message = fmt.Sprintf("%s cannot install %s.%s into this project: %s",
-			serviceName, kind.Kind, kind.Group, err.Error())
-		return entry
-	}
-
-	// The other half of that check. A service offers only what it holds in a
-	// project it owns; without this the platform would read a project the
-	// provider was never granted, with an identity nothing stops.
-	if decl.Projection.SourceProject != producerProject {
-		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-		entry.Reason = reasonSourceProjectNotOwned
+		entry.Reason = reasonTooManyObjects
 		entry.Message = fmt.Sprintf(
-			"%s declared %q reading out of %q, which is not the project it is published from, so nothing was installed.",
-			serviceName, decl.Name, decl.Projection.SourceProject)
+			"%s declared %d objects for %q, above the limit of %d, so none were installed.",
+			serviceName, len(decl.Objects), decl.Name, maxProvisionedObjectsPerResource)
 		return entry
 	}
 
-	// Kubernetes converts an absent or empty selector to "match everything".
-	// Projecting a provider's whole source project by omission fails silently
-	// and widely, so it is refused.
-	selector, err := metav1.LabelSelectorAsSelector(&decl.Projection.Selector)
-	if err != nil || selector.Empty() {
-		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-		entry.Reason = reasonSelectorEmpty
-		entry.Message = fmt.Sprintf("%s declared %q without a selector, so no %s objects were installed.",
-			serviceName, decl.Name, kind.Kind)
-		return entry
-	}
-
-	sourceCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(decl.Projection.SourceProject))
-	if err != nil {
-		entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
-		entry.Reason = reasonSourceProjectUnreachable
-		entry.Message = fmt.Sprintf("%s could not be reached to read the %s objects it offers; retrying.",
-			serviceName, kind.Kind)
-		return entry
-	}
-
-	var sourceList unstructured.UnstructuredList
-	sourceList.SetGroupVersionKind(projection.ListGVK())
-	if err := sourceCluster.GetClient().List(ctx, &sourceList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		if apimeta.IsNoMatchError(err) {
+	// Second enforcement point. Admission already refused an object the
+	// platform will not write, but one admitted under an earlier schema stays
+	// in etcd and the webhook can be absent from the cluster.
+	objects := make([]provisioning.Object, 0, len(decl.Objects))
+	for i := range decl.Objects {
+		obj, err := provisioning.Decode(decl.Objects[i].RawExtension)
+		if err != nil {
 			entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-			entry.Reason = reasonKindNotServed
-			entry.Message = fmt.Sprintf("%s could not install %s because its own project does not serve that kind.",
-				serviceName, kind.Kind)
+			entry.Reason = reasonObjectInvalid
+			entry.Message = fmt.Sprintf("%s cannot install object %d of %q into this project: %s",
+				serviceName, i+1, decl.Name, err.Error())
 			return entry
 		}
-		entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
-		entry.Reason = reasonSourceListFailed
-		entry.Message = fmt.Sprintf("%s could not list the %s objects it offers; retrying.", serviceName, kind.Kind)
-		return entry
+		objects = append(objects, obj)
 	}
 
-	if len(sourceList.Items) > maxProvisionedObjectsPerResource {
-		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
-		entry.Reason = reasonSelectorMatchesTooMany
-		entry.Message = fmt.Sprintf(
-			"%s selected %d %s objects for %q, above the limit of %d, so none were installed.",
-			serviceName, len(sourceList.Items), kind.Kind, decl.Name, maxProvisionedObjectsPerResource)
-		return entry
-	}
-
-	desired := make(map[string]struct{}, len(sourceList.Items))
-	for i := range sourceList.Items {
-		src := &sourceList.Items[i]
-		name := provisionedObjectName(serviceName, src.GetName())
-		if err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl, projection, src, name); err != nil {
+	desired := make(map[schema.GroupVersionKind]map[string]struct{}, len(objects))
+	for _, obj := range objects {
+		if err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl.Name, obj); err != nil {
 			if apimeta.IsNoMatchError(err) {
 				entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
 				entry.Reason = reasonKindNotServed
 				entry.Message = fmt.Sprintf(
 					"%s could not install %s %q because this project's control plane does not serve that kind.",
-					serviceName, kind.Kind, src.GetName())
+					serviceName, obj.GVK.Kind, obj.Name)
 				return entry
 			}
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not install %s %q: %v", serviceName, kind.Kind, src.GetName(), err)
+			entry.Message = fmt.Sprintf("%s could not install %s %q: %v",
+				serviceName, obj.GVK.Kind, obj.Name, err)
 			return entry
 		}
-		desired[name] = struct{}{}
+		if desired[obj.GVK] == nil {
+			desired[obj.GVK] = map[string]struct{}{}
+		}
+		desired[obj.GVK][obj.Name] = struct{}{}
 	}
 
-	// Pruning runs only after the source list succeeded, scoped to this
-	// declaration, so a declaration that could not resolve never removes
-	// another's objects.
-	if err := r.prune(ctx, consumerClient, entitlement, projection.GVK, decl.Name, desired); err != nil {
-		entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
-		entry.Reason = reasonApplyFailed
-		entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v", serviceName, kind.Kind, err)
-		return entry
+	// Pruning is scoped to this declaration, so one that could not decode never
+	// removes another's objects. It runs over the kinds installed last time as
+	// well as this time, because renaming or re-kinding an object is now an
+	// ordinary edit and the object under the old identity has to go.
+	for _, gvk := range union(kindsOf(objects), installed) {
+		if err := r.prune(ctx, consumerClient, entitlement, gvk, decl.Name, desired[gvk]); err != nil {
+			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
+			entry.Reason = reasonApplyFailed
+			entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v",
+				serviceName, gvk.Kind, err)
+			return entry
+		}
 	}
 
+	entry.Kinds = kindRefs(kindsOf(objects))
 	entry.State = servicesv1alpha1.ProvisionedResourceStateInstalled
-	entry.ObjectCount = int32(len(desired))
+	entry.ObjectCount = int32(len(objects))
 
 	// AUTHORIZATION GAP: reported, not closed.
 	//
-	// A target API that authorizes the reference does so against whoever
+	// An API that authorizes a cross-project reference does so against whoever
 	// creates the object. That is this operator, running as system:masters, so
 	// the check passes and the consumer project never holds the permission.
 	// These objects work on the installer's authority, not the consumer's.
@@ -348,52 +301,47 @@ func (r *ProvisioningReconciler) reconcileResource(
 	return entry
 }
 
-// upsert writes one projected object. The consumer-facing object is a reference
-// and nothing else: it carries no copied data, so nothing has to propagate when
-// the source changes and a consumer cannot repoint it at another provider's
-// objects.
+// upsert writes one declared object into the consumer project.
+//
+// The apply is server-side and forced, so the fields the declaration states are
+// the fields the object has: a consumer edit to any of them is reverted, and a
+// field the declaration stops stating is removed. What the platform adds — the
+// provisioning labels and the owner reference — it adds here, not in the
+// declaration, which is why a provider cannot author either.
 func (r *ProvisioningReconciler) upsert(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
-	decl *servicesv1alpha1.ProvisionedResourceSpec,
-	projection provisioning.Projection,
-	source *unstructured.Unstructured,
-	name string,
+	declName string,
+	obj provisioning.Object,
 ) error {
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(projection.GVK)
-	u.SetName(name)
+	u := obj.Unstructured()
 
-	_, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
-		l := u.GetLabels()
-		if l == nil {
-			l = map[string]string{}
-		}
-		l[labelManagedBy] = labelManagedByValue
-		l[labelServiceName] = encodeName(serviceName)
-		l[labelEntitlementName] = entitlement.Name
-		l[labelProvisionedResource] = decl.Name
-		l[labelSourceObject] = source.GetName()
-		u.SetLabels(l)
+	l := u.GetLabels()
+	if l == nil {
+		l = map[string]string{}
+	}
+	l[labelManagedBy] = labelManagedByValue
+	l[labelServiceName] = encodeName(serviceName)
+	l[labelEntitlementName] = entitlement.Name
+	l[labelProvisionedResource] = declName
+	u.SetLabels(l)
 
-		// The cluster-scoped ServiceEntitlement owns what was provisioned for
-		// it, so deleting the entitlement garbage-collects these objects. This
-		// is the only teardown path that does not depend on the project purger,
-		// which does not delete cluster-scoped resources.
-		if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
-			return fmt.Errorf("set controller reference: %w", err)
-		}
+	// The cluster-scoped ServiceEntitlement owns what was provisioned for it,
+	// so deleting the entitlement garbage-collects these objects. This is the
+	// only teardown path that does not depend on the project purger, which does
+	// not delete cluster-scoped resources.
+	if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
+		return fmt.Errorf("set controller reference: %w", err)
+	}
 
-		return unstructured.SetNestedMap(u.Object,
-			projection.Spec(decl.Projection.SourceProject, source.GetName()), "spec")
-	})
-	return err
+	return consumerClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
+		client.FieldOwner(provisioningFieldManager), client.ForceOwnership)
 }
 
-// prune deletes objects this declaration previously installed that the source
-// selector no longer resolves to.
+// prune deletes objects this declaration previously installed that it no longer
+// declares.
 //
 // The query is scoped by service and entitlement as well as managed-by. Pruning
 // on the shared managed-by label alone would let one service's fan-out remove
@@ -447,7 +395,7 @@ func (r *ProvisioningReconciler) pruneAll(
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 ) error {
-	return r.sweep(ctx, consumerClient, entitlement, ledgerKinds(entitlement), nil)
+	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
 }
 
 // pruneUndeclared removes objects installed by a declaration the configuration
@@ -460,26 +408,13 @@ func (r *ProvisioningReconciler) pruneUndeclared(
 	declared []servicesv1alpha1.ProvisionedResourceSpec,
 ) error {
 	keep := make(map[string]struct{}, len(declared))
-	kinds := make(map[schema.GroupVersionKind]struct{}, len(declared))
 	for i := range declared {
 		keep[declared[i].Name] = struct{}{}
-		// A declaration that does not resolve installed nothing, and naming a
-		// versionless kind here would make the sweep itself fail.
-		if kind := declared[i].Projection.Kind; kind.Version != "" {
-			kinds[schema.GroupVersionKind{Group: kind.Group, Version: kind.Version, Kind: kind.Kind}] = struct{}{}
-		}
 	}
-	// The ledger still describes the previous reconcile at this point, so a
-	// declaration withdrawn since is named there and nowhere else.
-	for _, gvk := range ledgerKinds(entitlement) {
-		kinds[gvk] = struct{}{}
-	}
-
-	all := make([]schema.GroupVersionKind, 0, len(kinds))
-	for gvk := range kinds {
-		all = append(all, gvk)
-	}
-	return r.sweep(ctx, consumerClient, entitlement, all, keep)
+	// The ledger still describes the previous reconcile at this point, and a
+	// withdrawn declaration names no kind, so the ledger is the only record of
+	// what it installed.
+	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
 }
 
 // sweep deletes every object this entitlement owns, of the given kinds, whose
@@ -519,20 +454,72 @@ func (r *ProvisioningReconciler) sweep(
 	return nil
 }
 
-// ledgerKinds is what this project recorded receiving, deduplicated.
-func ledgerKinds(entitlement *servicesv1alpha1.ServiceEntitlement) []schema.GroupVersionKind {
-	seen := make(map[schema.GroupVersionKind]struct{})
+// installedKinds is what each declaration recorded installing in this project,
+// deduplicated, keyed by declaration name.
+func installedKinds(entitlement *servicesv1alpha1.ServiceEntitlement) map[string][]schema.GroupVersionKind {
+	out := make(map[string][]schema.GroupVersionKind, len(entitlement.Status.ProvisionedResources))
+	for _, entry := range entitlement.Status.ProvisionedResources {
+		out[entry.Name] = union(nil, gvksOf(entry.Kinds))
+	}
+	return out
+}
+
+// allInstalledKinds is everything this project recorded receiving, across all
+// declarations.
+func allInstalledKinds(entitlement *servicesv1alpha1.ServiceEntitlement) []schema.GroupVersionKind {
 	var out []schema.GroupVersionKind
 	for _, entry := range entitlement.Status.ProvisionedResources {
-		if entry.Kind == nil || entry.Kind.Version == "" {
+		out = union(out, gvksOf(entry.Kinds))
+	}
+	return out
+}
+
+func gvksOf(refs []servicesv1alpha1.ProvisionedKindRef) []schema.GroupVersionKind {
+	out := make([]schema.GroupVersionKind, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Version == "" || ref.Kind == "" {
+			// A versionless kind would make the sweep itself fail.
 			continue
 		}
-		gvk := schema.GroupVersionKind{Group: entry.Kind.Group, Version: entry.Kind.Version, Kind: entry.Kind.Kind}
-		if _, dup := seen[gvk]; dup {
-			continue
+		out = append(out, schema.GroupVersionKind{Group: ref.Group, Version: ref.Version, Kind: ref.Kind})
+	}
+	return out
+}
+
+func kindsOf(objects []provisioning.Object) []schema.GroupVersionKind {
+	out := make([]schema.GroupVersionKind, 0, len(objects))
+	for _, obj := range objects {
+		out = append(out, obj.GVK)
+	}
+	return union(nil, out)
+}
+
+func kindRefs(gvks []schema.GroupVersionKind) []servicesv1alpha1.ProvisionedKindRef {
+	if len(gvks) == 0 {
+		return nil
+	}
+	out := make([]servicesv1alpha1.ProvisionedKindRef, 0, len(gvks))
+	for _, gvk := range gvks {
+		out = append(out, servicesv1alpha1.ProvisionedKindRef{
+			Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind,
+		})
+	}
+	return out
+}
+
+// union appends the kinds of b that a does not already hold, preserving order
+// so the ledger and the sweep are stable across reconciles.
+func union(a, b []schema.GroupVersionKind) []schema.GroupVersionKind {
+	seen := make(map[schema.GroupVersionKind]struct{}, len(a)+len(b))
+	out := make([]schema.GroupVersionKind, 0, len(a)+len(b))
+	for _, list := range [][]schema.GroupVersionKind{a, b} {
+		for _, gvk := range list {
+			if _, dup := seen[gvk]; dup {
+				continue
+			}
+			seen[gvk] = struct{}{}
+			out = append(out, gvk)
 		}
-		seen[gvk] = struct{}{}
-		out = append(out, gvk)
 	}
 	return out
 }
@@ -604,15 +591,6 @@ func (r *ProvisioningReconciler) writeStatus(
 		return fmt.Errorf("failed to patch ServiceEntitlement provisioning status: %w", err)
 	}
 	return nil
-}
-
-// provisionedObjectName derives the installed object's name from the canonical
-// service name and the source object.
-//
-// The provider does not choose it. Two services therefore cannot contend for
-// one object, and a service cannot shadow a name a consumer already relies on.
-func provisionedObjectName(serviceName, sourceName string) string {
-	return encodeName(serviceName) + "-" + encodeName(sourceName)
 }
 
 // activePublishedConfiguration returns the ServiceConfiguration that governs a

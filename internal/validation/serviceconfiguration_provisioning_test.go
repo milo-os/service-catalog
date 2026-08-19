@@ -8,21 +8,30 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-const (
-	provTestService  = "networking-datumapis-com"
-	provTestProducer = "networking-platform"
-)
+const provTestService = "networking-datumapis-com"
 
-func provTestSelector() metav1.LabelSelector {
-	return metav1.LabelSelector{MatchLabels: map[string]string{"ipam.miloapis.com/shared": "true"}}
+func provTestObject(body string) servicesv1alpha1.ProvisionedObject {
+	return servicesv1alpha1.ProvisionedObject{RawExtension: runtime.RawExtension{Raw: []byte(body)}}
 }
 
-func provTestConfig(kind servicesv1alpha1.ProjectedKindRef, sourceProject string, selector metav1.LabelSelector) *servicesv1alpha1.ServiceConfiguration {
+// The shape IPAM gives a cross-project class reference. The provider writes it;
+// the platform holds no table saying what it should be.
+func provTestIPClass() servicesv1alpha1.ProvisionedObject {
+	return provTestObject(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": "tenant-endpoint-ipv6"},
+		"spec": {"source": {"project": "platform-networking", "name": "tenant-endpoint-ipv6"}}
+	}`)
+}
+
+func provTestConfig(objects ...servicesv1alpha1.ProvisionedObject) *servicesv1alpha1.ServiceConfiguration {
 	return &servicesv1alpha1.ServiceConfiguration{
 		ObjectMeta: metav1.ObjectMeta{Name: provTestService},
 		Spec: servicesv1alpha1.ServiceConfigurationSpec{
@@ -30,30 +39,11 @@ func provTestConfig(kind servicesv1alpha1.ProjectedKindRef, sourceProject string
 			Phase:      servicesv1alpha1.PhasePublished,
 			Provisioning: &servicesv1alpha1.ServiceProvisioningConfig{
 				Resources: []servicesv1alpha1.ProvisionedResourceSpec{{
-					Name: "public-classes",
-					Projection: servicesv1alpha1.ResourceProjectionSpec{
-						SourceProject: sourceProject,
-						Kind:          kind,
-						Reference:     provTestReference(),
-						Selector:      selector,
-					},
+					Name:    "address-classes",
+					Objects: objects,
 				}},
 			},
 		},
-	}
-}
-
-func provTestKind() servicesv1alpha1.ProjectedKindRef {
-	return servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Version: "v1alpha1", Kind: "IPClass"}
-}
-
-// The shape IPAM gives a cross-project class reference. The provider states it;
-// the platform holds no table saying what it should be.
-func provTestReference() servicesv1alpha1.ProjectedReferenceSpec {
-	return servicesv1alpha1.ProjectedReferenceSpec{
-		FieldPath:  "source",
-		ProjectKey: "project",
-		NameKey:    "name",
 	}
 }
 
@@ -63,7 +53,7 @@ func provTestServiceObj() *servicesv1alpha1.Service {
 		Spec: servicesv1alpha1.ServiceSpec{
 			ServiceName: "networking.datumapis.com",
 			Owner: servicesv1alpha1.ServiceOwner{
-				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: provTestProducer},
+				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: "networking-platform"},
 			},
 		},
 	}
@@ -77,59 +67,50 @@ func provTestReader(objs ...*servicesv1alpha1.Service) *fake.ClientBuilder {
 	return b
 }
 
-func TestProvisioningValidationAcceptsResolvableProjection(t *testing.T) {
-	sc := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	if errs := validateProvisioning(sc); len(errs) != 0 {
-		t.Fatalf("expected a valid projection to be accepted, got %v", errs)
-	}
-	errs := validateProvisioningSourceProjects(context.Background(),
-		provTestReader(provTestServiceObj()).Build(), sc)
-	if len(errs) != 0 {
-		t.Fatalf("expected the producer project to be accepted as a source, got %v", errs)
+func TestProvisioningValidationAcceptsAnEmbeddedObject(t *testing.T) {
+	if errs := validateProvisioning(provTestConfig(provTestIPClass())); len(errs) != 0 {
+		t.Fatalf("expected a well-formed object to be accepted, got %v", errs)
 	}
 }
 
 // Admission is the first of two enforcement points: a provider gets a
 // synchronous error rather than a status field later. What it checks is that
-// the declaration resolves into a write — which kinds are acceptable is the
-// target API's decision, made when it accepts or refuses the write.
-func TestProvisioningValidationRejectsUnresolvableProjection(t *testing.T) {
+// the platform can write the object at all — whether the object is acceptable
+// is the owning API's decision, made when it accepts or refuses the write.
+func TestProvisioningValidationRejectsObjectsThePlatformWillNotWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		kind  servicesv1alpha1.ProjectedKindRef
-		ref   servicesv1alpha1.ProjectedReferenceSpec
+		obj   servicesv1alpha1.ProvisionedObject
 		field string
 	}{
 		{
 			name:  "core group",
-			kind:  servicesv1alpha1.ProjectedKindRef{Group: "", Version: "v1", Kind: "Secret"},
-			ref:   provTestReference(),
-			field: "spec.provisioning.resources[0].projection.kind.group",
+			obj:   provTestObject(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x"}}`),
+			field: "spec.provisioning.resources[0].objects[0].apiVersion",
 		},
 		{
 			name:  "no version",
-			kind:  servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Kind: "IPClass"},
-			ref:   provTestReference(),
-			field: "spec.provisioning.resources[0].projection.kind.version",
+			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com","kind":"IPClass","metadata":{"name":"x"}}`),
+			field: "spec.provisioning.resources[0].objects[0].apiVersion",
 		},
 		{
-			name:  "reference path escapes spec",
-			kind:  provTestKind(),
-			ref:   servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "metadata.ownerReferences[0]", ProjectKey: "project", NameKey: "name"},
-			field: "spec.provisioning.resources[0].projection.reference.fieldPath",
+			name:  "no name",
+			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{}}`),
+			field: "spec.provisioning.resources[0].objects[0].metadata.name",
 		},
 		{
-			name:  "one key for both values",
-			kind:  provTestKind(),
-			ref:   servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "source", ProjectKey: "name", NameKey: "name"},
-			field: "spec.provisioning.resources[0].projection.reference.nameKey",
+			name:  "namespaced",
+			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","namespace":"kube-system"}}`),
+			field: "spec.provisioning.resources[0].objects[0].metadata.namespace",
+		},
+		{
+			name:  "owner reference the platform must set",
+			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","ownerReferences":[]}}`),
+			field: "spec.provisioning.resources[0].objects[0].metadata.ownerReferences",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sc := provTestConfig(tc.kind, provTestProducer, provTestSelector())
-			sc.Spec.Provisioning.Resources[0].Projection.Reference = tc.ref
-
-			errs := validateProvisioning(sc)
+			errs := validateProvisioning(provTestConfig(tc.obj))
 			if len(errs) != 1 {
 				t.Fatalf("expected one rejection, got %v", errs)
 			}
@@ -140,35 +121,28 @@ func TestProvisioningValidationRejectsUnresolvableProjection(t *testing.T) {
 	}
 }
 
-// An empty selector converts to "match everything". Projecting a whole source
-// project by omission has to be refused rather than interpreted.
-func TestProvisioningValidationRequiresNonEmptySelector(t *testing.T) {
-	sc := provTestConfig(provTestKind(), provTestProducer, metav1.LabelSelector{})
-	errs := validateProvisioning(sc)
+// The provider now chooses the installed name, so one declaration can contend
+// with itself. The second write would silently win.
+func TestProvisioningValidationRejectsTwoObjectsUnderOneName(t *testing.T) {
+	errs := validateProvisioning(provTestConfig(provTestIPClass(), provTestIPClass()))
 	if len(errs) != 1 {
-		t.Fatalf("expected the empty selector to be rejected, got %v", errs)
+		t.Fatalf("expected the duplicate object to be rejected, got %v", errs)
 	}
-	if got := errs[0].Field; got != "spec.provisioning.resources[0].projection.selector" {
-		t.Errorf("error points at %q, want the selector field", got)
+	if got := errs[0].Field; got != "spec.provisioning.resources[0].objects[1]" {
+		t.Errorf("error points at %q, want the second object", got)
 	}
 }
 
-// A provider must not project out of a project it does not own; the platform
-// would read it with an identity nothing would stop.
-func TestProvisioningValidationRejectsForeignSourceProject(t *testing.T) {
-	sc := provTestConfig(provTestKind(), "someone-elses-project", provTestSelector())
-	errs := validateProvisioningSourceProjects(context.Background(),
-		provTestReader(provTestServiceObj()).Build(), sc)
-	if len(errs) != 1 {
-		t.Fatalf("expected a foreign source project to be rejected, got %v", errs)
-	}
-	if !strings.Contains(errs[0].Detail, provTestProducer) {
-		t.Errorf("error does not name the producer project: %q", errs[0].Detail)
+// Two objects of different kinds may share a name; they are different objects.
+func TestProvisioningValidationAllowsOneNameAcrossKinds(t *testing.T) {
+	other := provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPool","metadata":{"name":"tenant-endpoint-ipv6"}}`)
+	if errs := validateProvisioning(provTestConfig(provTestIPClass(), other)); len(errs) != 0 {
+		t.Fatalf("expected one name across two kinds to be accepted, got %v", errs)
 	}
 }
 
 func TestProvisioningValidationRejectsDuplicateResourceNames(t *testing.T) {
-	sc := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
+	sc := provTestConfig(provTestIPClass())
 	sc.Spec.Provisioning.Resources = append(sc.Spec.Provisioning.Resources,
 		sc.Spec.Provisioning.Resources[0])
 
@@ -178,54 +152,23 @@ func TestProvisioningValidationRejectsDuplicateResourceNames(t *testing.T) {
 	}
 }
 
-// The selector must stay editable on a Published configuration: adjusting which
-// of a provider's own objects are offered is how new objects reach
-// already-entitled projects without republishing.
-func TestProvisioningPublishedImmutabilityAllowsSelectorChange(t *testing.T) {
-	oldSC := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	newSC := provTestConfig(provTestKind(), provTestProducer, metav1.LabelSelector{
-		MatchLabels: map[string]string{"ipam.miloapis.com/tier": "premium"},
-	})
+// Editing the object is how a provider updates what a consumer holds, so
+// nothing inside a declaration is frozen on a Published configuration.
+func TestProvisioningPublishedAllowsEditingTheObject(t *testing.T) {
+	oldSC := provTestConfig(provTestIPClass())
+	newSC := provTestConfig(provTestObject(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": "tenant-endpoint-ipv4"},
+		"spec": {"source": {"project": "platform-networking", "name": "tenant-endpoint-ipv4"}}
+	}`))
 
-	if errs := validateProvisioningPublishedImmutability(oldSC, newSC); len(errs) != 0 {
-		t.Fatalf("expected a selector change on Published to be allowed, got %v", errs)
-	}
-}
-
-// Changing the kind, source project, or reference shape under a retained name
-// silently re-points or rewrites everything already installed under it.
-func TestProvisioningPublishedImmutabilityFreezesKindSourceAndReference(t *testing.T) {
-	oldSC := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-
-	changedKind := provTestConfig(servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Version: "v1alpha1", Kind: "IPPool"},
-		provTestProducer, provTestSelector())
-	if errs := validateProvisioningPublishedImmutability(oldSC, changedKind); len(errs) != 1 {
-		t.Errorf("expected a kind change on Published to be forbidden, got %v", errs)
-	}
-
-	changedSource := provTestConfig(provTestKind(), "another-project", provTestSelector())
-	if errs := validateProvisioningPublishedImmutability(oldSC, changedSource); len(errs) != 1 {
-		t.Errorf("expected a source project change on Published to be forbidden, got %v", errs)
-	}
-
-	// Moving the reference elsewhere in the spec rewrites every installed
-	// object under a name a consumer already relies on.
-	changedRef := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	changedRef.Spec.Provisioning.Resources[0].Projection.Reference.FieldPath = "classSource"
-	if errs := validateProvisioningPublishedImmutability(oldSC, changedRef); len(errs) != 1 {
-		t.Errorf("expected a reference change on Published to be forbidden, got %v", errs)
-	}
-}
-
-// Withdrawing a declaration is the documented rollback path, so removal stays
-// permitted even though other Published sections forbid it.
-func TestProvisioningPublishedImmutabilityAllowsWithdrawal(t *testing.T) {
-	oldSC := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	newSC := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	newSC.Spec.Provisioning.Resources = nil
-
-	if errs := validateProvisioningPublishedImmutability(oldSC, newSC); len(errs) != 0 {
-		t.Fatalf("expected withdrawing a declaration to be allowed, got %v", errs)
+	errs := ValidateServiceConfigurationUpdate(context.Background(),
+		provTestReader(provTestServiceObj()).Build(), oldSC, newSC, false)
+	for _, e := range errs {
+		if strings.Contains(e.Field, "provisioning") {
+			t.Errorf("editing a Published declaration was blocked: %v", e)
+		}
 	}
 }
 
@@ -234,9 +177,8 @@ func TestProvisioningPublishedImmutabilityAllowsWithdrawal(t *testing.T) {
 // Removing the controller's finalizer is an update, so re-validating a
 // terminating configuration would leave it undeletable.
 func TestProvisioningValidationSkipsTerminatingConfiguration(t *testing.T) {
-	oldSC := provTestConfig(provTestKind(), provTestProducer, provTestSelector())
-	newSC := provTestConfig(servicesv1alpha1.ProjectedKindRef{Group: "iam.miloapis.com", Kind: "PolicyBinding"},
-		"someone-elses-project", metav1.LabelSelector{})
+	oldSC := provTestConfig(provTestIPClass())
+	newSC := provTestConfig(provTestObject(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x"}}`))
 	now := metav1.Now()
 	newSC.DeletionTimestamp = &now
 	newSC.Finalizers = nil

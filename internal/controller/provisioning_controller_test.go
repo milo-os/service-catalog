@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -31,32 +32,23 @@ const (
 	provEntitlementUID  = types.UID("ent-networking-uid")
 )
 
-var ipClassGVK = schema.GroupVersionKind{
-	Group:   "ipam.miloapis.com",
-	Version: "v1alpha1",
-	Kind:    "IPClass",
-}
+var (
+	ipClassGVK = schema.GroupVersionKind{
+		Group:   "ipam.miloapis.com",
+		Version: "v1alpha1",
+		Kind:    "IPClass",
+	}
+	ipPoolGVK = ipClassGVK.GroupVersion().WithKind("IPPool")
+)
 
 func provScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
-	s.AddKnownTypeWithName(ipClassGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(ipClassGVK.GroupVersion().WithKind("IPClassList"), &unstructured.UnstructuredList{})
-	return s
-}
-
-// provRootClient holds what lives at the platform root: the Service, whose
-// producer project bounds every projection, and the configurations.
-func provRootClient(objs ...client.Object) client.Client {
-	svc := &servicesv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: provServiceName},
-		Spec: servicesv1alpha1.ServiceSpec{
-			Owner: servicesv1alpha1.ServiceOwner{
-				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: provSourceProject},
-			},
-		},
+	for _, gvk := range []schema.GroupVersionKind{ipClassGVK, ipPoolGVK} {
+		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
 	}
-	return provClient(append([]client.Object{svc}, objs...)...)
+	return s
 }
 
 func provClient(objs ...client.Object) client.Client {
@@ -86,7 +78,22 @@ func provEntitlementObj(phase servicesv1alpha1.EntitlementPhase) *servicesv1alph
 	}
 }
 
-func provConfig(kind servicesv1alpha1.ProjectedKindRef, selector metav1.LabelSelector) *servicesv1alpha1.ServiceConfiguration {
+func provObject(body string) servicesv1alpha1.ProvisionedObject {
+	return servicesv1alpha1.ProvisionedObject{RawExtension: runtime.RawExtension{Raw: []byte(body)}}
+}
+
+// The shape IPAM gives a cross-project class reference: spec.source, keyed by
+// project and name. The provider writes it; the platform does not know it.
+func ipClassRef(name string) servicesv1alpha1.ProvisionedObject {
+	return provObject(fmt.Sprintf(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": %q},
+		"spec": {"source": {"project": %q, "name": %q}}
+	}`, name, provSourceProject, name))
+}
+
+func provConfig(objects ...servicesv1alpha1.ProvisionedObject) *servicesv1alpha1.ServiceConfiguration {
 	return &servicesv1alpha1.ServiceConfiguration{
 		ObjectMeta: metav1.ObjectMeta{Name: provConfigName},
 		Spec: servicesv1alpha1.ServiceConfigurationSpec{
@@ -94,47 +101,13 @@ func provConfig(kind servicesv1alpha1.ProjectedKindRef, selector metav1.LabelSel
 			Phase:      servicesv1alpha1.PhasePublished,
 			Provisioning: &servicesv1alpha1.ServiceProvisioningConfig{
 				Resources: []servicesv1alpha1.ProvisionedResourceSpec{{
-					Name: "public-classes",
-					Projection: servicesv1alpha1.ResourceProjectionSpec{
-						SourceProject: provSourceProject,
-						Kind:          kind,
-						Reference:     ipClassReference(),
-						Selector:      selector,
-					},
+					Name:    "address-classes",
+					Objects: objects,
 				}},
 			},
 		},
 		Status: servicesv1alpha1.ServiceConfigurationStatus{ServiceName: provServiceName},
 	}
-}
-
-func ipClassKind() servicesv1alpha1.ProjectedKindRef {
-	return servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Version: "v1alpha1", Kind: "IPClass"}
-}
-
-// The shape IPAM gives a cross-project class reference: spec.source, keyed by
-// project and name. The provider states it; the platform does not know it.
-func ipClassReference() servicesv1alpha1.ProjectedReferenceSpec {
-	return servicesv1alpha1.ProjectedReferenceSpec{
-		FieldPath:  "source",
-		ProjectKey: "project",
-		NameKey:    "name",
-	}
-}
-
-func sharedSelector() metav1.LabelSelector {
-	return metav1.LabelSelector{MatchLabels: map[string]string{"ipam.miloapis.com/shared": "true"}}
-}
-
-func sourceClass(name string, labels map[string]string) *unstructured.Unstructured {
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(ipClassGVK)
-	u.SetName(name)
-	u.SetLabels(labels)
-	_ = unstructured.SetNestedMap(u.Object, map[string]any{
-		"ipFamily": "IPv4",
-	}, "spec")
-	return u
 }
 
 func newProvReconciler(root client.Client, clusters map[string]client.Client) *ProvisioningReconciler {
@@ -157,14 +130,19 @@ func provReconcile(t *testing.T, r *ProvisioningReconciler) ctrl.Result {
 	return res
 }
 
-func listProjected(t *testing.T, c client.Client) *unstructured.UnstructuredList {
+func listInstalled(t *testing.T, c client.Client, gvk schema.GroupVersionKind) *unstructured.UnstructuredList {
 	t.Helper()
 	var list unstructured.UnstructuredList
-	list.SetGroupVersionKind(ipClassGVK.GroupVersion().WithKind("IPClassList"))
+	list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
 	if err := c.List(context.Background(), &list); err != nil {
-		t.Fatalf("list projected classes: %v", err)
+		t.Fatalf("list installed %s: %v", gvk.Kind, err)
 	}
 	return &list
+}
+
+func listClasses(t *testing.T, c client.Client) *unstructured.UnstructuredList {
+	t.Helper()
+	return listInstalled(t, c, ipClassGVK)
 }
 
 func getEntitlement(t *testing.T, c client.Client) *servicesv1alpha1.ServiceEntitlement {
@@ -176,51 +154,62 @@ func getEntitlement(t *testing.T, c client.Client) *servicesv1alpha1.ServiceEnti
 	return &ent
 }
 
-func TestProvisioningInstallsReferencesForActiveEntitlement(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(
-		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
-		sourceClass("internal-only", nil),
-	)
+func setConfig(t *testing.T, root client.Client, mutate func(*servicesv1alpha1.ServiceConfiguration)) {
+	t.Helper()
+	var live servicesv1alpha1.ServiceConfiguration
+	if err := root.Get(context.Background(), types.NamespacedName{Name: provConfigName}, &live); err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	mutate(&live)
+	if err := root.Update(context.Background(), &live); err != nil {
+		t.Fatalf("update config: %v", err)
+	}
+}
+
+func TestProvisioningInstallsDeclaredObjectsForActiveEntitlement(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
-	list := listProjected(t, consumer)
+	list := listClasses(t, consumer)
 	if len(list.Items) != 1 {
-		t.Fatalf("expected exactly the selected class to be projected, got %d", len(list.Items))
+		t.Fatalf("expected the declared class to be installed, got %d", len(list.Items))
 	}
 
 	got := list.Items[0]
-	if want := "networking-datumapis-com-public-unicast"; got.GetName() != want {
-		t.Errorf("projected name = %q, want %q (derived from service + source, not provider-chosen)", got.GetName(), want)
+	// The provider names the object; the platform installs it verbatim.
+	if got.GetName() != "tenant-endpoint-ipv6" {
+		t.Errorf("installed name = %q, want the name the declaration carries", got.GetName())
 	}
-
-	// The projected object must be a reference and must not carry the source's
-	// addressing, or a consumer would hold a copy it could diverge from.
-	source0, _, _ := unstructured.NestedMap(got.Object, "spec", "source")
-	if source0["project"] != provSourceProject || source0["name"] != "public-unicast" {
-		t.Errorf("projected spec.source = %+v, want a reference to the platform class", source0)
-	}
-	if _, found, _ := unstructured.NestedSlice(got.Object, "spec", "prefixes"); found {
-		t.Error("projected object copied the source's prefixes; it must hold a reference only")
+	source, _, _ := unstructured.NestedMap(got.Object, "spec", "source")
+	if source["project"] != provSourceProject || source["name"] != "tenant-endpoint-ipv6" {
+		t.Errorf("installed spec.source = %+v, want the reference the provider wrote", source)
 	}
 
 	// Owner reference to the cluster-scoped entitlement is the teardown path
 	// that does not depend on the project purger.
 	if !ownedBy(got.GetOwnerReferences(), provEntitlementUID) {
-		t.Errorf("projected object is not owned by the entitlement: %+v", got.GetOwnerReferences())
+		t.Errorf("installed object is not owned by the entitlement: %+v", got.GetOwnerReferences())
 	}
 
+	// Provenance moved entirely into the labels once the name stopped carrying
+	// it, so this is what answers "which service put this here".
 	labels := got.GetLabels()
 	if labels[labelManagedBy] != labelManagedByValue ||
+		labels[labelServiceName] != encodeName(provServiceName) ||
 		labels[labelEntitlementName] != provEntitlement ||
-		labels[labelProvisionedResource] != "public-classes" {
-		t.Errorf("projected object is not scoped for pruning: %+v", labels)
+		labels[labelProvisionedResource] != "address-classes" {
+		t.Errorf("installed object does not record its provenance: %+v", labels)
+	}
+
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.ObjectCount != 1 {
+		t.Fatalf("ledger does not report the install: %+v", entry)
+	}
+	if len(entry.Kinds) != 1 || entry.Kinds[0].Kind != "IPClass" || entry.Kinds[0].Version != "v1alpha1" {
+		t.Errorf("ledger does not record what was installed: %+v", entry.Kinds)
 	}
 }
 
@@ -231,17 +220,13 @@ func TestProvisioningSkipsEntitlementNotActive(t *testing.T) {
 		servicesv1alpha1.EntitlementPhasePendingApproval,
 		servicesv1alpha1.EntitlementPhaseRejected,
 	} {
-		root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-		source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+		root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 		consumer := provConsumerClient(provEntitlementObj(phase))
 
-		r := newProvReconciler(root, map[string]client.Client{
-			provConsumerProject: consumer,
-			provSourceProject:   source,
-		})
+		r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 		provReconcile(t, r)
 
-		if list := listProjected(t, consumer); len(list.Items) != 0 {
+		if list := listClasses(t, consumer); len(list.Items) != 0 {
 			t.Errorf("phase %s: expected nothing installed, got %d objects", phase, len(list.Items))
 		}
 		cond := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
@@ -255,16 +240,12 @@ func TestProvisioningSkipsEntitlementNotActive(t *testing.T) {
 
 // Losing Active must remove what was installed, not merely stop adding to it.
 func TestProvisioningPrunesWhenEntitlementLeavesActive(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
-	if len(listProjected(t, consumer).Items) != 1 {
+	if len(listClasses(t, consumer).Items) != 1 {
 		t.Fatalf("precondition failed: nothing was installed")
 	}
 
@@ -275,100 +256,97 @@ func TestProvisioningPrunesWhenEntitlementLeavesActive(t *testing.T) {
 	}
 
 	provReconcile(t, r)
-	if list := listProjected(t, consumer); len(list.Items) != 0 {
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
 		t.Errorf("expected installed objects to be pruned, got %d", len(list.Items))
 	}
 }
 
-// Story 2: a provider re-labelling its source objects reaches already-entitled
-// projects without a new configuration.
-func TestProvisioningConvergesOnSelectorChange(t *testing.T) {
-	cfg := provConfig(ipClassKind(), sharedSelector())
-	root := provRootClient(cfg)
-	source := provClient(
-		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
-		sourceClass("anycast", map[string]string{"ipam.miloapis.com/tier": "premium"}),
-	)
+// Editing the declaration is how a provider changes what consumers hold, so the
+// object it stops declaring has to go — including when the change is to the
+// object's kind, which no longer appears in the declaration once removed.
+func TestProvisioningConvergesOnDeclarationChange(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+	if got := listClasses(t, consumer).Items; len(got) != 1 {
+		t.Fatalf("precondition failed, installed: %+v", names(got))
+	}
+
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) {
+		sc.Spec.Provisioning.Resources[0].Objects = []servicesv1alpha1.ProvisionedObject{
+			provObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPool","metadata":{"name":"tenant-pool"}}`),
+		}
 	})
 	provReconcile(t, r)
-	if got := listProjected(t, consumer).Items; len(got) != 1 || got[0].GetName() != "networking-datumapis-com-public-unicast" {
-		t.Fatalf("precondition failed, projected: %+v", got)
-	}
 
-	var live servicesv1alpha1.ServiceConfiguration
-	if err := root.Get(context.Background(), types.NamespacedName{Name: provConfigName}, &live); err != nil {
-		t.Fatalf("get config: %v", err)
+	if got := listClasses(t, consumer).Items; len(got) != 0 {
+		t.Errorf("the withdrawn class survived a kind change: %+v", names(got))
 	}
-	live.Spec.Provisioning.Resources[0].Projection.Selector = metav1.LabelSelector{
-		MatchLabels: map[string]string{"ipam.miloapis.com/tier": "premium"},
-	}
-	if err := root.Update(context.Background(), &live); err != nil {
-		t.Fatalf("update config: %v", err)
-	}
-
-	provReconcile(t, r)
-	got := listProjected(t, consumer).Items
-	if len(got) != 1 || got[0].GetName() != "networking-datumapis-com-anycast" {
-		t.Fatalf("selector change did not converge; projected: %+v", names(got))
+	if got := listInstalled(t, consumer, ipPoolGVK).Items; len(got) != 1 || got[0].GetName() != "tenant-pool" {
+		t.Errorf("the new object did not arrive: %+v", names(got))
 	}
 }
 
-// The declaration's shape has to hold in the controller even when it is already
-// in etcd, because admission can be bypassed, removed, or predate the schema
-// that would have refused it.
-func TestProvisioningRefusesUnresolvableProjection(t *testing.T) {
+// The declaration is applied, so a consumer edit to a field it states is
+// reverted rather than left standing.
+func TestProvisioningRestoresConsumerEdits(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	edited := listClasses(t, consumer).Items[0]
+	if err := unstructured.SetNestedMap(edited.Object, map[string]any{
+		"project": "somewhere-else", "name": "somewhere-else",
+	}, "spec", "source"); err != nil {
+		t.Fatalf("edit installed object: %v", err)
+	}
+	if err := consumer.Update(context.Background(), &edited); err != nil {
+		t.Fatalf("update installed object: %v", err)
+	}
+
+	provReconcile(t, r)
+	source, _, _ := unstructured.NestedMap(listClasses(t, consumer).Items[0].Object, "spec", "source")
+	if source["project"] != provSourceProject {
+		t.Errorf("a consumer edit survived the next reconcile: %+v", source)
+	}
+}
+
+// The shape of an embedded object has to hold in the controller even when the
+// declaration is already in etcd, because admission can be bypassed, removed,
+// or predate the schema that would have refused it.
+func TestProvisioningRefusesObjectsItWillNotWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		kind servicesv1alpha1.ProjectedKindRef
-		ref  servicesv1alpha1.ProjectedReferenceSpec
+		obj  servicesv1alpha1.ProvisionedObject
 	}{
-		{
-			name: "core group",
-			kind: servicesv1alpha1.ProjectedKindRef{Group: "", Version: "v1", Kind: "Secret"},
-			ref:  ipClassReference(),
-		},
-		{
-			name: "no version",
-			kind: servicesv1alpha1.ProjectedKindRef{Group: "ipam.miloapis.com", Kind: "IPClass"},
-			ref:  ipClassReference(),
-		},
-		{
-			name: "reference path escapes spec",
-			kind: ipClassKind(),
-			ref:  servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "../metadata", ProjectKey: "project", NameKey: "name"},
-		},
-		{
-			name: "one key for both values",
-			kind: ipClassKind(),
-			ref:  servicesv1alpha1.ProjectedReferenceSpec{FieldPath: "source", ProjectKey: "name", NameKey: "name"},
-		},
+		{"core group", provObject(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x"}}`)},
+		{"no version", provObject(`{"apiVersion":"ipam.miloapis.com","kind":"IPClass","metadata":{"name":"x"}}`)},
+		{"no name", provObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{}}`)},
+		{"namespaced", provObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","namespace":"kube-system"}}`)},
+		{"owner reference", provObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","ownerReferences":[]}}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := provConfig(tc.kind, sharedSelector())
-			cfg.Spec.Provisioning.Resources[0].Projection.Reference = tc.ref
-			root := provRootClient(cfg)
-			source := provClient()
+			root := provClient(provConfig(tc.obj))
 			consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-			r := newProvReconciler(root, map[string]client.Client{
-				provConsumerProject: consumer,
-				provSourceProject:   source,
-			})
+			r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 			provReconcile(t, r)
 
+			if list := listClasses(t, consumer); len(list.Items) != 0 {
+				t.Fatalf("a refused declaration installed %d objects", len(list.Items))
+			}
 			ent := getEntitlement(t, consumer)
 			if len(ent.Status.ProvisionedResources) != 1 {
 				t.Fatalf("expected one ledger entry, got %+v", ent.Status.ProvisionedResources)
 			}
 			entry := ent.Status.ProvisionedResources[0]
 			if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
-				entry.Reason != reasonProjectionInvalid {
-				t.Errorf("expected Unprovisionable/ProjectionInvalid, got %+v", entry)
+				entry.Reason != reasonObjectInvalid {
+				t.Errorf("expected Unprovisionable/ObjectInvalid, got %+v", entry)
 			}
 			cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
 			if cond == nil || cond.Status != metav1.ConditionFalse {
@@ -378,67 +356,64 @@ func TestProvisioningRefusesUnresolvableProjection(t *testing.T) {
 	}
 }
 
-// A service offers only what it holds in a project it owns. Admission enforces
-// it, and so must the controller: this is the bound that stops the platform
-// reading a project the provider was never granted, with an identity nothing
-// constrains.
-func TestProvisioningRefusesForeignSourceProject(t *testing.T) {
-	cfg := provConfig(ipClassKind(), sharedSelector())
-	cfg.Spec.Provisioning.Resources[0].Projection.SourceProject = "someone-elses-project"
-	root := provRootClient(cfg)
-	foreign := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+// A declaration that stops resolving must not erase the record teardown depends
+// on, or its objects are stranded in every project that holds them.
+func TestProvisioningKeepsTheLedgerWhenADeclarationStopsResolving(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject:     consumer,
-		"someone-elses-project": foreign,
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) {
+		sc.Spec.Provisioning.Resources[0].Objects = []servicesv1alpha1.ProvisionedObject{
+			provObject(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x"}}`),
+		}
 	})
 	provReconcile(t, r)
 
-	if list := listProjected(t, consumer); len(list.Items) != 0 {
-		t.Fatalf("a foreign source project projected %d objects", len(list.Items))
-	}
 	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
-	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
-		entry.Reason != reasonSourceProjectNotOwned {
-		t.Errorf("expected Unprovisionable/SourceProjectNotOwned, got %+v", entry)
+	if len(entry.Kinds) != 1 || entry.Kinds[0].Kind != "IPClass" {
+		t.Fatalf("the ledger forgot what is still installed: %+v", entry.Kinds)
+	}
+
+	// And withdrawing the declaration still finds it.
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) { sc.Spec.Provisioning = nil })
+	provReconcile(t, r)
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Errorf("teardown left %d objects behind", len(list.Items))
 	}
 }
 
-// An empty selector converts to "match everything", which would project a
-// provider's whole source project. It must be refused, not interpreted.
-func TestProvisioningRefusesEmptySelector(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), metav1.LabelSelector{}))
-	source := provClient(sourceClass("public-unicast", nil))
+// One declaration installing more than the cap is refused whole, never
+// truncated: a truncated fan-out looks like a working system.
+func TestProvisioningRefusesMoreObjectsThanTheCap(t *testing.T) {
+	objects := make([]servicesv1alpha1.ProvisionedObject, 0, maxProvisionedObjectsPerResource+1)
+	for i := 0; i <= maxProvisionedObjectsPerResource; i++ {
+		objects = append(objects, ipClassRef(fmt.Sprintf("class-%d", i)))
+	}
+	root := provClient(provConfig(objects...))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
-	if list := listProjected(t, consumer); len(list.Items) != 0 {
-		t.Fatalf("empty selector projected %d objects", len(list.Items))
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("an oversized declaration installed %d objects", len(list.Items))
 	}
-	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
-	if entry.Reason != reasonSelectorEmpty {
-		t.Errorf("expected SelectorEmpty, got %+v", entry)
+	if entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]; entry.Reason != reasonTooManyObjects {
+		t.Errorf("expected TooManyObjects, got %+v", entry)
 	}
 }
 
-// The authorization gap must be legible on the object in a running system,
-// not only in the source. A projection that the target API would authorize
-// against its creator reports that the consumer does not hold the grant.
+// The authorization gap must be legible on the object in a running system, not
+// only in the source. An object the owning API would authorize against its
+// creator reports that the consumer does not hold the grant.
 func TestProvisioningReportsUnestablishedAuthorization(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
 	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
@@ -454,63 +429,22 @@ func TestProvisioningReportsUnestablishedAuthorization(t *testing.T) {
 	}
 }
 
-// A source project that is not engaged is a retryable failure, and must not
-// prune objects that are still legitimately owed.
-func TestProvisioningDoesNotPruneWhenSourceUnreachable(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
-	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
-
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
-	provReconcile(t, r)
-	if len(listProjected(t, consumer).Items) != 1 {
-		t.Fatal("precondition failed: nothing installed")
-	}
-
-	// Drop the source project from the engaged set.
-	r = newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
-	provReconcile(t, r)
-
-	if list := listProjected(t, consumer); len(list.Items) != 1 {
-		t.Errorf("an unreachable source project pruned live objects; got %d", len(list.Items))
-	}
-	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
-	if entry.State != servicesv1alpha1.ProvisionedResourceStateFailed ||
-		entry.Reason != reasonSourceProjectUnreachable {
-		t.Errorf("expected Failed/SourceProjectUnreachable, got %+v", entry)
-	}
-}
-
 // Withdrawing a declaration removes what it installed; that is the documented
 // rollback path.
 func TestProvisioningPrunesWhenDeclarationWithdrawn(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
-	if len(listProjected(t, consumer).Items) != 1 {
+	if len(listClasses(t, consumer).Items) != 1 {
 		t.Fatal("precondition failed: nothing installed")
 	}
 
-	var live servicesv1alpha1.ServiceConfiguration
-	if err := root.Get(context.Background(), types.NamespacedName{Name: provConfigName}, &live); err != nil {
-		t.Fatalf("get config: %v", err)
-	}
-	live.Spec.Provisioning = nil
-	if err := root.Update(context.Background(), &live); err != nil {
-		t.Fatalf("update config: %v", err)
-	}
-
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) { sc.Spec.Provisioning = nil })
 	provReconcile(t, r)
-	if list := listProjected(t, consumer); len(list.Items) != 0 {
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
 		t.Errorf("withdrawing the declaration left %d objects behind", len(list.Items))
 	}
 	cond := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
@@ -524,14 +458,10 @@ func TestProvisioningPrunesWhenDeclarationWithdrawn(t *testing.T) {
 // stopped is visible on the object rather than inferable from someone else's
 // incident.
 func TestProvisioningRecordsLastEvaluation(t *testing.T) {
-	root := provRootClient(provConfig(ipClassKind(), sharedSelector()))
-	source := provClient(sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}))
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
 	if getEntitlement(t, consumer).Status.LastProvisioningEvaluation == nil {
@@ -550,13 +480,10 @@ func TestProvisioningLeavesReadyConditionAlone(t *testing.T) {
 		LastTransitionTime: metav1.Now(),
 	}}
 
-	root := provRootClient(provConfig(servicesv1alpha1.ProjectedKindRef{Group: "apps.example.com", Kind: "Widget"}, sharedSelector()))
+	root := provClient(provConfig(provObject(`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"x"}}`)))
 	consumer := provConsumerClient(ent)
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   provClient(),
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
 	ready := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
@@ -568,34 +495,25 @@ func TestProvisioningLeavesReadyConditionAlone(t *testing.T) {
 
 // The active configuration is the most recently created Published one. The two
 // existing fan-outs disagree on this rule; this one follows the location
-// projection it generalizes.
+// projection it sits beside.
 func TestProvisioningSelectsLatestPublishedConfiguration(t *testing.T) {
-	older := provConfig(ipClassKind(), sharedSelector())
+	older := provConfig(ipClassRef("tenant-endpoint-ipv6"))
 	older.Name = "networking-v1"
 	older.CreationTimestamp = metav1.NewTime(metav1.Now().Add(-time.Hour))
 
-	newer := provConfig(ipClassKind(), metav1.LabelSelector{
-		MatchLabels: map[string]string{"ipam.miloapis.com/tier": "premium"},
-	})
+	newer := provConfig(ipClassRef("tenant-endpoint-ipv4"))
 	newer.Name = "networking-v2"
 	newer.CreationTimestamp = metav1.Now()
 
-	root := provRootClient(older, newer)
-	source := provClient(
-		sourceClass("public-unicast", map[string]string{"ipam.miloapis.com/shared": "true"}),
-		sourceClass("anycast", map[string]string{"ipam.miloapis.com/tier": "premium"}),
-	)
+	root := provClient(older, newer)
 	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
 
-	r := newProvReconciler(root, map[string]client.Client{
-		provConsumerProject: consumer,
-		provSourceProject:   source,
-	})
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
 	provReconcile(t, r)
 
-	got := listProjected(t, consumer).Items
-	if len(got) != 1 || got[0].GetName() != "networking-datumapis-com-anycast" {
-		t.Errorf("expected the newest Published configuration to win, projected: %+v", names(got))
+	got := listClasses(t, consumer).Items
+	if len(got) != 1 || got[0].GetName() != "tenant-endpoint-ipv4" {
+		t.Errorf("expected the newest Published configuration to win, installed: %+v", names(got))
 	}
 }
 

@@ -1,10 +1,10 @@
 # The second half of the positive control: once entitled, consumer-b receives
-# the class the selector currently names. A plane that can receive is a plane
-# whose earlier emptiness meant something.
+# the object the declaration currently carries. A plane that can receive is a
+# plane whose earlier emptiness meant something.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
-  name: networking-e2e-datumapis-com-e2e-internal-only
+  name: e2e-premium-anycast
   labels:
     app.kubernetes.io/managed-by: services.miloapis.com
     services.miloapis.com/entitlement: e2e-provisioning-networking

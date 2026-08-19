@@ -40,14 +40,14 @@ project discovery and engagement by the Milo provider, admission webhooks
   suite here may claim that a caller was *refused* access to another project's
   plane — the isolation demonstrated is routing and storage. Note the operator's
   own identity is `system:masters` in production too, which is why
-  `ProvisioningReconciler` re-checks the declaration in code rather than relying
-  on RBAC to bound it.
+  `ProvisioningReconciler` re-checks every declared object in code rather than
+  relying on RBAC to bound it.
 - **`Project.status.Ready`.** No Milo controller-manager is deployed, so the
   bootstrap sets it. The provider engages only Ready projects, so this is what
   makes a project reachable at all.
 - **The IPClass CRD.** The fixture from `config/overlays/e2e`, not the real IPAM
   API. It carries the real `ipam.miloapis.com/v1alpha1` shape, including the rule
-  that a class with `spec.source` states no policy of its own, so a projected
+  that a class with `spec.source` states no policy of its own, so an installed
   object that is not a well-formed reference is refused here as it would be
   there. It performs none of the authorization on `spec.source` that the ledger's
   authorization gap is about, so that gap is asserted from the ledger rather than
@@ -68,17 +68,16 @@ with a control:
 2. That object carries none of the provisioning labels, so it is never a pruning
    candidate, and its survival through every step is itself an assertion that
    nothing done to the entitled project reached the other one.
-3. At the end the second project is entitled and shown to receive the
-   projection. A plane that can receive is a plane whose earlier emptiness meant
+3. At the end the second project is entitled and shown to receive the declared
+   object. A plane that can receive is a plane whose earlier emptiness meant
    something.
 
 ## Which suites live where
 
 The three provisioning suites live here, because the property they are about is
-the one the single-cluster environment cannot show. Their assertions came with
-them unchanged; what changed is that each operation now names the control plane
-it addresses, and the provider-side ones (the source classes, the ServiceConsumer
-a provider approves on) address the provider's project rather than a shared
+the one the single-cluster environment cannot show. Each operation names the control
+plane it addresses, and the provider-side ones — the `ServiceConsumer` a
+provider approves on — address the provider's project rather than a shared
 cluster.
 
 `test/e2e` keeps `service-lifecycle`, `serviceconfiguration-lifecycle` and

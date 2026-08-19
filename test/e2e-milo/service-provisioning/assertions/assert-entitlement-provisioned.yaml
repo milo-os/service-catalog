@@ -11,10 +11,10 @@ status:
     - status: "True"
       reason: Provisioned
   provisionedResources:
-    - name: shared-classes
+    - name: address-classes
       state: Installed
       objectCount: 1
-      kind:
-        group: ipam.miloapis.com
-        version: v1alpha1
-        kind: IPClass
+      kinds:
+        - group: ipam.miloapis.com
+          version: v1alpha1
+          kind: IPClass

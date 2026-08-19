@@ -1,5 +1,5 @@
-# The declaration read out of a project the service does not own, so nothing may
-# be installed for this entitlement.
+# The declaration carried an object the platform will not write, so nothing in
+# it may be installed for this entitlement.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:

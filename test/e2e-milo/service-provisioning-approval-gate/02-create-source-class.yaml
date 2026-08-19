@@ -1,9 +1,0 @@
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPClass
-metadata:
-  name: e2e-gated-class
-  labels:
-    gated.e2e.datumapis.com/shared: "true"
-spec:
-  ipFamily: IPv4
-  defaultPrefixLength: 24

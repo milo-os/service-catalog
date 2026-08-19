@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ServiceConfigurationSpec defines the desired state of a
@@ -559,12 +560,13 @@ type ProviderUserInterfaceSpec struct {
 // a consumer project before that project can use it. It is the authoritative
 // statement of what the service manages there.
 //
-// The provider supplies values in a platform-defined schema, never an object:
-// the object name is derived, the content is a reference to an object the
-// provider already owns, and the target API decides whether that reference is
-// acceptable. The billing, quota, and location fan-outs are bounded the same
-// way. It matters here because the operator writes into consumer planes as
-// system:masters, where RBAC is no ceiling.
+// A provider embeds the objects it wants installed, verbatim. Nothing is
+// substituted: every entitled project receives the same object under the same
+// name. The bound is therefore not on the content but on the destination and
+// the shape. Objects reach only projects that created an entitlement, only once
+// that entitlement is Active, and only in a form the platform can own, label,
+// and reclaim. That matters because the operator writes into consumer control
+// planes as system:masters, where RBAC is no ceiling.
 type ServiceProvisioningConfig struct {
 	// Resources declares what to install. A declaration fans out across every
 	// entitled project, so the cap bounds the blast radius of one configuration
@@ -582,145 +584,38 @@ type ServiceProvisioningConfig struct {
 type ProvisionedResourceSpec struct {
 	// Name identifies this declaration within the ServiceConfiguration. It is
 	// the ledger key on ServiceEntitlement.status.provisionedResources, so it
-	// is what a consumer sees when a resource does not arrive.
+	// is what a consumer sees when a resource does not arrive, and it scopes
+	// pruning, so renaming a declaration reinstalls rather than edits.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Projection installs, in each entitled project, one object referencing
-	// each object matching a selector in a project the provider owns.
+	// Objects are the objects to install, written out in full.
 	//
-	// This is the only delivery mode. Inline literal objects and external
-	// bundle references were rejected: a projection derives its content from
-	// objects the provider created under ordinary authorization, which a
-	// provider-authored payload does not.
+	// Each is stored as authored and applied into every entitled project under
+	// the name it carries. There are no variables, no per-project values, and
+	// no field paths: a provider that wants a different object writes a
+	// different object. The API server validates each entry as an embedded
+	// resource, so a missing or malformed apiVersion, kind, or metadata is
+	// refused with no webhook in the picture. Whether the object is acceptable
+	// is the owning API's decision, made when it accepts or refuses the write.
+	//
+	// The cap bounds one declaration's fan-out into one project.
 	//
 	// +kubebuilder:validation:Required
-	Projection ResourceProjectionSpec `json:"projection"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	Objects []ProvisionedObject `json:"objects"`
 }
 
-// ResourceProjectionSpec selects objects in a provider-owned source project and
-// projects references to them into entitled consumer projects.
-type ResourceProjectionSpec struct {
-	// SourceProject is the project whose objects are projected. The declaring
-	// provider must own it. Projecting out of a project it does not own would
-	// read that project with an identity nothing constrains.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	SourceProject string `json:"sourceProject"`
-
-	// Kind selects the objects to project and names the consumer-facing kind
-	// installed to reference them. The provider names it, including the served
-	// version, because the provider owns the API and the platform does not.
-	//
-	// Whether the projection is acceptable is the target API's decision, not
-	// this document's: a reference it does not accept is refused at the write
-	// and reported on the consumer's entitlement.
-	//
-	// +kubebuilder:validation:Required
-	Kind ProjectedKindRef `json:"kind"`
-
-	// Reference states where in the installed object's spec the pointer at the
-	// source object is written, and under which two keys.
-	//
-	// This is the whole of what the platform writes into spec. It is
-	// deliberately not a template: a projection may say "this object points at
-	// that one" and may not carry values, so the installed object holds no copy
-	// of anything and a consumer plane gains no data it has to keep in step.
-	//
-	// +kubebuilder:validation:Required
-	Reference ProjectedReferenceSpec `json:"reference"`
-
-	// Selector chooses which objects in SourceProject to project. A selector
-	// rather than a list of names lets a provider offer a new object to every
-	// already-entitled project without republishing its configuration, as
-	// spec.locations.supportedClasses does.
-	//
-	// An empty or absent selector matches nothing, not everything. Projecting a
-	// source project's whole contents by omission fails silently and widely.
-	//
-	// +kubebuilder:validation:Required
-	Selector metav1.LabelSelector `json:"selector"`
-}
-
-// ProjectedKindRef identifies the API kind a projection reads and writes,
-// including the served version.
-//
-// Version is present here and absent from GVKRef because the two answer
-// different questions. A monitored resource type names a billable concept,
-// which outlives any one version. A projection performs reads and writes, which
-// happen at a version — and it is the provider's version to name, since the
-// platform does not own the API.
-type ProjectedKindRef struct {
-	// Group is the API group of the kind (e.g. "ipam.miloapis.com"). The
-	// pattern requires a dotted domain, so the core group cannot be named: no
-	// projection can produce a Secret, a ServiceAccount, or any other core
-	// object.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`
-	Group string `json:"group"`
-
-	// Version is the served API version to read and write (e.g. "v1alpha1").
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^v[0-9]+((alpha|beta)[0-9]*)?$`
-	Version string `json:"version"`
-
-	// Kind is the Kubernetes Kind (e.g. "IPClass").
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[A-Z][A-Za-z0-9]*$`
-	Kind string `json:"kind"`
-}
-
-// ProjectedReferenceSpec describes how the target API spells a cross-project
-// reference: the field the reference sits in, and the two keys naming the
-// source project and the source object.
-//
-// The installed object's spec is exactly that one field, holding exactly those
-// two strings. Both values are supplied by the platform — the source project is
-// the one the service is published from, the name is that of an object the
-// selector matched. A provider chooses where they go, never what they are, and
-// cannot add a third.
-//
-// +kubebuilder:validation:XValidation:rule="self.projectKey != self.nameKey",message="projectKey and nameKey must differ"
-type ProjectedReferenceSpec struct {
-	// FieldPath is the dotted path within spec that holds the reference (e.g.
-	// "source" for IPClass.spec.source). Segments only: no list indexes and no
-	// escape above spec.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`
-	FieldPath string `json:"fieldPath"`
-
-	// ProjectKey is the key under FieldPath holding the source project's name.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*$`
-	ProjectKey string `json:"projectKey"`
-
-	// NameKey is the key under FieldPath holding the source object's name.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z][a-zA-Z0-9]*$`
-	NameKey string `json:"nameKey"`
+// ProvisionedObject is a Kubernetes object embedded verbatim.
+type ProvisionedObject struct {
+	// +kubebuilder:validation:EmbeddedResource
+	// +kubebuilder:pruning:PreserveUnknownFields
+	runtime.RawExtension `json:",inline"`
 }
 
 // ServiceConfigurationStatus defines the observed state of a

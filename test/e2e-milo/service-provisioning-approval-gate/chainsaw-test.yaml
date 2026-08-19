@@ -18,27 +18,23 @@ spec:
 
   steps:
     - name: setup
-      description: A GatedByProvider service, its declaration, and a source class.
+      description: A GatedByProvider service and its provisioning declaration.
+      cluster: root
       try:
         - apply:
-            cluster: root
             file: 01-setup.yaml
         - apply:
-            cluster: platform
-            file: 02-create-source-class.yaml
-        - apply:
-            cluster: root
-            file: 03-publish-configuration.yaml
+            file: 02-publish-configuration.yaml
 
     - name: request-stays-pending-and-installs-nothing
       description: |
-        The entitlement is PendingApproval. No class may appear in the
+        The entitlement is PendingApproval. Nothing may appear in the
         requesting project, and the Provisioned condition must attribute that to
         the pending approval rather than to a delivery failure.
       cluster: consumer-a
       try:
         - apply:
-            file: 04-create-entitlement.yaml
+            file: 03-create-entitlement.yaml
         - assert:
             timeout: 90s
             file: assertions/assert-pending-not-provisioned.yaml
@@ -49,9 +45,9 @@ spec:
     - name: approval-releases-provisioning
       description: |
         The provider approves on the ServiceConsumer record in its own project.
-        The consumer's entitlement goes Active and only then do the classes
-        arrive in the consumer's project — two different control planes, one
-        decision crossing between them.
+        The consumer's entitlement goes Active and only then does the declared
+        class arrive in the consumer's project — two different control planes,
+        one decision crossing between them.
       try:
         - script:
             cluster: platform
@@ -75,7 +71,7 @@ spec:
         - assert:
             cluster: consumer-a
             timeout: 120s
-            file: assertions/assert-gated-class-projected.yaml
+            file: assertions/assert-gated-class-installed.yaml
         # The other consumer project never asked for this service and must not
         # have been swept up in the approval.
         - error:

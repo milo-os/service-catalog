@@ -3,23 +3,20 @@
 package validation
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/internal/provisioning"
 )
 
 // validateProvisioning checks the intra-document rules for a spec.provisioning
-// declaration: that each projection resolves into a write, and that it names
-// which of the provider's objects to project.
+// declaration: that every embedded object decodes into a write the platform
+// will make, and that no two objects in a declaration contend for one name.
 //
 // This is the first of two enforcement points. It gives the provider a
 // synchronous error instead of a refusal buried in a consumer's status later.
@@ -46,121 +43,36 @@ func validateProvisioning(sc *servicesv1alpha1.ServiceConfiguration) field.Error
 		}
 		seen[res.Name] = struct{}{}
 
-		if _, err := provisioning.Resolve(res.Projection); err != nil {
-			var invalid *provisioning.ErrProjectionInvalid
-			path := itemPath.Child("projection")
-			if errors.As(err, &invalid) {
-				for _, segment := range strings.Split(invalid.Field, ".") {
-					path = path.Child(segment)
+		type identity struct {
+			gvk  schema.GroupVersionKind
+			name string
+		}
+		installed := make(map[identity]struct{}, len(res.Objects))
+
+		for j, raw := range res.Objects {
+			objPath := itemPath.Child("objects").Index(j)
+
+			obj, err := provisioning.Decode(raw.RawExtension)
+			if err != nil {
+				var invalid *provisioning.ErrObjectInvalid
+				path := objPath
+				if errors.As(err, &invalid) {
+					for _, segment := range strings.Split(invalid.Field, ".") {
+						path = path.Child(segment)
+					}
 				}
+				allErrs = append(allErrs, field.Invalid(path, string(raw.Raw), err.Error()))
+				continue
 			}
-			allErrs = append(allErrs, field.Invalid(path, res.Projection, err.Error()))
-		}
 
-		// Kubernetes converts an empty selector to "match everything", which
-		// would project a provider's entire source project into every entitled
-		// project. Require a selector rather than assume the safe reading.
-		selector, err := metav1.LabelSelectorAsSelector(&res.Projection.Selector)
-		if err != nil {
-			allErrs = append(allErrs, field.Invalid(itemPath.Child("projection", "selector"),
-				res.Projection.Selector, err.Error()))
-		} else if selector.Empty() {
-			allErrs = append(allErrs, field.Required(itemPath.Child("projection", "selector"),
-				"must select a subset of the source project's objects; an empty selector would "+
-					"project every object in it into every project that enables this service"))
-		}
-	}
-
-	return allErrs
-}
-
-// validateProvisioningSourceProjects enforces that a projection reads only out
-// of the project the declaring service is published from.
-//
-// Without it a provider could name any project as a source and have the
-// platform read it, with an identity nothing stops: the operator holds
-// system:masters in every project control plane. The Service already records
-// its producer project, so ownership is a comparison rather than a new concept.
-func validateProvisioningSourceProjects(
-	ctx context.Context,
-	c client.Reader,
-	sc *servicesv1alpha1.ServiceConfiguration,
-) field.ErrorList {
-	var allErrs field.ErrorList
-
-	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 ||
-		c == nil || sc.Spec.ServiceRef.Name == "" {
-		return allErrs
-	}
-
-	// A missing or unreadable Service is reported by
-	// validateServiceConfigurationNamePrefixes, which resolves the same
-	// reference; staying silent here avoids duplicating that error.
-	var svc servicesv1alpha1.Service
-	if err := c.Get(ctx, types.NamespacedName{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
-		return allErrs
-	}
-
-	producer := svc.Spec.Owner.ProducerProjectRef.Name
-	fldPath := field.NewPath("spec", "provisioning", "resources")
-
-	for i, res := range sc.Spec.Provisioning.Resources {
-		if res.Projection.SourceProject == producer {
-			continue
-		}
-		allErrs = append(allErrs, field.Invalid(
-			fldPath.Index(i).Child("projection", "sourceProject"),
-			res.Projection.SourceProject,
-			fmt.Sprintf("must be the producer project of the service this configuration "+
-				"describes (%q); a service can only offer resources out of a project it owns", producer),
-		))
-	}
-
-	return allErrs
-}
-
-// validateProvisioningPublishedImmutability constrains edits to a Published
-// configuration's provisioning declaration.
-//
-// Changing a retained entry's kind, source project, or reference shape silently
-// re-points or rewrites everything already installed under that name, so all
-// three are frozen. The
-// selector stays mutable: adjusting which of a provider's own objects are
-// offered is how a provider reaches already-entitled projects without
-// republishing. Removing an entry stays permitted; it withdraws the declaration
-// and prunes what it installed.
-func validateProvisioningPublishedImmutability(
-	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
-) field.ErrorList {
-	var allErrs field.ErrorList
-
-	if oldSC.Spec.Provisioning == nil || newSC.Spec.Provisioning == nil {
-		return allErrs
-	}
-
-	old := make(map[string]servicesv1alpha1.ProvisionedResourceSpec, len(oldSC.Spec.Provisioning.Resources))
-	for _, res := range oldSC.Spec.Provisioning.Resources {
-		old[res.Name] = res
-	}
-
-	fldPath := field.NewPath("spec", "provisioning", "resources")
-	for i, res := range newSC.Spec.Provisioning.Resources {
-		prev, ok := old[res.Name]
-		if !ok {
-			continue
-		}
-		itemPath := fldPath.Index(i).Child("projection")
-		if prev.Projection.Kind != res.Projection.Kind {
-			allErrs = append(allErrs, field.Forbidden(itemPath.Child("kind"),
-				"can't be changed once the configuration is published"))
-		}
-		if prev.Projection.SourceProject != res.Projection.SourceProject {
-			allErrs = append(allErrs, field.Forbidden(itemPath.Child("sourceProject"),
-				"can't be changed once the configuration is published"))
-		}
-		if prev.Projection.Reference != res.Projection.Reference {
-			allErrs = append(allErrs, field.Forbidden(itemPath.Child("reference"),
-				"can't be changed once the configuration is published"))
+			// Two objects under one name in one declaration cannot both be
+			// installed, and the second would silently win.
+			id := identity{gvk: obj.GVK, name: obj.Name}
+			if _, dup := installed[id]; dup {
+				allErrs = append(allErrs, field.Duplicate(objPath,
+					fmt.Sprintf("%s %s", obj.GVK.Kind, obj.Name)))
+			}
+			installed[id] = struct{}{}
 		}
 	}
 

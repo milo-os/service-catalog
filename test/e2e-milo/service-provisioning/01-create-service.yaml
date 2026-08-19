@@ -8,7 +8,5 @@ spec:
   displayName: Networking
   description: E2E fixture for service-provisioned resources.
   owner:
-    # Admission requires every projection's sourceProject to equal this, so a
-    # service can only offer resources out of a project it owns.
     producerProjectRef:
       name: e2e-provisioning-platform

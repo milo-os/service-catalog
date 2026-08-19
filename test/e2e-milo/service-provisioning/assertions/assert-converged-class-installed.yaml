@@ -1,8 +1,8 @@
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
-  name: gated-e2e-datumapis-com-e2e-gated-class
+  name: e2e-premium-anycast
 spec:
   source:
     project: e2e-provisioning-platform
-    name: e2e-gated-class
+    name: e2e-internal-only
