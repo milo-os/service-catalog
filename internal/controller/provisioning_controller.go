@@ -515,10 +515,6 @@ func (r *ProvisioningReconciler) writeStatus(
 //
 // The provider does not choose it. Two services therefore cannot contend for
 // one object, and a service cannot shadow a name a consumer already relies on.
-// Note this differs from the worked example in the enhancement, which shows the
-// source name reused verbatim; the derived form is what the document's own
-// naming control requires, and collision-freedom was judged to outrank the
-// nicer name.
 func provisionedObjectName(serviceName, sourceName string) string {
 	return encodeName(serviceName) + "-" + encodeName(sourceName)
 }
