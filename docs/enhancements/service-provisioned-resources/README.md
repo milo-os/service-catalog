@@ -143,7 +143,7 @@ Two alternatives were considered. **Inline manifests** in the configuration are 
 
 ### Security model
 
-The services operator authenticates to Milo with a client certificate whose organization is `system:masters`, and reaches every project control plane by copying that config and rewriting the URL path. There is no per-project credential, no per-provider credential, and no impersonation. The operator's ClusterRole enumerates the kinds it writes, but a `system:masters` subject is not constrained by RBAC, so that enumeration documents intent rather than enforcing a ceiling.
+The services operator authenticates to Milo with a client certificate whose organization is `system:masters`, and reaches every project control plane by copying that config and rewriting the URL path. There is no per-project credential, no per-provider credential, and no impersonation. The operator's ClusterRole holds no grants for the kinds it installs, and deliberately so: a `system:masters` subject is not constrained by RBAC, so a per-kind grant would enforce nothing while implying a ceiling and making every allowlist entry a code change. If the identity is ever narrowed, those grants should be derived from the allowlist rather than written by hand.
 
 Two consequences are load-bearing. Anything a provider can express in a `ServiceConfiguration` is executed by an omnipotent identity in the consumer's control plane. And an allowlist therefore cannot be delegated to RBAC — a design that says "the ClusterRole is the ceiling" describes a control that is not in effect. Narrowing the operator's identity is worth doing on its own merits, but it is a Milo-side change and this design has to be correct without it.
 

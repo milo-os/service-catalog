@@ -96,14 +96,15 @@ type ProvisioningReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
-// The kinds below are the platform provisioning allowlist. This grant is not
-// what bounds provisioning: the operator authenticates with a certificate
-// carrying the system:masters organization, so RBAC does not constrain it. The
-// binding enforcement is internal/provisioning.Lookup, applied at admission and
-// again before every write here. The grant is kept narrow and in step with the
-// allowlist anyway, because it documents the intended surface and becomes a
-// real ceiling the moment that identity is narrowed.
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=ipclasses,verbs=get;list;watch;create;update;patch;delete
+// There are deliberately no per-kind grants for the kinds this controller
+// installs. What may be installed is platform-owned configuration, not compiled
+// in, and the bound on it is internal/provisioning.Lookup, applied at admission
+// and again before every write here. A hand-written grant per allowlist entry
+// would make adding an entry a code change and would imply a ceiling that does
+// not exist: the operator authenticates with a certificate carrying the
+// system:masters organization, so RBAC does not constrain it. If that identity
+// is ever narrowed, the grants should be derived from the allowlist rather than
+// written by hand.
 
 func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)

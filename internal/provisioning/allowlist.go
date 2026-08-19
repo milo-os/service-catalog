@@ -23,8 +23,7 @@ import (
 // copy. That is what keeps the mechanism bounded, and it has to be kept
 // deliberately, because nothing outside this code keeps it — the operator
 // writes into consumer control planes with a certificate carrying the
-// system:masters organization, so the operator's ClusterRole documents intent
-// rather than enforcing a ceiling.
+// system:masters organization, so no RBAC grant stands behind this table.
 type AllowedKind struct {
 	// Group and Kind identify the source objects selected in the provider's
 	// project, and the consumer-facing objects installed to reference them.
