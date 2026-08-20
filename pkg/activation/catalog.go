@@ -19,9 +19,9 @@ type ServiceInfo struct {
 	ObjectName string
 
 	// CanonicalName is the reverse-DNS service identity (spec.serviceName, e.g.
-	// "compute.datumapis.com"). It is the preferred selection key:
-	// dependency-origin entitlements carry it in spec.serviceRef.name, so
-	// matching on it avoids mistaking a dependency entitlement for the direct one.
+	// "compute.datumapis.com"). It is the preferred selection key: every
+	// reconciled entitlement carries it in status.serviceName, so matching on
+	// it avoids mistaking a dependency entitlement for the direct one.
 	CanonicalName string
 
 	// DisplayName is the human noun for the service (spec.displayName),

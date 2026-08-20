@@ -1,0 +1,8 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-dependency-primary
+status:
+  (conditions[?type == 'DependenciesSatisfied']):
+    - status: "True"
+      reason: DependenciesSatisfied

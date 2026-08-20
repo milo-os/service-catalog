@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -57,6 +59,16 @@ const pendingApprovalRequeueInterval = 2 * time.Minute
 // ServiceConsumer — gated by the provider's own deprovisioning finalizer — is
 // gone, so this only paces the wait; it does not drive teardown itself.
 const providerTeardownRequeueInterval = 10 * time.Second
+
+// dependencyOfLabel records which parent entitlement pulled a dependency
+// entitlement in. Set at create time and never rewritten, it's the provenance
+// status.origin and status.dependencyOf are derived from.
+const dependencyOfLabel = "services.miloapis.com/dependency-of"
+
+// dependenciesConditionFieldManager owns the DependenciesSatisfied condition,
+// which is patched separately from the main status Update so it doesn't race
+// the Ready/phase write that precedes dependency enrollment.
+const dependenciesConditionFieldManager = "service-entitlement-dependencies"
 
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
@@ -271,7 +283,14 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 	if canonicalServiceName != "" {
 		entitlement.Status.ServiceName = canonicalServiceName
 	}
-	if entitlement.Status.Origin == "" {
+	// Derive origin from the create-time label rather than defaulting on an
+	// empty value. This reconcile runs concurrently with the parent's stamp on
+	// a freshly created dependency entitlement, and defaulting to Direct there
+	// permanently orphans it from the parent that's holding it open.
+	if parentName := entitlement.Labels[dependencyOfLabel]; parentName != "" {
+		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
+		entitlement.Status.DependencyOf = parentName
+	} else if entitlement.Status.Origin == "" {
 		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDirect
 	}
 	if phase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
@@ -332,57 +351,152 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 		return nil
 	}
 
+	// Keep going past a dependency that can't be enrolled instead of returning
+	// on the first failure: the project should end up with every dependency it
+	// can have, and DependenciesSatisfied should name every one it can't.
+	var failed []string
+	var errs []error
 	for _, dep := range svc.Spec.Dependencies {
-		depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
-		if err != nil {
-			return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+		if err := r.ensureDependency(ctx, consumerClient, dep, parent); err != nil {
+			failed = append(failed, dep.ServiceRef.Name)
+			errs = append(errs, err)
 		}
-		depCanonical := depSvc.Spec.ServiceName
-		depEntitlementName := dep.ServiceRef.Name
+	}
 
-		var existing servicesv1alpha1.ServiceEntitlement
-		err = consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, &existing)
-		if err == nil {
-			continue
-		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
-		}
+	if err := r.setDependenciesCondition(ctx, consumerClient, parent, len(svc.Spec.Dependencies), failed, errs); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
 
-		// The Get returned NotFound, but an entitlement for the same dependency
-		// service may exist under a different metadata.name (e.g. created by the
-		// user directly using the canonical service name). Check by the stamped
-		// canonical name via the field index to avoid creating a duplicate.
-		var existingByCanonical servicesv1alpha1.ServiceEntitlementList
-		if err := consumerClient.List(ctx, &existingByCanonical,
-			client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
-			return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
-		}
-		if len(existingByCanonical.Items) > 0 {
-			continue
-		}
+// ensureDependency enrolls the consumer project in a single declared
+// dependency, creating the derived ServiceEntitlement if it isn't there yet.
+func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, consumerClient client.Client, dep servicesv1alpha1.ServiceDependency, parent *servicesv1alpha1.ServiceEntitlement) error {
+	depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+	}
+	depCanonical := depSvc.Spec.ServiceName
 
-		depEntitlement := &servicesv1alpha1.ServiceEntitlement{
-			ObjectMeta: metav1.ObjectMeta{Name: depEntitlementName},
-			Spec: servicesv1alpha1.ServiceEntitlementSpec{
-				ServiceRef: servicesv1alpha1.ServiceRef{Name: depCanonical},
-			},
+	// Admission resolves spec.serviceRef.name by metadata.name only (see
+	// internal/validation/serviceentitlement.go), so the derived entitlement
+	// has to reference the dependency's object name. Naming the canonical
+	// service here gets the create rejected outright for every Service whose
+	// object name differs from spec.serviceName — the norm in this catalog.
+	depEntitlementName := depSvc.Name
+
+	var existing servicesv1alpha1.ServiceEntitlement
+	err = consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, &existing)
+	if err == nil {
+		// Already enrolled. Re-apply the provenance stamp if it's ours and
+		// didn't take — see stampDependencyOrigin. An entitlement the consumer
+		// created directly is left alone even if it happens to satisfy this
+		// dependency: it isn't ours to hold open on the parent's behalf.
+		if existing.Labels[dependencyOfLabel] == parent.Name {
+			return r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
 		}
-		if err := consumerClient.Create(ctx, depEntitlement); err != nil && !apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
+	}
+
+	// The Get returned NotFound, but an entitlement for the same dependency
+	// service may exist under a different metadata.name (e.g. created by the
+	// user directly using the canonical service name). Check by the stamped
+	// canonical name via the field index to avoid creating a duplicate.
+	var existingByCanonical servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(ctx, &existingByCanonical,
+		client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
+		return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
+	}
+	if len(existingByCanonical.Items) > 0 {
+		return nil
+	}
+
+	depEntitlement := &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: depEntitlementName,
+			// Provenance lives on the object, not only on status. Status is
+			// written by several reconciles at once; a label set at create
+			// time is the one record of "this controller created this to
+			// satisfy that parent" that nothing else can race.
+			Labels: map[string]string{dependencyOfLabel: parent.Name},
+		},
+		Spec: servicesv1alpha1.ServiceEntitlementSpec{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: depSvc.Name},
+		},
+	}
+	if err := consumerClient.Create(ctx, depEntitlement); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
 		}
+		// Lost a create race; the next pass finds it by name and stamps it.
+		return nil
+	}
 
-		// Stamp Origin/DependencyOf on status so deletion logic can find this
-		// entitlement as a child of the parent.
-		fresh := &servicesv1alpha1.ServiceEntitlement{}
-		if err := consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, fresh); err != nil {
-			return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depEntitlementName, err)
+	// Stamp from the object the API server just returned rather than reading
+	// it back: the consumer client is cache-backed and the create hasn't
+	// reached that cache yet, so a read-back here returns NotFound.
+	return r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
+}
+
+// stampDependencyOrigin records on status that this entitlement is held open
+// by a parent, which is what delete protection and parent teardown key on.
+//
+// Patched, not updated: the entitlement's own reconcile writes the whole
+// status independently, and an optimistically-locked update loses that race
+// often enough to matter. The same derivation runs in setEntitlementStatus
+// from the label, so a status write that lands after this one restores it
+// rather than reverting it to Direct.
+func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context, consumerClient client.Client, dep *servicesv1alpha1.ServiceEntitlement, parentName string) error {
+	if dep.Status.Origin == servicesv1alpha1.EntitlementOriginDependency && dep.Status.DependencyOf == parentName {
+		return nil
+	}
+	before := dep.DeepCopy()
+	dep.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
+	dep.Status.DependencyOf = parentName
+	if err := consumerClient.Status().Patch(ctx, dep, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("failed to stamp dependency origin on %q: %w", dep.Name, err)
+	}
+	return nil
+}
+
+// setDependenciesCondition reports dependency enrollment on the parent
+// entitlement. Without it a project whose dependency enrollment failed is
+// indistinguishable from one that succeeded: Ready is already True by this
+// point, because this entitlement's own access really was granted.
+func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Context, consumerClient client.Client, parent *servicesv1alpha1.ServiceEntitlement, declared int, failed []string, errs []error) error {
+	cond := metav1.Condition{
+		Type:               servicesv1alpha1.ConditionTypeDependenciesSatisfied,
+		Status:             metav1.ConditionTrue,
+		Reason:             servicesv1alpha1.ReasonDependenciesSatisfied,
+		Message:            "Every service this one depends on is enabled in this project.",
+		ObservedGeneration: parent.Generation,
+	}
+	switch {
+	case declared == 0:
+		cond.Reason = servicesv1alpha1.ReasonNoDependencies
+		cond.Message = "This service doesn't depend on any other service."
+	case len(failed) > 0:
+		reasons := make([]string, 0, len(errs))
+		for _, err := range errs {
+			reasons = append(reasons, err.Error())
 		}
-		fresh.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
-		fresh.Status.DependencyOf = parent.Name
-		if err := consumerClient.Status().Update(ctx, fresh); err != nil {
-			return fmt.Errorf("failed to stamp dependency origin on %q: %w", depEntitlementName, err)
-		}
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = servicesv1alpha1.ReasonDependencyEnrollmentFailed
+		cond.Message = fmt.Sprintf("Couldn't enable %s: %s",
+			strings.Join(failed, ", "), strings.Join(reasons, "; "))
+	}
+
+	before := parent.DeepCopy()
+	apimeta.SetStatusCondition(&parent.Status.Conditions, cond)
+	if conditionsEqual(before.Status.Conditions, parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied) {
+		return nil
+	}
+	if err := consumerClient.Status().Patch(ctx, parent, client.MergeFrom(before),
+		client.FieldOwner(dependenciesConditionFieldManager)); err != nil {
+		return fmt.Errorf("failed to patch DependenciesSatisfied condition: %w", err)
 	}
 	return nil
 }
@@ -693,6 +807,12 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceConfiguration{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceConfigurationToServiceEntitlements),
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.Service{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceToServiceEntitlements),
+			serviceEnrollmentPredicate(),
 		)).
 		Complete(r)
 }

@@ -8,8 +8,10 @@ import (
 	"net/http"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
@@ -158,4 +160,38 @@ func newFakeClient(objs ...client.Object) client.Client {
 		}).
 		Build()
 	return &ssaClient{Client: base}
+}
+
+// newAdmissionFakeClient wraps newFakeClient with the one admission rule that
+// governs ServiceEntitlement creates: the validating webhook resolves
+// spec.serviceRef.name by metadata.name only, so a create naming a Service's
+// canonical name is rejected. The plain fake client has no admission at all,
+// which is how the controller writing an inadmissible serviceRef went
+// unnoticed by the dependency tests.
+func newAdmissionFakeClient(rootClient client.Client, objs ...client.Object) client.Client {
+	return &admissionClient{Client: newFakeClient(objs...), root: rootClient}
+}
+
+type admissionClient struct {
+	client.Client
+	root client.Client
+}
+
+func (c *admissionClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	se, ok := obj.(*servicesv1alpha1.ServiceEntitlement)
+	if !ok {
+		return c.Client.Create(ctx, obj, opts...)
+	}
+	var svc servicesv1alpha1.Service
+	if err := c.root.Get(ctx, client.ObjectKey{Name: se.Spec.ServiceRef.Name}, &svc); err != nil {
+		return apierrors.NewInvalid(
+			servicesv1alpha1.GroupVersion.WithKind("ServiceEntitlement").GroupKind(),
+			se.Name,
+			field.ErrorList{field.Invalid(
+				field.NewPath("spec", "serviceRef", "name"), se.Spec.ServiceRef.Name,
+				fmt.Sprintf("the service %q does not exist", se.Spec.ServiceRef.Name),
+			)},
+		)
+	}
+	return c.Client.Create(ctx, obj, opts...)
 }

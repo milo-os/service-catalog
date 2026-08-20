@@ -1,0 +1,109 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dependency-enrollment
+spec:
+  description: |
+    A dependency declared after a project already enabled a service still
+    reaches that project.
+
+    Enrollment is level-triggered inside the entitlement reconcile, so it is
+    correct for a project that enables the service after the dependency is
+    declared. The case that broke is the other order: the project enabled
+    Primary first, and the provider added the dependency later. Nothing
+    re-runs those projects' reconciles unless something watches the Service.
+
+    Both Services here have a metadata.name that differs from
+    spec.serviceName, which is the convention in this catalog and the shape
+    that made the derived entitlement inadmissible: admission resolves
+    spec.serviceRef.name by metadata.name only, so an entitlement created
+    under the canonical name is rejected and the project is silently left
+    unenrolled. With the two names equal this suite would pass either way.
+
+    Delete protection on the enrolled dependency is deliberately not asserted
+    here. It doesn't hold in this environment — the ServiceEntitlement webhook
+    reads the parent through the root manager's API reader, and the parent
+    lives in the consumer's project control plane, so the lookup misses and the
+    delete is allowed. That's independent of enrollment and is tracked
+    separately; asserting it here would tie this suite to an unrelated fix.
+
+    The order of the steps is the whole test. Asserting the dependency
+    entitlement exists proves nothing on its own — it is created on the very
+    first reconcile when the dependency is declared up front. It only means
+    something after the project is shown to be Active *without* it.
+
+  steps:
+    - name: publish-services
+      description: |
+        Publish Primary and Secondary at the platform root. Primary declares
+        no dependency yet.
+
+        That Primary starts with no dependency isn't asserted on the Service
+        itself — spec.dependencies is omitempty, so there is no field to match
+        on. It's asserted where it matters, on the entitlement in the next
+        step: the reconciler only reports reason NoDependencies when the
+        Service declares none.
+      cluster: root
+      try:
+        - apply:
+            file: 01-create-services.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-dependency-primary
+              spec:
+                phase: Published
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-dependency-secondary
+              spec:
+                phase: Published
+
+    - name: enable-primary-before-the-dependency-exists
+      description: |
+        The project enables Primary while Primary depends on nothing. This is
+        the state every already-entitled project was in when the provider
+        later declared a dependency, and the absence below is what makes the
+        next step's assertion mean something.
+      cluster: consumer-a
+      try:
+        - apply:
+            file: 02-create-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-primary-active.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-no-dependencies-declared.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-secondary-absent.yaml
+
+    - name: declare-the-dependency-afterwards
+      description: |
+        The provider adds the dependency to a Service that projects are
+        already entitled to. The project must be enrolled without anyone
+        touching its entitlement — no re-enable, no controller restart.
+      try:
+        - script:
+            cluster: root
+            timeout: 30s
+            content: |
+              set -e
+              kubectl patch service.services.miloapis.com e2e-dependency-primary --type=merge \
+                -p '{"spec":{"dependencies":[{"serviceRef":{"name":"e2e-dependency-secondary"}}]}}'
+        - assert:
+            cluster: consumer-a
+            timeout: 90s
+            file: assertions/assert-secondary-entitlement.yaml
+        - assert:
+            cluster: consumer-a
+            timeout: 90s
+            file: assertions/assert-dependencies-satisfied.yaml

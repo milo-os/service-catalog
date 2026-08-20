@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-dependency-secondary
+spec:
+  serviceRef:
+    # The object name, not "secondary.e2e.datumapis.com". The controller has to
+    # write what admission will accept, or the create is rejected and the
+    # project is never enrolled.
+    name: e2e-dependency-secondary
+status:
+  phase: Active
+  serviceName: secondary.e2e.datumapis.com
+  origin: Dependency
+  dependencyOf: e2e-dependency-primary

@@ -8,12 +8,15 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -419,15 +422,55 @@ func enqueueEntitlementsForConfiguration(
 		}
 		return nil
 	}
-	canonical := svc.Spec.ServiceName
+	return enqueueEntitlementsForServiceName(ctx, rootClient, mgr, svc.Spec.ServiceName)
+}
+
+// mapServiceToServiceEntitlements enqueues every ServiceEntitlement naming the
+// changed Service. Enrollment is level-triggered inside the reconcile, so a
+// provider adding a dependency (or moving the service out of Published) only
+// reaches projects that are already entitled if something re-runs their
+// reconcile — and nothing else watches Service from this controller.
+func (r *ServiceEntitlementReconciler) mapServiceToServiceEntitlements(
+	ctx context.Context,
+	svc *servicesv1alpha1.Service,
+) []mcreconcile.Request {
+	return enqueueEntitlementsForServiceName(ctx, r.rootClient, r.Manager, svc.Spec.ServiceName)
+}
+
+// serviceEnrollmentPredicate keeps the Service fan-out off the hot path. Only
+// the spec fields that change what an already-entitled project is owed are
+// worth re-running every entitlement in every project for; status writes and
+// cosmetic spec edits are not.
+func serviceEnrollmentPredicate() predicate.TypedPredicate[*servicesv1alpha1.Service] {
+	return predicate.TypedFuncs[*servicesv1alpha1.Service]{
+		UpdateFunc: func(e event.TypedUpdateEvent[*servicesv1alpha1.Service]) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return true
+			}
+			before, after := e.ObjectOld.Spec, e.ObjectNew.Spec
+			return before.Phase != after.Phase ||
+				!apiequality.Semantic.DeepEqual(before.Dependencies, after.Dependencies) ||
+				!apiequality.Semantic.DeepEqual(before.EnablementPolicy, after.EnablementPolicy)
+		},
+	}
+}
+
+// enqueueEntitlementsForServiceName turns a canonical service name into
+// project-scoped requests for every ServiceEntitlement that resolved to it.
+func enqueueEntitlementsForServiceName(
+	ctx context.Context,
+	rootClient client.Client,
+	mgr mcmanager.Manager,
+	canonical string,
+) []mcreconcile.Request {
 	if canonical == "" {
 		return nil
 	}
 
 	var projects resourcemanagerv1alpha1.ProjectList
 	if err := rootClient.List(ctx, &projects); err != nil {
-		log.FromContext(ctx).Error(err, "list Projects for ServiceConfiguration fan-out",
-			"serviceConfiguration", sc.Name)
+		log.FromContext(ctx).Error(err, "list Projects for ServiceEntitlement fan-out",
+			"service", canonical)
 		return nil
 	}
 
@@ -446,7 +489,7 @@ func enqueueEntitlementsForConfiguration(
 		if err := cluster.GetClient().List(ctx, &list,
 			client.MatchingFields{entitlementServiceNameIndex: canonical},
 		); err != nil {
-			log.FromContext(ctx).Error(err, "list ServiceEntitlements for ServiceConfiguration fan-out",
+			log.FromContext(ctx).Error(err, "list ServiceEntitlements for fan-out",
 				"project", project, "service", canonical)
 			continue
 		}
