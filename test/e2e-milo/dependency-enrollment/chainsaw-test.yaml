@@ -30,6 +30,12 @@ spec:
       description: |
         Publish Primary and Secondary at the platform root. Primary declares
         no dependency yet.
+
+        That Primary starts with no dependency isn't asserted on the Service
+        itself — spec.dependencies is omitempty, so there is no field to match
+        on. It's asserted where it matters, on the entitlement in the next
+        step: the reconciler only reports reason NoDependencies when the
+        Service declares none.
       cluster: root
       try:
         - apply:
@@ -43,7 +49,6 @@ spec:
                 name: e2e-dependency-primary
               spec:
                 phase: Published
-                dependencies: null
         - assert:
             timeout: 30s
             resource:
