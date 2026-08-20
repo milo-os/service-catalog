@@ -113,6 +113,26 @@ const (
 	// entitlement is not Active. Provisioning follows approval; it does not
 	// anticipate it.
 	ReasonEntitlementNotActive = "EntitlementNotActive"
+
+	// ConditionTypeDependenciesSatisfied reports whether every service the
+	// enabled service depends on has been enabled in this project too. It
+	// stays separate from ConditionTypeReady for the same reason
+	// ConditionTypeProvisioned does: this entitlement's own access really was
+	// granted, and a dependency that can't be enrolled is a different failure
+	// than a provider denial.
+	ConditionTypeDependenciesSatisfied = "DependenciesSatisfied"
+
+	// ReasonDependenciesSatisfied is the DependenciesSatisfied=True reason
+	// when every declared dependency is enabled in the project.
+	ReasonDependenciesSatisfied = "DependenciesSatisfied"
+
+	// ReasonNoDependencies is the DependenciesSatisfied=True reason when the
+	// service declares no dependencies. Nothing was owed.
+	ReasonNoDependencies = "NoDependencies"
+
+	// ReasonDependencyEnrollmentFailed is the DependenciesSatisfied=False
+	// reason when one or more dependencies could not be enabled.
+	ReasonDependencyEnrollmentFailed = "DependencyEnrollmentFailed"
 )
 
 // ProvisionedResourceState is the delivery state of one declared resource.

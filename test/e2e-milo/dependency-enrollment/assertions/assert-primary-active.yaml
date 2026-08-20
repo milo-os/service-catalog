@@ -1,0 +1,7 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-dependency-primary
+status:
+  phase: Active
+  serviceName: primary.e2e.datumapis.com

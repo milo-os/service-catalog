@@ -1,0 +1,30 @@
+# Two Published Services whose metadata.name differs from spec.serviceName.
+# That difference is load-bearing: admission resolves spec.serviceRef.name by
+# metadata.name only, so a derived entitlement that names the canonical service
+# is rejected outright. With the two names equal this suite would pass even
+# with dependency enrollment broken.
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-dependency-primary
+spec:
+  serviceName: primary.e2e.datumapis.com
+  phase: Published
+  displayName: Primary
+  description: E2E fixture for dependency enrollment. Declares no dependency at first.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-dependency-secondary
+spec:
+  serviceName: secondary.e2e.datumapis.com
+  phase: Published
+  displayName: Secondary
+  description: E2E fixture — the service Primary comes to depend on.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform

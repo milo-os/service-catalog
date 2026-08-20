@@ -1,0 +1,4 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-dependency-secondary

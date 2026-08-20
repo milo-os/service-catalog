@@ -4,18 +4,22 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -201,7 +205,10 @@ func TestServiceEntitlementReconciler_DependencyEntitlementCreated(t *testing.T)
 	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
 
 	rootClient := newFakeClient(parentSvc, depSvc)
-	consumerClient := newFakeClient(parentEnt)
+	// Admission-emulating client: the dependency Service's object name
+	// ("storage") differs from its canonical name ("storage.miloapis.com"),
+	// which is the shape that made the derived entitlement inadmissible.
+	consumerClient := newAdmissionFakeClient(rootClient, parentEnt)
 	providerClient := newFakeClient()
 
 	mgr := newTestManager()
@@ -220,11 +227,131 @@ func TestServiceEntitlementReconciler_DependencyEntitlementCreated(t *testing.T)
 	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &depEnt); err != nil {
 		t.Fatalf("dependency entitlement not created: %v", err)
 	}
+	if depEnt.Spec.ServiceRef.Name != testDepServiceSlug {
+		t.Errorf("dependency entitlement serviceRef.name = %q, want object name %q (admission resolves by metadata.name)",
+			depEnt.Spec.ServiceRef.Name, testDepServiceSlug)
+	}
 	if depEnt.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
 		t.Errorf("dependency entitlement origin = %q, want Dependency", depEnt.Status.Origin)
 	}
 	if depEnt.Status.DependencyOf != testServiceSlug {
 		t.Errorf("dependency entitlement dependencyOf = %q, want %q", depEnt.Status.DependencyOf, testServiceSlug)
+	}
+
+	var parent servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &parent); err != nil {
+		t.Fatalf("get parent entitlement: %v", err)
+	}
+	if cond := apimeta.FindStatusCondition(parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("parent DependenciesSatisfied = %v, want True", cond)
+	}
+}
+
+// TestServiceEntitlementReconciler_DependencyUnpublished covers the reporting
+// gap: an entitlement whose dependency can't be enrolled must say so rather
+// than looking fully enabled. Ready stays True — this entitlement's own access
+// really was granted.
+func TestServiceEntitlementReconciler_DependencyUnpublished(t *testing.T) {
+	parentSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	depSvc.Spec.Phase = servicesv1alpha1.PhaseDraft
+	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(parentSvc, depSvc)
+	// Draft dependency: admission refuses to enable an unpublished service.
+	consumerClient := &admissionClient{Client: newFakeClient(parentEnt), root: newFakeClient(parentSvc)}
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	// Errors are expected here, so drive the reconcile directly.
+	for i := 0; i < 3; i++ {
+		_, _ = r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	}
+
+	var parent servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &parent); err != nil {
+		t.Fatalf("get parent entitlement: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("parent DependenciesSatisfied = %v, want False", cond)
+	}
+	if !strings.Contains(cond.Message, testDepServiceSlug) {
+		t.Errorf("condition message %q doesn't name the failing dependency %q", cond.Message, testDepServiceSlug)
+	}
+	if ready := apimeta.FindStatusCondition(parent.Status.Conditions, ConditionTypeReady); ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %v, want True (a dependency failure is not a denial)", ready)
+	}
+}
+
+// TestMapServiceToServiceEntitlements verifies the fan-out that makes
+// enrollment reach projects that enabled the service before the dependency was
+// declared: a Service change must enqueue every entitlement naming it.
+func TestMapServiceToServiceEntitlements(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+
+	entitled := newEntitlement(testServiceSlug, testServiceSlug)
+	entitled.Status.ServiceName = testServiceName
+	other := newEntitlement("other", "other")
+	other.Status.ServiceName = "other.miloapis.com"
+
+	rootClient := newFakeClient(
+		svc,
+		&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: testConsumerProject}},
+		&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "empty-project"}},
+	)
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, newFakeClient(entitled, other))
+	mgr.add("empty-project", newFakeClient())
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	reqs := r.mapServiceToServiceEntitlements(context.Background(), svc)
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requests, want 1: %+v", len(reqs), reqs)
+	}
+	if reqs[0].Name != testServiceSlug || string(reqs[0].ClusterName) != testConsumerProject {
+		t.Errorf("request = %s/%s, want %s/%s", reqs[0].ClusterName, reqs[0].Name, testConsumerProject, testServiceSlug)
+	}
+}
+
+// TestServiceEnrollmentPredicate keeps the fan-out off the hot path: a Service
+// status write shouldn't re-reconcile every entitlement in every project.
+func TestServiceEnrollmentPredicate(t *testing.T) {
+	p := serviceEnrollmentPredicate()
+	base := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+
+	statusOnly := base.DeepCopy()
+	statusOnly.Status.ObservedGeneration = 7
+	if p.Update(event.TypedUpdateEvent[*servicesv1alpha1.Service]{ObjectOld: base, ObjectNew: statusOnly}) {
+		t.Error("status-only update should not trigger the fan-out")
+	}
+
+	cosmetic := base.DeepCopy()
+	cosmetic.Spec.DisplayName = "Renamed"
+	if p.Update(event.TypedUpdateEvent[*servicesv1alpha1.Service]{ObjectOld: base, ObjectNew: cosmetic}) {
+		t.Error("displayName update should not trigger the fan-out")
+	}
+
+	withDep := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	if !p.Update(event.TypedUpdateEvent[*servicesv1alpha1.Service]{ObjectOld: base, ObjectNew: withDep}) {
+		t.Error("adding a dependency must trigger the fan-out")
+	}
+
+	deprecated := base.DeepCopy()
+	deprecated.Spec.Phase = servicesv1alpha1.PhaseDeprecated
+	if !p.Update(event.TypedUpdateEvent[*servicesv1alpha1.Service]{ObjectOld: base, ObjectNew: deprecated}) {
+		t.Error("a phase change must trigger the fan-out")
 	}
 }
 
