@@ -917,3 +917,97 @@ func TestServiceEntitlementReconciler_DeleteCompletesAfterProviderTeardown(t *te
 		t.Errorf("entitlement should be finalized once teardown is confirmed, err=%v", err)
 	}
 }
+
+// TestEnsureDependencies_LabelsDependencyForProvenance pins the record the
+// origin stamp is derived from. Without it the stamp is a status write on a
+// just-created object, racing that object's own first reconcile.
+func TestEnsureDependencies_LabelsDependencyForProvenance(t *testing.T) {
+	parentSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(parentSvc, depSvc)
+	consumerClient := newAdmissionFakeClient(rootClient, parentEnt)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var depEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &depEnt); err != nil {
+		t.Fatalf("dependency entitlement not created: %v", err)
+	}
+	if got := depEnt.Labels[dependencyOfLabel]; got != testServiceSlug {
+		t.Errorf("dependency label = %q, want %q", got, testServiceSlug)
+	}
+}
+
+// TestDependencyOriginSurvivesItsOwnReconcile is the regression for the race
+// that left enrolled dependencies marked Direct: the dependency entitlement's
+// own reconcile used to default origin on an empty value, clobbering the
+// parent's stamp. Origin must be derived from the label instead, so a status
+// write that lands after the stamp restores it rather than reverting it.
+func TestDependencyOriginSurvivesItsOwnReconcile(t *testing.T) {
+	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+
+	// A dependency entitlement as it exists mid-race: labelled by the parent,
+	// but status not yet stamped.
+	depEnt := newEntitlement(testDepServiceSlug, testDepServiceSlug)
+	depEnt.Labels = map[string]string{dependencyOfLabel: testServiceSlug}
+
+	rootClient := newFakeClient(depSvc)
+	consumerClient := newFakeClient(depEnt)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testDepServiceSlug), 5)
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &got); err != nil {
+		t.Fatalf("get dependency entitlement: %v", err)
+	}
+	if got.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
+		t.Errorf("origin = %q, want Dependency", got.Status.Origin)
+	}
+	if got.Status.DependencyOf != testServiceSlug {
+		t.Errorf("dependencyOf = %q, want %q", got.Status.DependencyOf, testServiceSlug)
+	}
+}
+
+// TestUnlabelledEntitlementStaysDirect is the other half: an entitlement the
+// consumer created themselves must not be adopted as a dependency, which would
+// hand it delete protection they never asked for.
+func TestUnlabelledEntitlementStaysDirect(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if got.Status.Origin != servicesv1alpha1.EntitlementOriginDirect {
+		t.Errorf("origin = %q, want Direct", got.Status.Origin)
+	}
+	if got.Status.DependencyOf != "" {
+		t.Errorf("dependencyOf = %q, want empty", got.Status.DependencyOf)
+	}
+}

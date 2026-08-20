@@ -60,6 +60,11 @@ const pendingApprovalRequeueInterval = 2 * time.Minute
 // gone, so this only paces the wait; it does not drive teardown itself.
 const providerTeardownRequeueInterval = 10 * time.Second
 
+// dependencyOfLabel records which parent entitlement pulled a dependency
+// entitlement in. Set at create time and never rewritten, it's the provenance
+// status.origin and status.dependencyOf are derived from.
+const dependencyOfLabel = "services.miloapis.com/dependency-of"
+
 // dependenciesConditionFieldManager owns the DependenciesSatisfied condition,
 // which is patched separately from the main status Update so it doesn't race
 // the Ready/phase write that precedes dependency enrollment.
@@ -278,7 +283,14 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 	if canonicalServiceName != "" {
 		entitlement.Status.ServiceName = canonicalServiceName
 	}
-	if entitlement.Status.Origin == "" {
+	// Derive origin from the create-time label rather than defaulting on an
+	// empty value. This reconcile runs concurrently with the parent's stamp on
+	// a freshly created dependency entitlement, and defaulting to Direct there
+	// permanently orphans it from the parent that's holding it open.
+	if parentName := entitlement.Labels[dependencyOfLabel]; parentName != "" {
+		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
+		entitlement.Status.DependencyOf = parentName
+	} else if entitlement.Status.Origin == "" {
 		entitlement.Status.Origin = servicesv1alpha1.EntitlementOriginDirect
 	}
 	if phase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
@@ -376,6 +388,13 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	var existing servicesv1alpha1.ServiceEntitlement
 	err = consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, &existing)
 	if err == nil {
+		// Already enrolled. Re-apply the provenance stamp if it's ours and
+		// didn't take — see stampDependencyOrigin. An entitlement the consumer
+		// created directly is left alone even if it happens to satisfy this
+		// dependency: it isn't ours to hold open on the parent's behalf.
+		if existing.Labels[dependencyOfLabel] == parent.Name {
+			return r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -396,25 +415,49 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	}
 
 	depEntitlement := &servicesv1alpha1.ServiceEntitlement{
-		ObjectMeta: metav1.ObjectMeta{Name: depEntitlementName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: depEntitlementName,
+			// Provenance lives on the object, not only on status. Status is
+			// written by several reconciles at once; a label set at create
+			// time is the one record of "this controller created this to
+			// satisfy that parent" that nothing else can race.
+			Labels: map[string]string{dependencyOfLabel: parent.Name},
+		},
 		Spec: servicesv1alpha1.ServiceEntitlementSpec{
 			ServiceRef: servicesv1alpha1.ServiceRef{Name: depSvc.Name},
 		},
 	}
-	if err := consumerClient.Create(ctx, depEntitlement); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
+	if err := consumerClient.Create(ctx, depEntitlement); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
+		}
+		// Lost a create race; the next pass finds it by name and stamps it.
+		return nil
 	}
 
-	// Stamp Origin/DependencyOf on status so deletion logic can find this
-	// entitlement as a child of the parent.
-	fresh := &servicesv1alpha1.ServiceEntitlement{}
-	if err := consumerClient.Get(ctx, types.NamespacedName{Name: depEntitlementName}, fresh); err != nil {
-		return fmt.Errorf("failed to re-read dependency entitlement %q: %w", depEntitlementName, err)
+	// Stamp from the object the API server just returned rather than reading
+	// it back: the consumer client is cache-backed and the create hasn't
+	// reached that cache yet, so a read-back here returns NotFound.
+	return r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
+}
+
+// stampDependencyOrigin records on status that this entitlement is held open
+// by a parent, which is what delete protection and parent teardown key on.
+//
+// Patched, not updated: the entitlement's own reconcile writes the whole
+// status independently, and an optimistically-locked update loses that race
+// often enough to matter. The same derivation runs in setEntitlementStatus
+// from the label, so a status write that lands after this one restores it
+// rather than reverting it to Direct.
+func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context, consumerClient client.Client, dep *servicesv1alpha1.ServiceEntitlement, parentName string) error {
+	if dep.Status.Origin == servicesv1alpha1.EntitlementOriginDependency && dep.Status.DependencyOf == parentName {
+		return nil
 	}
-	fresh.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
-	fresh.Status.DependencyOf = parent.Name
-	if err := consumerClient.Status().Update(ctx, fresh); err != nil {
-		return fmt.Errorf("failed to stamp dependency origin on %q: %w", depEntitlementName, err)
+	before := dep.DeepCopy()
+	dep.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
+	dep.Status.DependencyOf = parentName
+	if err := consumerClient.Status().Patch(ctx, dep, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("failed to stamp dependency origin on %q: %w", dep.Name, err)
 	}
 	return nil
 }
