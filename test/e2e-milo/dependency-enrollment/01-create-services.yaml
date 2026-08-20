@@ -1,4 +1,4 @@
-# Two Published Services whose metadata.name differs from spec.serviceName.
+# Three Published Services whose metadata.name differs from spec.serviceName.
 # That difference is load-bearing: admission resolves spec.serviceRef.name by
 # metadata.name only, so a derived entitlement that names the canonical service
 # is rejected outright. With the two names equal this suite would pass even
@@ -25,6 +25,25 @@ spec:
   phase: Published
   displayName: Secondary
   description: E2E fixture — the service Primary comes to depend on.
+  # Declared up front, unlike Primary's dependency. Secondary is only ever
+  # enabled in a project as somebody else's dependency, so this is the hop
+  # that has to work for a chain of three to settle.
+  dependencies:
+    - serviceRef:
+        name: e2e-dependency-tertiary
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-dependency-tertiary
+spec:
+  serviceName: tertiary.e2e.datumapis.com
+  phase: Published
+  displayName: Tertiary
+  description: E2E fixture — the service underneath Secondary, two hops from Primary.
   owner:
     producerProjectRef:
       name: e2e-provisioning-platform

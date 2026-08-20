@@ -341,16 +341,21 @@ func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) boo
 
 // ensureDependencies walks Service.spec.dependencies and creates a derived
 // ServiceEntitlement in the consumer cluster for each one not already present.
-// Dependency entitlements traverse the same reconcile path recursively.
+//
+// This runs for every entitlement, including entitlements this controller
+// created to satisfy someone else's dependency. That is what carries a chain
+// past its first hop: the derived entitlement's own reconcile enrolls the next
+// level down. An earlier version skipped dependency-origin entitlements here to
+// keep a single pass narrow, but status.origin records how an entitlement came
+// to exist rather than which pass is running, so the later reconcile it deferred
+// to took the same early return and the chain stopped at one level.
+//
+// Each pass still only enrolls this service's direct dependencies; depth comes
+// from the next entitlement's own reconcile, so no single call fans out further
+// than one level. A dependency cycle terminates for the same reason: entitlement
+// names are derived from the dependency Service's object name, so once a cycle's
+// entitlements exist, every later pass finds them by name and makes no write.
 func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, consumerClient client.Client, svc *servicesv1alpha1.Service, parent *servicesv1alpha1.ServiceEntitlement) error {
-	if parent.Status.Origin == servicesv1alpha1.EntitlementOriginDependency {
-		// Don't recursively enroll dependencies of dependencies in this pass;
-		// each dependency entitlement will run its own reconcile and pull in
-		// its own dependencies. This keeps each reconcile narrow and avoids
-		// long write chains in a single call.
-		return nil
-	}
-
 	// Keep going past a dependency that can't be enrolled instead of returning
 	// on the first failure: the project should end up with every dependency it
 	// can have, and DependenciesSatisfied should name every one it can't.
@@ -596,22 +601,29 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	// Best-effort cleanup of dependency entitlements that were spawned by this
 	// parent. We only delete dependency entitlements whose dependencyOf points
 	// at this entitlement; other parents may still need the same dependency.
-	if entitlement.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
-		var siblings servicesv1alpha1.ServiceEntitlementList
-		if err := consumerClient.List(ctx, &siblings); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to list entitlements during finalize: %w", err)
+	//
+	// This runs for dependency-origin entitlements too, so a chain unwinds the
+	// way it was built: each child's own finalize releases the level below it.
+	// dependencyOf is stamped once by whichever entitlement created the child,
+	// which already existed at that moment, so the relation is a forest and the
+	// cascade terminates.
+	var children servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(ctx, &children); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to list entitlements during finalize: %w", err)
+	}
+	for i := range children.Items {
+		child := &children.Items[i]
+		if child.Name == entitlement.Name {
+			continue
 		}
-		for i := range siblings.Items {
-			child := &siblings.Items[i]
-			if child.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
-				continue
-			}
-			if child.Status.DependencyOf != entitlement.Name {
-				continue
-			}
-			if err := consumerClient.Delete(ctx, child); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("failed to delete dependency entitlement %q: %w", child.Name, err)
-			}
+		if child.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
+			continue
+		}
+		if child.Status.DependencyOf != entitlement.Name {
+			continue
+		}
+		if err := consumerClient.Delete(ctx, child); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to delete dependency entitlement %q: %w", child.Name, err)
 		}
 	}
 

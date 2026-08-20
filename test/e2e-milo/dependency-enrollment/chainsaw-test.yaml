@@ -13,7 +13,14 @@ spec:
     Primary first, and the provider added the dependency later. Nothing
     re-runs those projects' reconciles unless something watches the Service.
 
-    Both Services here have a metadata.name that differs from
+    The suite then keeps going one hop further. Secondary declares a
+    dependency of its own, and Secondary only ever reaches a project as
+    Primary's dependency. A chain of three is the normal shape here — a
+    product capability over a networking capability over the addressing
+    capability underneath it — and it settles only if an entitlement that was
+    itself created as a dependency enrolls its own.
+
+    Every Service here has a metadata.name that differs from
     spec.serviceName, which is the convention in this catalog and the shape
     that made the derived entitlement inadmissible: admission resolves
     spec.serviceRef.name by metadata.name only, so an entitlement created
@@ -65,6 +72,15 @@ spec:
                 name: e2e-dependency-secondary
               spec:
                 phase: Published
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-dependency-tertiary
+              spec:
+                phase: Published
 
     - name: enable-primary-before-the-dependency-exists
       description: |
@@ -85,6 +101,9 @@ spec:
         - error:
             timeout: 30s
             file: assertions/assert-secondary-absent.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-tertiary-absent.yaml
 
     - name: declare-the-dependency-afterwards
       description: |
@@ -107,3 +126,25 @@ spec:
             cluster: consumer-a
             timeout: 90s
             file: assertions/assert-dependencies-satisfied.yaml
+
+    - name: enroll-the-hop-below-the-dependency
+      description: |
+        Secondary reached this project as Primary's dependency, and Secondary
+        depends on Tertiary. Tertiary must be enabled too.
+
+        Nothing else in this suite would catch its absence: Primary and
+        Secondary are both Active and Ready either way, and the missing
+        service surfaces to a user as a quota denial that reads like a limit
+        rather than a service that was never enabled.
+
+        No patch here — Secondary declared its dependency from the start. What
+        changes between the previous step and this one is only that Secondary
+        is now entitled in this project, which is the trigger under test.
+      cluster: consumer-a
+      try:
+        - assert:
+            timeout: 90s
+            file: assertions/assert-tertiary-entitlement.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-secondary-dependencies-satisfied.yaml

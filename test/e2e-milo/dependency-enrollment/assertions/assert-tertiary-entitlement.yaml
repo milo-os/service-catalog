@@ -1,0 +1,14 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-dependency-tertiary
+spec:
+  serviceRef:
+    name: e2e-dependency-tertiary
+status:
+  phase: Active
+  serviceName: tertiary.e2e.datumapis.com
+  origin: Dependency
+  # Held open by Secondary, which is itself only in this project as Primary's
+  # dependency. Nothing enrolled Tertiary directly.
+  dependencyOf: e2e-dependency-secondary

@@ -1011,3 +1011,139 @@ func TestUnlabelledEntitlementStaysDirect(t *testing.T) {
 		t.Errorf("dependencyOf = %q, want empty", got.Status.DependencyOf)
 	}
 }
+
+// TestServiceEntitlementReconciler_TransitiveDependencyEntitlementCreated
+// covers a three-service chain, which is the normal shape here: a product
+// capability depends on a networking capability, which depends on the
+// addressing capability underneath it. Enabling the first must end with all
+// three enabled, not just the first two.
+func TestServiceEntitlementReconciler_TransitiveDependencyEntitlementCreated(t *testing.T) {
+	const (
+		midSlug  = "networking"
+		leafSlug = "ipam"
+	)
+	topSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", midSlug)
+	midSvc := newPublishedService(midSlug, "networking.miloapis.com", testProviderProject, "", leafSlug)
+	leafSvc := newPublishedService(leafSlug, "ipam.miloapis.com", testProviderProject, "")
+	topEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(topSvc, midSvc, leafSvc)
+	consumerClient := newAdmissionFakeClient(rootClient, topEnt)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	// Each entitlement reconciles on its own; the create of the middle
+	// entitlement is what wakes it in the real controller.
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, midSlug), 5)
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, leafSlug), 5)
+
+	var midEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: midSlug}, &midEnt); err != nil {
+		t.Fatalf("first-hop dependency entitlement not created: %v", err)
+	}
+
+	var leafEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: leafSlug}, &leafEnt); err != nil {
+		t.Fatalf("transitive dependency entitlement not created: %v", err)
+	}
+	if leafEnt.Spec.ServiceRef.Name != leafSlug {
+		t.Errorf("transitive entitlement serviceRef.name = %q, want object name %q", leafEnt.Spec.ServiceRef.Name, leafSlug)
+	}
+	if leafEnt.Status.Origin != servicesv1alpha1.EntitlementOriginDependency {
+		t.Errorf("transitive entitlement origin = %q, want Dependency", leafEnt.Status.Origin)
+	}
+	if leafEnt.Status.DependencyOf != midSlug {
+		t.Errorf("transitive entitlement dependencyOf = %q, want %q", leafEnt.Status.DependencyOf, midSlug)
+	}
+	if leafEnt.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
+		t.Errorf("transitive entitlement phase = %q, want Active", leafEnt.Status.Phase)
+	}
+
+	if cond := apimeta.FindStatusCondition(midEnt.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("middle DependenciesSatisfied = %v, want True", cond)
+	}
+}
+
+// TestServiceEntitlementReconciler_DependencyCycleConverges proves that
+// enrolling dependencies of dependencies stays safe when two services declare
+// each other. Enrollment is level-triggered and entitlements are named for the
+// dependency Service, so a cycle settles on one entitlement per service and
+// then stops writing.
+func TestServiceEntitlementReconciler_DependencyCycleConverges(t *testing.T) {
+	const otherSlug = testDepServiceSlug
+	svcA := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", otherSlug)
+	svcB := newPublishedService(otherSlug, "storage.miloapis.com", testProviderProject, "", testServiceSlug)
+	entA := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(svcA, svcB)
+	consumerClient := newAdmissionFakeClient(rootClient, entA)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	for i := 0; i < 5; i++ {
+		reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+		reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, otherSlug), 5)
+	}
+
+	var all servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(context.Background(), &all); err != nil {
+		t.Fatalf("list entitlements: %v", err)
+	}
+	if len(all.Items) != 2 {
+		names := make([]string, 0, len(all.Items))
+		for i := range all.Items {
+			names = append(names, all.Items[i].Name)
+		}
+		t.Fatalf("entitlement count = %d (%v), want 2 (one per service in the cycle)", len(all.Items), names)
+	}
+
+	// A converged cycle must stop writing: another full round should leave
+	// every object's resourceVersion untouched.
+	before := map[string]string{}
+	for i := range all.Items {
+		before[all.Items[i].Name] = all.Items[i].ResourceVersion
+	}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, otherSlug), 5)
+
+	var after servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(context.Background(), &after); err != nil {
+		t.Fatalf("list entitlements: %v", err)
+	}
+	for i := range after.Items {
+		item := &after.Items[i]
+		if before[item.Name] != item.ResourceVersion {
+			t.Errorf("entitlement %q was rewritten on a settled reconcile (resourceVersion %s -> %s); the cycle is not converging",
+				item.Name, before[item.Name], item.ResourceVersion)
+		}
+	}
+
+	// The entitlement the project asked for directly keeps its provenance: a
+	// cycle must not let the derived side claim it as a dependency.
+	var direct servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &direct); err != nil {
+		t.Fatalf("get direct entitlement: %v", err)
+	}
+	if direct.Status.Origin != servicesv1alpha1.EntitlementOriginDirect {
+		t.Errorf("direct entitlement origin = %q, want Direct", direct.Status.Origin)
+	}
+}
