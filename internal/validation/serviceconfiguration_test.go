@@ -136,3 +136,68 @@ func TestValidateServiceConfigurationUpdate_AllowsDefaultOfferSwitch(t *testing.
 		t.Fatalf("expected Published defaultOffer switch to succeed, got: %v", errs)
 	}
 }
+
+func TestValidateMigrateFromOffer(t *testing.T) {
+	tests := []struct {
+		name             string
+		defaultOffer     string
+		migrateFromOffer string
+		wantErr          bool
+	}{
+		{
+			name:             "unset is valid",
+			defaultOffer:     "payg-v2",
+			migrateFromOffer: "",
+			wantErr:          false,
+		},
+		{
+			name:             "differs from defaultOffer",
+			defaultOffer:     "payg-v2",
+			migrateFromOffer: "payg-v1",
+			wantErr:          false,
+		},
+		{
+			name:             "from-offer need not exist",
+			defaultOffer:     "payg-v2",
+			migrateFromOffer: "retired-v0",
+			wantErr:          false,
+		},
+		{
+			name:             "requires defaultOffer",
+			defaultOffer:     "",
+			migrateFromOffer: "payg-v1",
+			wantErr:          true,
+		},
+		{
+			name:             "must differ from defaultOffer",
+			defaultOffer:     "payg-v1",
+			migrateFromOffer: "payg-v1",
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := publishedBillingSC(tt.defaultOffer)
+			sc.Spec.MigrateFromOffer = tt.migrateFromOffer
+			errs := validateMigrateFromOffer(sc)
+			if tt.wantErr && len(errs) == 0 {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && len(errs) != 0 {
+				t.Fatalf("unexpected error: %v", errs)
+			}
+		})
+	}
+}
+
+func TestPublishedImmutability_AllowsMigrateFromOfferChange(t *testing.T) {
+	oldSC := publishedBillingSC("payg-v1")
+	newSC := publishedBillingSC("payg-v2")
+	newSC.Spec.MigrateFromOffer = "payg-v1"
+
+	errs := validateServiceConfigurationPublishedImmutability(oldSC, newSC)
+	if len(errs) != 0 {
+		t.Fatalf("expected migrateFromOffer change on Published to be allowed, got: %v", errs)
+	}
+}

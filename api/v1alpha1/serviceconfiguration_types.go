@@ -131,6 +131,16 @@ type ServiceConfigurationSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=253
 	DefaultOffer string `json:"defaultOffer,omitempty"`
+
+	// MigrateFromOffer is a one-shot. When set with defaultOffer, the
+	// billing-entitlement-defaults controller patches every
+	// BillingEntitlement whose offerRef equals this name to defaultOffer,
+	// then clears this field. Entitlements pointing at any other Offer
+	// are left unchanged. The named Offer does not need to still exist.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	MigrateFromOffer string `json:"migrateFromOffer,omitempty"`
 }
 
 // ServiceReference identifies the Service a ServiceConfiguration applies
