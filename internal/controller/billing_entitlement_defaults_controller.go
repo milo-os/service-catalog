@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,15 +32,32 @@ const (
 	// labelBillingEntitlementDefault marks BillingEntitlements seeded by
 	// this controller so they are distinguishable from staff-authored ones.
 	labelBillingEntitlementDefault = "services.miloapis.com/billing-entitlement-default"
+
+	// migrateFromOfferRequeue is how long to wait before retrying the
+	// remaining-offer scan after migrating one account. Parallel
+	// reconciles can race on the last matching entitlements; a short
+	// requeue lets the last writer observe remaining==0 and clear the
+	// one-shot field.
+	migrateFromOfferRequeue = 5 * time.Second
 )
+
+// billingDefaultConfig is the Published billing ServiceConfiguration's
+// default-Offer settings used by this reconciler.
+type billingDefaultConfig struct {
+	DefaultOffer     string
+	MigrateFromOffer string
+	Config           *servicesv1alpha1.ServiceConfiguration
+}
 
 // BillingEntitlementDefaultsReconciler seeds a default BillingEntitlement
 // for every BillingAccount from the billing service's Published
 // ServiceConfiguration.spec.defaultOffer.
 //
-// Create-once semantics: once a BillingEntitlement named be-<uid>-default
-// exists for an account, this controller leaves it alone so staff can
-// change offerRef without being overwritten on the next reconcile.
+// Create-once semantics: once a BillingEntitlement exists for an
+// account, this controller does not overwrite offerRef — except when
+// spec.migrateFromOffer is set and the entitlement still points at that
+// previous default. Custom offers are never touched. After no matching
+// entitlements remain, migrateFromOffer is cleared.
 type BillingEntitlementDefaultsReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -47,7 +65,8 @@ type BillingEntitlementDefaultsReconciler struct {
 
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=services.miloapis.com,resources=services;serviceconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch;update;patch
 
 func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -64,28 +83,71 @@ func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, re
 		return ctrl.Result{}, nil
 	}
 
-	defaultOffer, err := r.lookupBillingDefaultOffer(ctx)
+	cfg, err := r.lookupBillingDefaultConfig(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if defaultOffer == "" {
+	if cfg == nil || cfg.DefaultOffer == "" {
 		logger.V(1).Info("no defaultOffer configured on billing ServiceConfiguration; skipping")
 		return ctrl.Result{}, nil
 	}
 
-	// One active BillingEntitlement per account (billing admission). If
-	// staff already authored a BE under any name, do not try to seed
-	// be-<uid>-default — Apply would fail forever on that uniqueness rule.
 	existing, err := r.anyBillingEntitlementForAccount(ctx, ba.Namespace, ba.Name)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if existing != nil {
+
+	didMigrate := false
+	switch {
+	case existing == nil:
+		if err := r.seedDefaultEntitlement(ctx, &ba, cfg.DefaultOffer); err != nil {
+			return ctrl.Result{}, err
+		}
+	case cfg.MigrateFromOffer != "" &&
+		existing.Spec.OfferRef.Name == cfg.MigrateFromOffer &&
+		cfg.DefaultOffer != cfg.MigrateFromOffer:
+		if err := r.migrateEntitlementOffer(ctx, existing, cfg.DefaultOffer); err != nil {
+			return ctrl.Result{}, err
+		}
+		didMigrate = true
+		logger.Info("migrated BillingEntitlement to defaultOffer",
+			"billingAccount", ba.Name,
+			"namespace", ba.Namespace,
+			"entitlement", existing.Name,
+			"from", cfg.MigrateFromOffer,
+			"to", cfg.DefaultOffer,
+		)
+	default:
 		logger.V(1).Info("BillingAccount already has a BillingEntitlement; skipping default seed",
 			"existing", existing.Name)
+	}
+
+	if cfg.MigrateFromOffer == "" {
 		return ctrl.Result{}, nil
 	}
 
+	remaining, err := r.countEntitlementsOnOffer(ctx, cfg.MigrateFromOffer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if remaining == 0 {
+		if err := r.clearMigrateFromOffer(ctx, cfg.Config, cfg.MigrateFromOffer); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+	if didMigrate {
+		return ctrl.Result{RequeueAfter: migrateFromOfferRequeue}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *BillingEntitlementDefaultsReconciler) seedDefaultEntitlement(
+	ctx context.Context,
+	ba *billingv1alpha1.BillingAccount,
+	defaultOffer string,
+) error {
+	logger := log.FromContext(ctx)
 	entitlementName := defaultBillingEntitlementName(ba.UID)
 
 	obj := &billingv1alpha1.BillingEntitlement{
@@ -115,7 +177,7 @@ func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, re
 		client.FieldOwner(billingEntitlementDefaultsFieldManager),
 		client.ForceOwnership,
 	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("apply BillingEntitlement %q for BillingAccount %q: %w",
+		return fmt.Errorf("apply BillingEntitlement %q for BillingAccount %q: %w",
 			entitlementName, ba.Name, err)
 	}
 
@@ -125,7 +187,62 @@ func (r *BillingEntitlementDefaultsReconciler) Reconcile(ctx context.Context, re
 		"entitlement", entitlementName,
 		"offer", defaultOffer,
 	)
-	return ctrl.Result{}, nil
+	return nil
+}
+
+func (r *BillingEntitlementDefaultsReconciler) migrateEntitlementOffer(
+	ctx context.Context,
+	be *billingv1alpha1.BillingEntitlement,
+	toOffer string,
+) error {
+	original := be.DeepCopy()
+	be.Spec.OfferRef.Name = toOffer
+	if err := r.Patch(ctx, be, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("migrate BillingEntitlement %q offerRef to %q: %w", be.Name, toOffer, err)
+	}
+	return nil
+}
+
+func (r *BillingEntitlementDefaultsReconciler) countEntitlementsOnOffer(
+	ctx context.Context,
+	offerName string,
+) (int, error) {
+	var list billingv1alpha1.BillingEntitlementList
+	if err := r.List(ctx, &list); err != nil {
+		return 0, fmt.Errorf("list BillingEntitlements: %w", err)
+	}
+	n := 0
+	for i := range list.Items {
+		be := &list.Items[i]
+		if be.DeletionTimestamp.IsZero() && be.Spec.OfferRef.Name == offerName {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (r *BillingEntitlementDefaultsReconciler) clearMigrateFromOffer(
+	ctx context.Context,
+	sc *servicesv1alpha1.ServiceConfiguration,
+	expectedFrom string,
+) error {
+	var live servicesv1alpha1.ServiceConfiguration
+	if err := r.Get(ctx, client.ObjectKeyFromObject(sc), &live); err != nil {
+		return fmt.Errorf("fetch ServiceConfiguration %q to clear migrateFromOffer: %w", sc.Name, err)
+	}
+	if live.Spec.MigrateFromOffer != expectedFrom {
+		return nil
+	}
+	original := live.DeepCopy()
+	live.Spec.MigrateFromOffer = ""
+	if err := r.Patch(ctx, &live, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("clear migrateFromOffer on ServiceConfiguration %q: %w", live.Name, err)
+	}
+	log.FromContext(ctx).Info("cleared migrateFromOffer; no matching BillingEntitlements remain",
+		"serviceConfiguration", live.Name,
+		"from", expectedFrom,
+	)
+	return nil
 }
 
 // anyBillingEntitlementForAccount returns a non-deleting BillingEntitlement
@@ -147,13 +264,14 @@ func (r *BillingEntitlementDefaultsReconciler) anyBillingEntitlementForAccount(
 	return nil, nil
 }
 
-// lookupBillingDefaultOffer resolves the billing.miloapis.com Service and
-// returns the DefaultOffer from its Published ServiceConfiguration. Empty
-// string means no-op (service or config missing, or DefaultOffer unset).
-func (r *BillingEntitlementDefaultsReconciler) lookupBillingDefaultOffer(ctx context.Context) (string, error) {
+// lookupBillingDefaultConfig resolves the billing.miloapis.com Service and
+// returns defaultOffer / migrateFromOffer from its Published
+// ServiceConfiguration. Nil means no-op (service or config missing, or
+// DefaultOffer unset).
+func (r *BillingEntitlementDefaultsReconciler) lookupBillingDefaultConfig(ctx context.Context) (*billingDefaultConfig, error) {
 	var svcList servicesv1alpha1.ServiceList
 	if err := r.List(ctx, &svcList); err != nil {
-		return "", fmt.Errorf("list Services: %w", err)
+		return nil, fmt.Errorf("list Services: %w", err)
 	}
 	var billingSvc *servicesv1alpha1.Service
 	for i := range svcList.Items {
@@ -163,12 +281,12 @@ func (r *BillingEntitlementDefaultsReconciler) lookupBillingDefaultOffer(ctx con
 		}
 	}
 	if billingSvc == nil {
-		return "", nil
+		return nil, nil
 	}
 
 	var scList servicesv1alpha1.ServiceConfigurationList
 	if err := r.List(ctx, &scList); err != nil {
-		return "", fmt.Errorf("list ServiceConfigurations: %w", err)
+		return nil, fmt.Errorf("list ServiceConfigurations: %w", err)
 	}
 	for i := range scList.Items {
 		sc := &scList.Items[i]
@@ -179,10 +297,14 @@ func (r *BillingEntitlementDefaultsReconciler) lookupBillingDefaultOffer(ctx con
 			continue
 		}
 		if sc.Spec.DefaultOffer != "" {
-			return sc.Spec.DefaultOffer, nil
+			return &billingDefaultConfig{
+				DefaultOffer:     sc.Spec.DefaultOffer,
+				MigrateFromOffer: sc.Spec.MigrateFromOffer,
+				Config:           sc.DeepCopy(),
+			}, nil
 		}
 	}
-	return "", nil
+	return nil, nil
 }
 
 // defaultBillingEntitlementName returns the deterministic name for the
@@ -212,7 +334,8 @@ func (r *BillingEntitlementDefaultsReconciler) SetupWithManager(mgr ctrl.Manager
 
 // enqueueBillingAccountsForDefaultOffer re-enqueues every BillingAccount when
 // the billing service's ServiceConfiguration changes so a newly published
-// defaultOffer lands on accounts that do not yet have a BillingEntitlement.
+// defaultOffer lands on accounts that do not yet have a BillingEntitlement
+// and a migrateFromOffer one-shot can patch matching entitlements.
 // Other ServiceConfigurations are ignored to avoid a thundering herd.
 func (r *BillingEntitlementDefaultsReconciler) enqueueBillingAccountsForDefaultOffer(ctx context.Context, obj client.Object) []reconcile.Request {
 	sc, ok := obj.(*servicesv1alpha1.ServiceConfiguration)

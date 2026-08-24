@@ -37,6 +37,7 @@ func ValidateServiceConfigurationCreate(
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
 	allErrs = append(allErrs, validateProvisioning(sc)...)
+	allErrs = append(allErrs, validateMigrateFromOffer(sc)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, sc)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, sc)...)
@@ -74,6 +75,7 @@ func ValidateServiceConfigurationUpdate(
 	if !terminating {
 		allErrs = append(allErrs, validateProvisioning(newSC)...)
 	}
+	allErrs = append(allErrs, validateMigrateFromOffer(newSC)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
@@ -533,6 +535,31 @@ func validateDefaultOffer(
 	return allErrs
 }
 
+// validateMigrateFromOffer checks intra-document rules for the one-shot
+// default-Offer migration. The from-offer is not required to exist so a
+// retired catalog entry can still be migrated off of.
+func validateMigrateFromOffer(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	var allErrs field.ErrorList
+	if sc.Spec.MigrateFromOffer == "" {
+		return allErrs
+	}
+	fldPath := field.NewPath("spec", "migrateFromOffer")
+	if sc.Spec.DefaultOffer == "" {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath, sc.Spec.MigrateFromOffer,
+			"defaultOffer must be set when migrateFromOffer is set",
+		))
+		return allErrs
+	}
+	if sc.Spec.MigrateFromOffer == sc.Spec.DefaultOffer {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath, sc.Spec.MigrateFromOffer,
+			"must differ from defaultOffer",
+		))
+	}
+	return allErrs
+}
+
 // validateServiceConfigurationNamePrefixes resolves the referenced
 // Service and enforces that every meter.name and
 // monitoredResourceType.type is prefixed by the Service's canonical
@@ -616,9 +643,10 @@ func validateServiceConfigurationNamePrefixes(
 // validateServiceConfigurationPublishedImmutability rejects changes to
 // core identity fields on meters, monitored resource types, and charges
 // that were already present in the Published ServiceConfiguration. New
-// entries are allowed. spec.defaultOffer is intentionally mutable on
-// Published so staff can switch the platform default Offer without
-// republishing the billing ServiceConfiguration.
+// entries are allowed. spec.defaultOffer and spec.migrateFromOffer are
+// intentionally mutable on Published so staff can switch the platform
+// default Offer and opt into migrating accounts still on the previous
+// default without republishing the billing ServiceConfiguration.
 func validateServiceConfigurationPublishedImmutability(
 	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
 ) field.ErrorList {

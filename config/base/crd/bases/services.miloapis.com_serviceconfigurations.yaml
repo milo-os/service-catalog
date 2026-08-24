@@ -437,6 +437,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              migrateFromOffer:
+                description: |-
+                  MigrateFromOffer is a one-shot. When set with defaultOffer, the
+                  billing-entitlement-defaults controller patches every
+                  BillingEntitlement whose offerRef equals this name to defaultOffer,
+                  then clears this field. Entitlements pointing at any other Offer
+                  are left unchanged. The named Offer does not need to still exist.
+                maxLength: 253
+                type: string
               monitoredResourceTypes:
                 description: |-
                   MonitoredResourceTypes declares the Kubernetes Kinds this service
