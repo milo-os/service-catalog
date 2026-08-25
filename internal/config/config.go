@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -44,6 +45,24 @@ type ServicesOperator struct {
 	// a cluster.
 	KubeconfigPath string `json:"kubeconfigPath,omitempty"`
 
+	// LocationSource names the API group Locations are read from when
+	// evaluating whether a service is available at a location and which
+	// locations an entitled project can see. Both groups serve the same kind
+	// under different shapes, and during the move from one to the other both
+	// may be installed at once — so the source is chosen here rather than
+	// inferred from which CRDs happen to be present, which would decide
+	// silently and could resolve some locations from one group and some from
+	// the other.
+	//
+	// Defaults to the network-services group, which is what control planes
+	// serve today. Switching to the locations service is a deliberate act:
+	// once set, that group is the only one read, and a control plane that does
+	// not serve it reports the misconfiguration on every ServiceAvailability
+	// rather than quietly falling back.
+	//
+	// +optional
+	LocationSource LocationSource `json:"locationSource,omitempty"`
+
 	// ConsumerScopedProjection, when set, switches projection of
 	// consumer-facing resources (today: LocationBinding) off the all-projects
 	// Milo manager and onto a consumer-scoped multicluster manager driven by
@@ -54,6 +73,46 @@ type ServicesOperator struct {
 	// projection runs on the all-projects manager. This mirrors the
 	// WebhookServer pointer-gate above: nil = feature off.
 	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+}
+
+// LocationSource names the API group Locations are read from.
+type LocationSource string
+
+const (
+	// LocationSourceNetworkServices reads Locations from the network-services
+	// operator's group, where a location carries its class as the flat
+	// spec.locationClassName. This is the default and what production serves.
+	LocationSourceNetworkServices LocationSource = "networking.datumapis.com/v1alpha"
+
+	// LocationSourceLocationsService reads Locations from milo-os/locations,
+	// where a location names a LocationClass through spec.locationClassRef.
+	LocationSourceLocationsService LocationSource = "locations.miloapis.com/v1alpha1"
+)
+
+// locationSourceGVKs maps each source onto the GroupVersionKind read for it.
+var locationSourceGVKs = map[LocationSource]schema.GroupVersionKind{
+	LocationSourceNetworkServices: {
+		Group:   "networking.datumapis.com",
+		Version: "v1alpha",
+		Kind:    "Location",
+	},
+	LocationSourceLocationsService: {
+		Group:   "locations.miloapis.com",
+		Version: "v1alpha1",
+		Kind:    "Location",
+	},
+}
+
+// GVK resolves the configured location source, rejecting a value that names no
+// known group so the manager fails at startup rather than on first reconcile.
+func (s LocationSource) GVK() (schema.GroupVersionKind, error) {
+	gvk, ok := locationSourceGVKs[s]
+	if !ok {
+		return schema.GroupVersionKind{}, fmt.Errorf(
+			"unknown locationSource %q, expected one of %q or %q",
+			s, LocationSourceNetworkServices, LocationSourceLocationsService)
+	}
+	return gvk, nil
 }
 
 // RestConfig returns the *rest.Config used to connect to the Milo API server.
@@ -247,8 +306,11 @@ func SetDefaults_TLSConfig(obj *TLSConfig) {
 // defaults (MetricsServerConfig, WebhookServerConfig, TLSConfig), so this
 // function only sets top-level defaults.
 func SetDefaults_ServicesOperator(obj *ServicesOperator) {
-	// Top-level defaults are handled by nested SetDefaults_* functions
-	// which are called by the generated SetObjectDefaults_ServicesOperator.
+	// Locations are read from the group control planes serve today unless an
+	// operator deliberately moves them.
+	if obj.LocationSource == "" {
+		obj.LocationSource = LocationSourceNetworkServices
+	}
 }
 
 func init() {

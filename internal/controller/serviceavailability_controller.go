@@ -4,13 +4,16 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,6 +42,13 @@ const (
 	// reasonLocationNotReady is the Available=False reason when the
 	// referenced Location exists but its Ready condition is not True.
 	reasonLocationNotReady = "LocationNotReady"
+
+	// reasonLocationSourceUnavailable is the Available=Unknown reason when the
+	// control plane does not serve the configured location source. Nothing can
+	// be said about the location until an operator installs that group or
+	// points the operator back at one that is served, so this is deliberately
+	// not a verdict of unavailable.
+	reasonLocationSourceUnavailable = "LocationSourceUnavailable"
 	// reasonServiceNotPublished ("ServiceNotPublished") is shared with the
 	// ServiceEntitlement reconciler; it is declared there.
 )
@@ -50,13 +60,22 @@ const (
 type ServiceAvailabilityReconciler struct {
 	client client.Client
 	Scheme *runtime.Scheme
+
+	// LocationGVK is the configured location source. Only this group is read.
+	LocationGVK schema.GroupVersionKind
 }
+
+// locationSourceRetryInterval is how often an availability whose location
+// source is not served re-checks. The condition already says what is wrong;
+// this is what lets the object recover on its own once the group is installed.
+const locationSourceRetryInterval = time.Minute
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities/finalizers,verbs=update
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
 func (r *ServiceAvailabilityReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -88,14 +107,22 @@ func (r *ServiceAvailabilityReconciler) Reconcile(ctx context.Context, req recon
 	newStatus.ObservedGeneration = sa.Generation
 	apimeta.SetStatusCondition(&newStatus.Conditions, available)
 
+	// A source the control plane does not serve is a misconfiguration an
+	// operator has to fix, so the condition is written and then re-checked
+	// rather than requeued as a failure.
+	result := ctrl.Result{}
+	if available.Reason == reasonLocationSourceUnavailable {
+		result.RequeueAfter = locationSourceRetryInterval
+	}
+
 	if !availabilityStatusNeedsUpdate(&sa.Status, newStatus) {
-		return ctrl.Result{}, nil
+		return result, nil
 	}
 
 	patch := client.MergeFrom(sa.DeepCopy())
 	sa.Status = *newStatus
 	if err := r.client.Status().Patch(ctx, &sa, patch); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to patch ServiceAvailability status: %w", err)
+		return result, fmt.Errorf("failed to patch ServiceAvailability status: %w", err)
 	}
 
 	logger.Info("reconciled service availability",
@@ -104,13 +131,14 @@ func (r *ServiceAvailabilityReconciler) Reconcile(ctx context.Context, req recon
 		"available", available.Status,
 		"reason", available.Reason,
 	)
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // desiredAvailableCondition evaluates the three gates and returns the
 // Available condition. It returns a non-nil error only for transient read
 // failures, which the caller turns into a requeue; a resolved "gate closed"
-// outcome is encoded as Available=False, never as an error.
+// outcome is encoded as Available=False, and a location source the control
+// plane does not serve as Available=Unknown, never as an error.
 func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 	ctx context.Context,
 	sa *servicesv1alpha1.ServiceAvailability,
@@ -134,10 +162,18 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 			fmt.Sprintf("Service %q is not yet published, so it isn't available here.", svc.Name)), nil
 	}
 
-	// Gate 2: the referenced Location must exist and be Ready, in either the
-	// locations service or the group it is moving off.
+	// Gate 2: the referenced Location must exist and be Ready in the
+	// configured location source.
 	locName := sa.Spec.LocationRef.Name
-	loc, found, err := getLocation(ctx, r.client, locName)
+	loc, found, err := getLocation(ctx, r.client, r.LocationGVK, locName)
+	if errors.Is(err, errLocationSourceUnavailable) {
+		cond.Status = metav1.ConditionUnknown
+		cond.Reason = reasonLocationSourceUnavailable
+		cond.Message = fmt.Sprintf(
+			"Locations are configured to be read from %q, which this control plane does not serve, so availability at %q cannot be determined.",
+			r.LocationGVK.GroupVersion(), locName)
+		return cond, nil
+	}
 	if err != nil {
 		return cond, fmt.Errorf("failed to load referenced Location: %w", err)
 	}

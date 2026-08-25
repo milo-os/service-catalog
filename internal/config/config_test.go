@@ -124,3 +124,42 @@ func TestServicesOperator_StrictDecodeRejectsTypoInGateBlock(t *testing.T) {
 		t.Errorf("strict decoding must reject an unknown field (serviceName) in the gate block")
 	}
 }
+
+// A config doc that says nothing about locations reads them from the group
+// control planes serve today, so an existing deployment keeps its behavior.
+func TestServicesOperator_LocationSourceDefaultsToNetworkServices(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML)
+	if cfg.LocationSource != LocationSourceNetworkServices {
+		t.Errorf("locationSource = %q, want %q", cfg.LocationSource, LocationSourceNetworkServices)
+	}
+	gvk, err := cfg.LocationSource.GVK()
+	if err != nil {
+		t.Fatalf("resolve default location source: %v", err)
+	}
+	if gvk.Group != "networking.datumapis.com" || gvk.Version != "v1alpha" || gvk.Kind != "Location" {
+		t.Errorf("default location source GVK = %v", gvk)
+	}
+}
+
+func TestServicesOperator_LocationSourceLocationsService(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML+"locationSource: locations.miloapis.com/v1alpha1\n")
+	if cfg.LocationSource != LocationSourceLocationsService {
+		t.Fatalf("locationSource = %q, want %q", cfg.LocationSource, LocationSourceLocationsService)
+	}
+	gvk, err := cfg.LocationSource.GVK()
+	if err != nil {
+		t.Fatalf("resolve location source: %v", err)
+	}
+	if gvk.Group != "locations.miloapis.com" || gvk.Version != "v1alpha1" || gvk.Kind != "Location" {
+		t.Errorf("location source GVK = %v", gvk)
+	}
+}
+
+// A source naming no known group is rejected, so the manager fails at startup
+// rather than on the first reconcile that needs a location.
+func TestServicesOperator_LocationSourceUnknownRejected(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML+"locationSource: locations.example.com/v1\n")
+	if _, err := cfg.LocationSource.GVK(); err == nil {
+		t.Fatalf("expected an unknown location source to be rejected")
+	}
+}

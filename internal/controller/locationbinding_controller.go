@@ -36,14 +36,24 @@ var locationBindingGVK = schema.GroupVersionKind{
 	Kind:    "LocationBinding",
 }
 
+// projectedLocationGVK is the consumer-facing object going forward: the same
+// Location kind the locations service declares, projected into a project that
+// may use it. What is projected is deliberately independent of which group
+// locations are READ from (config.LocationSource) — a control plane can serve
+// consumers the new object while still sourcing locations from the old group,
+// and the two move on their own schedules.
+var projectedLocationGVK = schema.GroupVersionKind{
+	Group:   "locations.miloapis.com",
+	Version: "v1alpha1",
+	Kind:    "Location",
+}
+
 // projectionGVKs are the kinds a reconcile pass owns in a consumer control
-// plane, in the order they are written and pruned. miloLocationGVK is the
-// consumer-facing object going forward: the same Location kind the platform
-// declares, projected into the project that may use it. Both are written as
+// plane, in the order they are written and pruned. Both are written as
 // unstructured, and a kind whose CRD is not installed in a given control plane
 // is skipped rather than treated as a failure, so a control plane needs only
 // the kinds its consumers actually read.
-var projectionGVKs = []schema.GroupVersionKind{miloLocationGVK, locationBindingGVK}
+var projectionGVKs = []schema.GroupVersionKind{projectedLocationGVK, locationBindingGVK}
 
 const (
 	// locationBindingResyncInterval bounds how long a gate change on the root
@@ -109,6 +119,10 @@ type LocationBindingReconciler struct {
 	rootClient client.Client
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme
+
+	// LocationGVK is the configured location source. Only this group is read.
+	// It is unrelated to projectedLocationGVK, which is what gets written.
+	LocationGVK schema.GroupVersionKind
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -214,8 +228,12 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 		// Gate-source 2: load the referenced Location. A transient read failure
 		// must requeue without disturbing existing bindings — never flip a
 		// binding to unavailable on a blip.
-		loc, found, err := getLocation(ctx, r.rootClient, locName)
+		loc, found, err := getLocation(ctx, r.rootClient, r.LocationGVK, locName)
 		if err != nil {
+			// A location source the control plane does not serve is a
+			// misconfiguration, and every location looks absent through it.
+			// Returning before the prune below is what stops that from
+			// tearing down every projection an entitled project has.
 			return ctrl.Result{}, fmt.Errorf("failed to get Location %q: %w", locName, err)
 		}
 		if !found {
@@ -366,7 +384,7 @@ func projectionSpec(gvk schema.GroupVersionKind, locName string, fields location
 		topology[k] = v
 	}
 
-	if gvk == miloLocationGVK {
+	if gvk == projectedLocationGVK {
 		// locations.miloapis.com requires both a class name and a non-empty
 		// topology. A source location carrying neither can still be projected
 		// as the legacy binding, so skip this kind rather than failing.

@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -16,53 +18,36 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-var (
-	// miloLocationGVK is the Location served by milo-os/locations, the home
-	// this catalog reads locations from going forward.
-	miloLocationGVK = schema.GroupVersionKind{
-		Group:   "locations.miloapis.com",
-		Version: "v1alpha1",
-		Kind:    "Location",
-	}
+// errLocationSourceUnavailable reports that the control plane does not serve
+// the configured location source at all. It is a misconfiguration — an
+// operator named a group that is not installed — and is kept distinct from a
+// location that is merely absent, which is an ordinary closed gate.
+var errLocationSourceUnavailable = errors.New("configured location source is not served by this control plane")
 
-	// legacyLocationGVK is the network-services operator's Location. It is
-	// still the only Location registered on control planes that have not taken
-	// the locations service yet, including production today.
-	legacyLocationGVK = schema.GroupVersionKind{
-		Group:   "networking.datumapis.com",
-		Version: "v1alpha",
-		Kind:    "Location",
+// getLocation reads the named Location from the configured source. It reports
+// found=false when the source serves no such location, and wraps
+// errLocationSourceUnavailable when the source itself is not served. There is
+// no second attempt against another group: the source is chosen by
+// configuration precisely so that nothing here decides it silently.
+//
+// The read is unstructured, which the controller-runtime client answers
+// straight from the API server rather than through an informer. A group that
+// is not installed therefore costs one failed request rather than a cache that
+// never syncs and takes the manager down with it.
+func getLocation(ctx context.Context, c client.Reader, gvk schema.GroupVersionKind, name string) (*unstructured.Unstructured, bool, error) {
+	loc := &unstructured.Unstructured{}
+	loc.SetGroupVersionKind(gvk)
+	err := c.Get(ctx, types.NamespacedName{Name: name}, loc)
+	switch {
+	case err == nil:
+		return loc, true, nil
+	case apierrors.IsNotFound(err):
+		return nil, false, nil
+	case apimeta.IsNoMatchError(err), runtime.IsNotRegisteredError(err):
+		return nil, false, fmt.Errorf("%w: %s: %w", errLocationSourceUnavailable, gvk.GroupVersion(), err)
+	default:
+		return nil, false, err
 	}
-
-	// locationGVKPreference orders the gate-2 read: the new group answers
-	// wherever it is served, and the old group answers everywhere else. Both
-	// are read as unstructured, which the controller-runtime client serves
-	// straight from the API server rather than from an informer, so naming a
-	// group whose CRD is absent costs a failed request instead of a cache that
-	// never syncs.
-	locationGVKPreference = []schema.GroupVersionKind{miloLocationGVK, legacyLocationGVK}
-)
-
-// getLocation reads the named Location from whichever group serves it,
-// preferring locations.miloapis.com. It reports found=false when no group holds
-// the object, and returns an error only for a read that failed for some other
-// reason: a control plane without the newer CRD answers with a RESTMapper
-// no-match, which is a miss rather than a failure.
-func getLocation(ctx context.Context, c client.Reader, name string) (*unstructured.Unstructured, bool, error) {
-	for _, gvk := range locationGVKPreference {
-		loc := &unstructured.Unstructured{}
-		loc.SetGroupVersionKind(gvk)
-		err := c.Get(ctx, types.NamespacedName{Name: name}, loc)
-		switch {
-		case err == nil:
-			return loc, true, nil
-		case apierrors.IsNotFound(err), apimeta.IsNoMatchError(err), runtime.IsNotRegisteredError(err):
-			continue
-		default:
-			return nil, false, err
-		}
-	}
-	return nil, false, nil
 }
 
 // locationClass reads the class name off a Location of either group.

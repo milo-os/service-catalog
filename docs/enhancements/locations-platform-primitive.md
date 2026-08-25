@@ -28,14 +28,47 @@ author: Scot Wells
 > The three-gate model, the ownership split, and the rest of the reasoning below
 > are unchanged.
 
+## Choosing where locations are read from
+
+`ServicesOperator.locationSource` names the group locations are read from, and
+it is the only group read. It defaults to `networking.datumapis.com/v1alpha`,
+which is what control planes serve today; setting it to
+`locations.miloapis.com/v1alpha1` moves a deployment onto the locations service.
+
+There is deliberately no automatic fallback between the two. During the cutover
+both groups can be installed at once, which is exactly when an implicit
+"new first, old second" ordering would start deciding on its own — and if only
+some locations had migrated it would resolve some from one group and some from
+the other, with nobody having chosen that. Making it configuration also means
+rollback is a config change rather than an undeploy, and that which source a
+deployment is on can be read off rather than inferred from which CRDs happen to
+be installed.
+
+A source the control plane does not serve is a misconfiguration, not a missing
+location. Every affected `ServiceAvailability` reports `Available=Unknown` with
+reason `LocationSourceUnavailable` and a message naming the group, and re-checks
+so it recovers on its own once the group is installed. Projection stops before
+its prune step in that state, so an unreachable source cannot be mistaken for
+"this project has no locations" and tear down projections that already exist.
+
+Which group is *read* is independent of which kinds are *written*: a deployment
+can serve consumers the new `Location` while still sourcing locations from the
+old group.
+
 ## Migration off `LocationBinding`
 
-`LocationBinding` cannot be dropped by this repo alone. Its readers are
-`datum-cloud/network-services-operator` — the `NetworkPresence` controller
-refuses a presence with no binding for its location — and the compute workload
-admission webhook, which resolves valid city codes from the binding list.
-Removing the kind before those move would break `NetworkPresence` and every
-location-scoped deploy.
+`LocationBinding` cannot be dropped by this repo alone. Four readers outside it
+still depend on the kind:
+
+| Repo | Reader | Effect of removing the kind |
+|---|---|---|
+| `datum-cloud/network-services-operator` | `internal/controller/networkpresence_controller.go` | A presence with no binding for its location is refused |
+| `datum-cloud/network-services-operator` | `test/e2e/network-presence-ready/chainsaw-test.yaml` | Applies a `LocationBinding` directly; the suite fails |
+| `datum-cloud/compute` | `internal/webhook/v1alpha/workload_webhook.go` | Admission webhook: workload creation is **rejected**, not degraded |
+| `datum-cloud/compute` | `internal/controller/workload_controller.go` | Workload reconciliation cannot resolve city codes |
+
+The compute webhook is the sharp one: it fails closed, so removing the kind
+rejects workload creation outright rather than degrading quietly.
 
 So both objects are written to entitled projects, carrying the same gate verdict
 in the same `Available` condition. Consumers move to `Location` at their own
