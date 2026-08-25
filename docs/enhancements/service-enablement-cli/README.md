@@ -75,7 +75,7 @@ storage    Pending approval   requested 2h ago
 ```
 $ datumctl services enable compute
 Compute is not enabled for project "datum-cloud".
-Requesting access sends an enablement request to the service provider for approval.
+Enabling it needs approval from the team that provides compute.
 Would you like to request access? [y/N]: y
 Requesting access to compute for project "datum-cloud"...
 ⠋ Waiting for the platform to process the request... (4s)
@@ -83,7 +83,7 @@ Requesting access to compute for project "datum-cloud"...
 Your request to enable compute for project "datum-cloud" has been submitted.
 
   Status:  Pending approval — Waiting for the service provider to approve this request.
-           Approval is a manual step by the service provider and may take a while.
+           Someone reviews this by hand, so it can take a while.
 
 Check progress with:   datumctl services status compute
 Wait for activation:   datumctl services enable compute --wait

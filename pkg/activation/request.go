@@ -188,7 +188,7 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		timeout = defaultApprovalTimeout
 	}
 	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Service.noun(), r.Project)
-	_, _ = fmt.Fprintf(r.IO.Err, "Approval is a manual step by the service provider with no time bound; press Ctrl-C to stop waiting.\n")
+	_, _ = fmt.Fprintf(r.IO.Err, "Someone reviews this by hand, so there is no set time; press Ctrl-C to stop waiting.\n")
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -198,7 +198,7 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		ent      *servicesv1alpha1.ServiceEntitlement
 		timedOut bool
 	)
-	err := r.IO.progress(waitCtx, r.IO.IsInputTTY(), "Waiting for provider approval...", func(c context.Context) error {
+	err := r.IO.progress(waitCtx, r.IO.IsInputTTY(), "Waiting for approval...", func(c context.Context) error {
 		var werr error
 		state, ent, timedOut, werr = waitUntilResolved(c, r.Client, r.Service.ObjectName)
 		return werr
@@ -207,7 +207,7 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		return reportGeneric(r.IO, err, "waiting for %s access: %v", r.Service.noun(), err)
 	}
 	if timedOut {
-		_, _ = fmt.Fprintf(r.IO.Err, "\nStill awaiting provider approval after %s. Safe to re-run.\n", timeout)
+		_, _ = fmt.Fprintf(r.IO.Err, "\nStill waiting for approval after %s. Safe to re-run.\n", timeout)
 		_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Service.pendingNextSteps())
 		return newError(ExitPending, StatePendingApproval, "timed out while pending", nil)
 	}
@@ -249,9 +249,9 @@ func (r Requester) printSubmitted(state State, e *servicesv1alpha1.ServiceEntitl
 	_, _ = fmt.Fprintf(r.IO.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", r.Service.noun(), r.Project)
 	if state == StatePendingApproval {
 		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
-		_, _ = fmt.Fprintf(r.IO.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
+		_, _ = fmt.Fprintf(r.IO.Err, "           Someone reviews this by hand, so it can take a while.\n\n")
 	} else {
-		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n\n")
+		_, _ = fmt.Fprintf(r.IO.Err, "  Status:  Processing — still being set up.\n\n")
 	}
 	_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Service.pendingNextSteps())
 }

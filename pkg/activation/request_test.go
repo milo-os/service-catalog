@@ -68,7 +68,7 @@ func TestRequestWaitTimesOutWhilePending(t *testing.T) {
 
 	err := requesterWith(ec, io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 20 * time.Millisecond})
 	wantExit(t, err, ExitPending, StatePendingApproval)
-	if !strings.Contains(errb.String(), "Still awaiting provider approval") {
+	if !strings.Contains(errb.String(), "Still waiting for approval") {
 		t.Fatalf("missing timeout copy:\n%s", errb.String())
 	}
 }

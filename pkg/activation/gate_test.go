@@ -69,7 +69,7 @@ func TestGateInteractiveSubmitLandsPending(t *testing.T) {
 		t.Fatalf("expected exactly 1 create, got %d", got)
 	}
 	out := errb.String()
-	if !strings.Contains(out, "sends an enablement request to the service provider for approval") {
+	if !strings.Contains(out, "needs approval from the team that provides compute") {
 		t.Fatalf("gated service must promise provider approval in the prompt:\n%s", out)
 	}
 	if !strings.Contains(out, "has been submitted") {
@@ -177,7 +177,7 @@ func TestGateCreateAdmissionRejectionMapsToUnavailable(t *testing.T) {
 
 	err := gateWith(t, ec, io).Run(context.Background())
 	wantExit(t, err, ExitUnavailable, StateUnavailable)
-	if !strings.Contains(errb.String(), "not available on this platform environment") {
+	if !strings.Contains(errb.String(), "is not available here") {
 		t.Fatalf("missing unavailable copy:\n%s", errb.String())
 	}
 }
@@ -195,7 +195,7 @@ func TestGatePendingReentryIsInstant(t *testing.T) {
 	if got := countVerb(cs, "create"); got != 0 {
 		t.Fatalf("pending re-entry must not create")
 	}
-	if !strings.Contains(errb.String(), "awaiting provider approval") {
+	if !strings.Contains(errb.String(), "is waiting for approval") {
 		t.Fatalf("missing pending re-entry copy:\n%s", errb.String())
 	}
 }
@@ -221,7 +221,7 @@ func TestGateCatalogUnavailable(t *testing.T) {
 	if got := countVerb(cs, "create"); got != 0 {
 		t.Fatalf("catalog-absent must never create")
 	}
-	if !strings.Contains(errb.String(), "not available on this platform environment") {
+	if !strings.Contains(errb.String(), "is not available here") {
 		t.Fatalf("missing unavailable copy:\n%s", errb.String())
 	}
 }

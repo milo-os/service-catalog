@@ -81,7 +81,7 @@ func (g Gate) handleNotRequested(ctx context.Context) error {
 	}
 
 	_, _ = fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Service.DisplayName, g.Project)
-	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
+	_, _ = fmt.Fprintf(g.IO.Err, "Enabling it needs approval from the team that provides %s.\n", g.Service.noun())
 	ok, err := g.IO.promptYesNo("Would you like to request access?")
 	if err != nil {
 		return reportGeneric(g.IO, err, "reading prompt response: %v", err)
