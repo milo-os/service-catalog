@@ -59,19 +59,29 @@ func (g Gate) handle(ctx context.Context, state State, e *servicesv1alpha1.Servi
 	}
 }
 
-// handleNotRequested prompts and submits on a TTY; otherwise reports without
-// mutating.
+// handleNotRequested enables a self-service service outright; for a
+// provider-gated one it prompts and submits on a TTY, and otherwise reports
+// without mutating.
+//
+// The split is the enablement mode, not the caller. A self-service request
+// cannot be refused — it enables the service there and then — so a confirmation
+// only stands between the user and the command they already ran, and refusing
+// it without a TTY makes every self-service command unusable from CI. A
+// provider-gated request is worth confirming, because it goes to a human and
+// can sit unapproved.
 func (g Gate) handleNotRequested(ctx context.Context) error {
+	// An unset mode reads as self-service, which is the API's default for
+	// spec.enablementPolicy and what NewServiceInfo already fills in.
+	if g.Service.EnablementMode != servicesv1alpha1.EnablementModeGatedByProvider {
+		return g.submitAndWait(ctx, "")
+	}
+
 	if !g.IO.IsInputTTY() {
 		return reportNotEnabledNonInteractive(g.IO, g.Service, g.Project)
 	}
 
 	_, _ = fmt.Fprintf(g.IO.Err, "%s is not enabled for project %q.\n", g.Service.DisplayName, g.Project)
-	if g.Service.EnablementMode == servicesv1alpha1.EnablementModeGatedByProvider {
-		_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
-	} else {
-		_, _ = fmt.Fprintf(g.IO.Err, "Requesting access will enable %s for this project immediately.\n", g.Service.noun())
-	}
+	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access sends an enablement request to the service provider for approval.\n")
 	ok, err := g.IO.promptYesNo("Would you like to request access?")
 	if err != nil {
 		return reportGeneric(g.IO, err, "reading prompt response: %v", err)
@@ -114,7 +124,13 @@ func (g Gate) handleProcessing(ctx context.Context, e *servicesv1alpha1.ServiceE
 // with visible progress, and branches on the result. On Active it prints the
 // enabled line and returns nil so the original command runs.
 func (g Gate) submitAndWait(ctx context.Context, message string) error {
-	_, _ = fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Service.noun(), g.Project)
+	// Enabling a service on someone's project is a side effect they should see
+	// happen, especially when nothing asked them first.
+	if g.Service.EnablementMode == servicesv1alpha1.EnablementModeGatedByProvider {
+		_, _ = fmt.Fprintf(g.IO.Err, "Requesting access to %s for project %q...\n", g.Service.noun(), g.Project)
+	} else {
+		_, _ = fmt.Fprintf(g.IO.Err, "Enabling %s for project %q...\n", g.Service.noun(), g.Project)
+	}
 
 	created, unavailable, cerr := createEntitlement(ctx, g.Client, g.Service, message)
 	if cerr != nil {

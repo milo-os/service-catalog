@@ -101,7 +101,7 @@ Status:   Pending approval (requested 2h ago)
 
 #### Story 3: A first-time user auto-enrolls from a plugin's own command
 
-Nobody wants to be told to go run a different command before they can do the thing they came to do. So `datumctl compute instances` — compute's own command, not the `services` tree — checks enablement first and, on a TTY, walks through the same request shown in Story 2 automatically, then continues into the command the user actually asked for:
+Nobody wants to be told to go run a different command before they can do the thing they came to do. So `datumctl compute instances` — compute's own command, not the `services` tree — checks enablement first, enables the service, and continues into the command the user actually asked for:
 
 ```
 $ datumctl compute instances
@@ -113,7 +113,12 @@ NAME       STATUS    CREATED
 web-01     Running   3d ago
 ```
 
-If the request resolves right away — a self-service service, or a provider that had already pre-approved the project — the instance list prints immediately after, in the same command. For a service still awaiting approval, or a non-interactive/scripted invocation, it doesn't prompt or block: it reports the state plainly and exits with the same documented code `datumctl services status` would show.
+Whether it asks first is decided by the service's enablement mode, not by whether a terminal happens to be attached:
+
+- **Self-service.** The request cannot be refused — it enables the service there and then — so there is nothing to confirm. It is enabled without a prompt, on a TTY or not, and the command carries on. Enabling is announced on stderr so it is never silent.
+- **Gated by provider.** The request goes to a human and can sit unapproved, so it is worth confirming. On a TTY it walks through the same request shown in Story 2. Without one it neither prompts nor blocks: it reports the state plainly and exits with the same documented code `datumctl services status` would show.
+
+Keying on the mode rather than the terminal is what makes a self-service command usable from CI, where there is nobody to answer a prompt and refusing is the only other option.
 
 ### Notes/Constraints/Caveats
 
@@ -124,7 +129,7 @@ If the request resolves right away — a self-service service, or a provider tha
 ### Risks and Mitigations
 
 - **Risk:** this repo's user-facing copy drifts from what a specific host CLI's users expect, since it's no longer each CLI's own to adjust freely. **Mitigation:** the first adopter (`datumctl`) reviews this copy as part of adopting it, the same as it would for any other command it ships; copy changes land here, visible to every adopter at once, rather than diverging per plugin.
-- **Risk:** auto-enrollment (Story 3) makes enabling a service — which, per [Service Enablement](../service-enablement.md), triggers real billing and quota provisioning — as easy as answering "y" to a prompt that was really about something else the consumer was trying to do. **Mitigation:** the prompt names the service being enabled and requires an explicit yes; it never enrolls without that confirmation, and never prompts at all outside an interactive terminal.
+- **Risk:** auto-enrollment (Story 3) makes enabling a service — which, per [Service Enablement](../service-enablement.md), triggers real billing and quota provisioning — a side effect of a command the consumer ran for another reason. For a self-service service there is no confirmation at all. **Mitigation:** the confirmation was never much of a control here, because the consumer can enable the same service unilaterally with one command; withholding it only meant the consumer typed that command themselves. What the mitigation rests on instead is that enabling is always announced, naming the service and the project, so it is visible rather than silent; that it is idempotent, so it happens once per project rather than once per command; and that a service whose enablement genuinely needs a gate is marked `GatedByProvider`, which still requires an explicit yes and never enrolls without one. A provider that wants enablement to be a deliberate act has a supported way to say so, rather than relying on every CLI to prompt.
 
 ## Design Details
 
