@@ -230,8 +230,9 @@ tasks:
         task test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
         task test-infra:kubectl -- wait kustomization/billing-crds -n flux-system --for=condition=ready --timeout=120s
 
-        echo "Installing LocationBinding CRD..."
+        echo "Installing Location projection CRDs..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
+        task test-infra:kubectl -- apply -f config/overlays/e2e/location-crd.yaml
 
         echo "Installing resourcemanager CRDs..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml

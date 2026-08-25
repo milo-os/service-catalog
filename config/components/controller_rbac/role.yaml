@@ -40,6 +40,26 @@ rules:
   - update
   - watch
 - apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - locations.miloapis.com
+  resources:
+  - locations/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - networking.datumapis.com
   resources:
   - locationbindings

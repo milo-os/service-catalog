@@ -3,11 +3,44 @@ id: locations-platform-primitive
 title: Locations as Platform Primitives for Service Consumers
 status: draft
 created: 2026-05-26
-updated: 2026-05-27
+updated: 2026-08-25
 author: Scot Wells
 ---
 
 # Locations as Platform Primitives for Service Consumers
+
+> **Superseded in part.** `Location` now lives in
+> [`milo-os/locations`](https://github.com/milo-os/locations) as
+> `locations.miloapis.com/v1alpha1`, alongside `LocationClass` and
+> `ServingLocation`. Two things below no longer hold:
+>
+> - **There is no `LocationBinding` in the new API.** The consumer-facing object
+>   is a `Location` projected into the consumer's control plane — same kind as
+>   the platform declares, so consumers read one type wherever they look. This
+>   catalog projects both objects for now and stops writing `LocationBinding`
+>   once its remaining readers move; see the migration note below.
+> - **A location's class is an open reference, not a closed enum.**
+>   `spec.locationClassRef` names a `LocationClass` object, and that class,
+>   rather than a `provider` block on the Location, carries the provider
+>   configuration. `ServiceConfiguration.spec.locations.supportedClasses`
+>   accordingly holds class names rather than a fixed set of values.
+>
+> The three-gate model, the ownership split, and the rest of the reasoning below
+> are unchanged.
+
+## Migration off `LocationBinding`
+
+`LocationBinding` cannot be dropped by this repo alone. Its readers are
+`datum-cloud/network-services-operator` — the `NetworkPresence` controller
+refuses a presence with no binding for its location — and the compute workload
+admission webhook, which resolves valid city codes from the binding list.
+Removing the kind before those move would break `NetworkPresence` and every
+location-scoped deploy.
+
+So both objects are written to entitled projects, carrying the same gate verdict
+in the same `Available` condition. Consumers move to `Location` at their own
+pace. `LocationBinding` is removed here only once no reader is left, in a
+separate change.
 
 ## Overview
 

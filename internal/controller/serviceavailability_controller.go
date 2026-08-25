@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -43,18 +42,6 @@ const (
 	// reasonServiceNotPublished ("ServiceNotPublished") is shared with the
 	// ServiceEntitlement reconciler; it is declared there.
 )
-
-// locationGVK is the GroupVersionKind the reconciler reads to evaluate gate
-// 2 (Location.status.conditions[Ready]). Location is owned by the
-// network-services operator and lives in networking.datumapis.com; reading
-// it as an unstructured object keeps ServiceAvailability free of a
-// compile-time dependency on that Go module, matching the deliberate choice
-// in the LocationRef type definition.
-var locationGVK = schema.GroupVersionKind{
-	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
-	Kind:    "Location",
-}
 
 // ServiceAvailabilityReconciler reconciles a ServiceAvailability object. It
 // owns the Available condition (gate 3): True only when spec.serviceRef
@@ -147,22 +134,20 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 			fmt.Sprintf("Service %q is not yet published, so it isn't available here.", svc.Name)), nil
 	}
 
-	// Gate 2: the referenced Location must exist and be Ready.
-	loc := &unstructured.Unstructured{}
-	loc.SetGroupVersionKind(locationGVK)
-	locKey := types.NamespacedName{
-		Name: sa.Spec.LocationRef.Name,
-	}
-	if err := r.client.Get(ctx, locKey, loc); err != nil {
-		if apierrors.IsNotFound(err) {
-			return deny(cond, reasonLocationNotFound,
-				fmt.Sprintf("Location %q was not found.", locKey.Name)), nil
-		}
+	// Gate 2: the referenced Location must exist and be Ready, in either the
+	// locations service or the group it is moving off.
+	locName := sa.Spec.LocationRef.Name
+	loc, found, err := getLocation(ctx, r.client, locName)
+	if err != nil {
 		return cond, fmt.Errorf("failed to load referenced Location: %w", err)
+	}
+	if !found {
+		return deny(cond, reasonLocationNotFound,
+			fmt.Sprintf("Location %q was not found.", locName)), nil
 	}
 	if !locationReady(loc) {
 		return deny(cond, reasonLocationNotReady,
-			fmt.Sprintf("Service isn't available here yet because the %q location isn't ready.", locKey.Name)), nil
+			fmt.Sprintf("Service isn't available here yet because the %q location isn't ready.", locName)), nil
 	}
 
 	// All gates open.

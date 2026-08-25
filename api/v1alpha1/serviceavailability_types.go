@@ -6,16 +6,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// LocationClassName is the operational class of a Location. It is a typed
-// enum rather than a free-form string so that service providers can
-// reliably reference classes in ServiceConfiguration.spec.locations and so
-// that controllers and IAM constraints can branch on a closed set.
+// LocationClassName is the name of a LocationClass a Location can be backed
+// by. It is the name of a real object, chosen by whoever owns the capacity
+// behind that class, so this API cannot enumerate the set in advance.
 //
-//	datum-managed       -> shared PoP operated by the Datum platform team
-//	provider-dedicated  -> infrastructure a provider dedicates to a consumer
-//	self-managed        -> consumer-registered on-premises site
+// The names below are the classes the platform has published so far and are
+// kept as constants for callers that reference them directly. Naming a class
+// that does not exist is allowed: nothing is projected for it until a Location
+// of that class shows up.
 //
-// +kubebuilder:validation:Enum=datum-managed;provider-dedicated;self-managed
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=253
 type LocationClassName string
 
 const (
@@ -37,9 +38,9 @@ const (
 // that new PoPs of a supported class become available to entitled projects
 // without requiring a new ServiceConfiguration version.
 type ServiceLocationConfig struct {
-	// SupportedClasses is the set of location classes this service version
-	// runs on. The LocationBindingReconciler projects a Location into an
-	// entitled project only when the Location's class appears here.
+	// SupportedClasses is the set of location class names this service version
+	// runs on. A Location is projected into an entitled project only when the
+	// name of the LocationClass backing it appears here.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
@@ -49,9 +50,10 @@ type ServiceLocationConfig struct {
 }
 
 // LocationRef is a reference to a platform Location resource (cluster-scoped).
-// Location lives in a separate API group (networking.datumapis.com today);
-// this reference only constrains the shape so ServiceAvailability does not
-// take a compile-time dependency on the Location Go type.
+// Location lives in a separate API group; this reference only constrains the
+// shape so ServiceAvailability does not take a compile-time dependency on the
+// Location Go type. The name is resolved against locations.miloapis.com first
+// and networking.datumapis.com second.
 type LocationRef struct {
 	// Name is the metadata.name of the referenced Location.
 	//

@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -26,14 +27,24 @@ const (
 	saLocName     = "us-central1-a"
 )
 
-// availabilityScheme registers the services types plus the foreign Location
-// GVK as unstructured so the fake client can serve gate-2 reads.
+// availabilityScheme registers the services types plus both foreign Location
+// GVKs as unstructured so the fake client can serve gate-2 reads from either
+// group.
 func availabilityScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
-	s.AddKnownTypeWithName(locationGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(locationGVK.GroupVersion().WithKind("LocationList"), &unstructured.UnstructuredList{})
+	registerLocationGVKs(s)
 	return s
+}
+
+// registerLocationGVKs teaches a scheme both Location groups the gate-2 read
+// walks. Registering both is what lets a fake client answer NotFound for the
+// preferred group instead of failing the read outright.
+func registerLocationGVKs(s *runtime.Scheme) {
+	for _, gvk := range locationGVKPreference {
+		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
 }
 
 func newAvailabilityClient(objs ...client.Object) client.Client {
@@ -64,13 +75,25 @@ func newServiceInPhase(name string, phase servicesv1alpha1.Phase) *servicesv1alp
 	}
 }
 
+// newLocation builds a networking.datumapis.com Location — the group the
+// catalog is moving off, and the only one production serves today.
 func newLocation(name string, ready bool) *unstructured.Unstructured {
+	return newLocationOfGVK(legacyLocationGVK, name, ready)
+}
+
+// newMiloLocation builds a locations.miloapis.com Location, the group the
+// gate-2 read prefers.
+func newMiloLocation(name string, ready bool) *unstructured.Unstructured {
+	return newLocationOfGVK(miloLocationGVK, name, ready)
+}
+
+func newLocationOfGVK(gvk schema.GroupVersionKind, name string, ready bool) *unstructured.Unstructured {
 	status := string(metav1.ConditionFalse)
 	if ready {
 		status = string(metav1.ConditionTrue)
 	}
 	loc := &unstructured.Unstructured{}
-	loc.SetGroupVersionKind(locationGVK)
+	loc.SetGroupVersionKind(gvk)
 	loc.SetName(name)
 	_ = unstructured.SetNestedSlice(loc.Object, []any{
 		map[string]any{"type": "Ready", "status": status},
@@ -216,4 +239,29 @@ func TestServiceAvailabilityReconciler_TransientErrorRequeues(t *testing.T) {
 	if cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeAvailable); cond != nil {
 		t.Errorf("Available condition was written despite a transient error: %+v", cond)
 	}
+}
+
+// Gate 2 resolves against the locations service where it serves the location.
+func TestServiceAvailabilityReconciler_LocationFromLocationsService(t *testing.T) {
+	c := newAvailabilityClient(
+		newAvailability(),
+		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
+		newMiloLocation(saLocName, true),
+	)
+	got := reconcileAvailability(t, c)
+	assertAvailable(t, got, metav1.ConditionTrue, reasonServiceOperational)
+}
+
+// Where both groups serve a location of the same name, the locations service
+// wins, so a location it reports as not ready closes gate 2 even if the older
+// group still claims otherwise.
+func TestServiceAvailabilityReconciler_PrefersLocationsService(t *testing.T) {
+	c := newAvailabilityClient(
+		newAvailability(),
+		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
+		newMiloLocation(saLocName, false),
+		newLocation(saLocName, true),
+	)
+	got := reconcileAvailability(t, c)
+	assertAvailable(t, got, metav1.ConditionFalse, reasonLocationNotReady)
 }

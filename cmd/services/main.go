@@ -295,15 +295,18 @@ func main() {
 			ServiceNames: csp.ServiceNames,
 			// Engaged consumer clusters must use our scheme; without it their
 			// cache falls back to the client-go global scheme and every
-			// consumer-side LocationBinding / ServiceEntitlement watch fails
+			// consumer-side projection / ServiceEntitlement watch fails
 			// with "kind must be registered to the Scheme".
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) { o.Scheme = scheme },
 			},
-			// LocationBinding is the only type the catalog projects into
-			// consumer projects; it is deleted (label-scoped) on deactivation.
+			// The types the catalog projects into consumer projects; each is
+			// deleted (label-scoped) on deactivation. Location is the object
+			// consumers read going forward; LocationBinding is still written
+			// for the network-services operator until it moves off.
 			// Note: networking.datumapis.com uses version v1alpha (not v1alpha1).
 			ManagedResources: []schema.GroupVersionKind{
+				{Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location"},
 				{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding"},
 			},
 		}
