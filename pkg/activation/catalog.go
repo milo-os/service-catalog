@@ -78,3 +78,39 @@ func (c ServiceInfo) enableCommand() string { return "datumctl services enable "
 
 // statusCommand is the copy-pasteable command that checks current status.
 func (c ServiceInfo) statusCommand() string { return "datumctl services status " + c.CanonicalName }
+
+// FindService resolves a service by name from a catalog listing, matching the
+// canonical name first and falling back to the object name — the same
+// preference order SelectEntitlement uses when matching an entitlement to a
+// service, so a name that resolves against one also resolves against the other.
+//
+// Only Published services are considered, matching the filter JoinCatalog
+// applies for a catalog listing: that keeps the name spaces identical, so a
+// not-found error can always point at `datumctl services list` as the
+// authoritative source of valid names.
+//
+// It is exported because every caller running a Gate needs a ServiceInfo, and
+// the only honest way to build one is from a live Service. Without this, each
+// adopter re-implements the matching rule this package exists to own.
+func FindService(services *servicesv1alpha1.ServiceList, name string) (ServiceInfo, error) {
+	if services != nil {
+		var fallback *ServiceInfo
+		for i := range services.Items {
+			svc := &services.Items[i]
+			if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
+				continue
+			}
+			info := NewServiceInfo(svc)
+			if info.CanonicalName == name {
+				return info, nil
+			}
+			if fallback == nil && info.ObjectName == name {
+				fallback = &info
+			}
+		}
+		if fallback != nil {
+			return *fallback, nil
+		}
+	}
+	return ServiceInfo{}, fmt.Errorf("service %q not found; run `datumctl services list` to see available services", name)
+}
