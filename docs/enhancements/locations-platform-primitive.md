@@ -3,7 +3,7 @@ id: locations-platform-primitive
 title: Locations as Platform Primitives for Service Consumers
 status: draft
 created: 2026-05-26
-updated: 2026-05-27
+updated: 2026-08-24
 author: Scot Wells
 ---
 
@@ -21,6 +21,15 @@ to move it out. This design specifies where it moves, what triggers location vis
 in a project, and how location-scoped quota dimensions bind to that resource model. It
 also covers how consumer-owned or provider-dedicated locations fit into the same resource
 type without requiring a separate discovery surface.
+
+A design review on 2026-08-24 settled five questions this document had left open or had
+answered differently. The API group moves to `locations.miloapis.com/v1alpha1` in a new
+service, `LocationClass` becomes a real resource that owns provider configuration,
+operational responsibility becomes its own field on `Location`, `LocationBinding` is
+dropped as a kind in favour of a projected `Location`, and distribution reuses the
+`SelfService` / `GatedByProvider` vocabulary the service catalog already has. Read
+[Design Review Outcomes](#design-review-outcomes-2026-08-24) first: where the sections
+below disagree with it, it wins, and each of those sections carries a pointer back to it.
 
 ---
 
@@ -58,8 +67,249 @@ type without requiring a separate discovery surface.
 - NFR3: Consumer-owned and platform-managed locations must be discoverable through the
   same resource type and API endpoint. Two separate discovery surfaces (as in Azure's
   `customLocations` vs Regions model) must be avoided.
-- NFR4: The type change from `networking.datumapis.com` to the target group must be
-  achievable without a flag-day migration of all consumers simultaneously.
+- NFR4: The type must move from `networking.datumapis.com/v1alpha` to
+  `locations.miloapis.com/v1alpha1`, served by the new `github.com/milo-os/locations`
+  service, without a flag-day migration of all consumers simultaneously. The 2026-08-24
+  review settled the target group; see
+  [Design Review Outcomes](#design-review-outcomes-2026-08-24). This supersedes the
+  earlier `resourcemanager.miloapis.com` target and the "stay in
+  `networking.datumapis.com` for now" guidance below.
+- NFR5: The core `Location` type must not name a cloud vendor in its schema. Provider
+  configuration belongs to a provider-owned parameters resource that the location's class
+  references, so that adding a provider is a new CRD in that provider's repository rather
+  than a new field in the platform primitive.
+
+---
+
+## Design Review Outcomes (2026-08-24)
+
+Five decisions from the design review. They are settled. Each records what it costs, and
+each names the part of this document it replaces. Everything the review did not touch
+stands as written, including the single-type recommendation (Decision 1), the class
+selector model (Decision 3), the city-code API (Decision 4), the quota dimension
+(Decision 5), and the three-gate model.
+
+### D10: The API group is `locations.miloapis.com/v1alpha1`
+
+`Location` and `LocationClass` move to `locations.miloapis.com/v1alpha1`, served by a new
+service, `github.com/milo-os/locations`. This supersedes two things in this document: the
+recommendation to stay in `networking.datumapis.com` and move only the Go definition, and
+Decision 9's target of `resourcemanager.miloapis.com`.
+
+Decision 9 argued that a location is a resource management primitive. The review agrees
+with the diagnosis and rejects the destination. `resourcemanager.miloapis.com` is the
+group that owns the project and organization hierarchy, and locations are not part of
+that hierarchy. Folding them in makes the resource manager the home for anything that
+does not fit elsewhere. A location has its own producers, its own lifecycle, and its own
+controllers, so it gets its own group and its own service, the same way the service
+catalog did.
+
+The coordination cost is real and falls on `LocationBindingReconciler`, which is live.
+That reconciler reads `Location` and writes `LocationBinding` as unstructured objects
+against hard-coded `GroupVersionKind` constants, precisely because the typed Go types were
+not available. That choice pays off here: moving the group is a change to those constants,
+the `+kubebuilder:rbac` markers, and the set of CRDs installed into project control
+planes. It is not a type migration. What it does cost is a period of dual reading during
+the move, and the reconciler's only cross-plane trigger is a five-minute resync, so
+expect up to five minutes of skew between the old and new objects while both are being
+written. Nothing in the reconcile path breaks on that skew, because every write is an
+idempotent upsert.
+
+### D11: `LocationClass` is a resource, and provider configuration moves onto it
+
+`locationClassName` stops being a free-form string validated by an enum and becomes a
+reference to a real `LocationClass` resource. The class encodes capacity and provider
+together: what kind of capacity this is and who supplies it. It carries two fields:
+
+- `spec.controllerName`, naming the controller responsible for locations of this class.
+  This follows `ConnectorClass.spec.controllerName` in network-services-operator and
+  `GatewayClass.spec.controllerName` in Gateway API.
+- `spec.parametersRef` (`{group, kind, name}`), pointing at a provider-owned parameters
+  resource, GatewayClass-style.
+
+`LocationSpec.Provider` and `GCPLocationProvider` are deleted from the core type. The GCP
+`projectId`, `region`, and `zone` fields move into a parameters CRD owned by
+`infra-provider-gcp`, referenced through `spec.parametersRef`.
+
+The rationale is NFR5. A locations primitive should not encode a vendor type in its CRD
+schema. `LocationProvider` with a `gcp` member means every new provider is a schema change
+to the platform primitive, reviewed by the platform team, versioned with the platform
+API, and installed everywhere even where it is meaningless. Behind a `parametersRef` a
+provider ships its own CRD in its own repository on its own cadence.
+
+The cost is one extra read on the reconcile path and one more object to keep alive.
+Validation of the parameters resource is no longer the core CRD's job, which is why D11
+comes with the `Accepted` condition recommendation in Q8 below.
+
+```yaml
+apiVersion: locations.miloapis.com/v1alpha1
+kind: LocationClass
+metadata:
+  name: datum-gcp
+spec:
+  controllerName: infra-provider-gcp.datumapis.com/location-controller
+  parametersRef:
+    group: gcp.infra.datumapis.com
+    kind: GCPLocationParameters
+    name: datum-gcp-prod
+```
+
+### D12: Operational responsibility is its own field
+
+`Location` gains `spec.operatedBy`, an enum with two values:
+
+| `spec.operatedBy` | Meaning |
+|-------------------|---------|
+| `Platform` | The platform operates the control plane and the lifecycle of this location |
+| `Consumer` | The consumer operates it; the platform records it and schedules to it |
+
+Today `datum-managed` and `self-managed` describe who runs the control plane, while the
+`provider` block on the same object describes who supplies the capacity. Those are
+orthogonal, and fusing them into one class name produces a cross-product that has to be
+enumerated by hand. A consumer-operated location whose capacity happens to sit in GCP is
+expressible in the world and not expressible in the enum, and the moment a second provider
+appears the enum needs `self-managed-gcp`, `self-managed-bare-metal`, and so on. Splitting
+the axes means `LocationClass` answers "what capacity, from whom" and `operatedBy`
+answers "who runs it", and neither has to enumerate the other.
+
+`provider-dedicated` does not survive as a class value, and it does not become an
+`operatedBy` value either, because it was never describing either axis. It described
+exclusivity: who is allowed to use this location. That axis already has a field.
+`ownerProjectRef` set means the location is dedicated to that project; absent means it is
+shared. So the three existing values decompose:
+
+| Today's `locationClassName` | `spec.classRef` | `spec.operatedBy` | `spec.ownerProjectRef` |
+|-----------------------------|-----------------|-------------------|------------------------|
+| `datum-managed` | a Datum-operated class, e.g. `datum-gcp` | `Platform` | unset |
+| `provider-dedicated` | the provider's class | `Platform` | set |
+| `self-managed` | the consumer's class, e.g. `self-managed-bare-metal` | `Consumer` | set |
+
+This replaces the `locationClassName` Values table below and the
+`LocationClassName` enum in `api/v1alpha1/serviceavailability_types.go`.
+`ServiceConfiguration.spec.locations.supportedClasses` keeps its shape and its meaning
+from Decision 3; its members become `LocationClass` names rather than enum members, which
+is what makes the class name public API surface (Q13).
+
+### D13: `LocationBinding` is dropped as a kind
+
+The consumer-facing object is a `Location`, same group, same kind, projected into the
+consumer's project control plane. There is no second type. Four reasons:
+
+1. **The name misreads in this API surface.** `NetworkBinding.spec.location` in
+   network-services-operator establishes that `XBinding` here means "X is bound to a
+   location". `LocationBinding` therefore reads as "a location bound to a location".
+2. **It is a replica, not a relationship.** The Kubernetes convention for `Binding` is an
+   object that associates A with B: the core `Binding` object binds a Pod to a Node.
+   `LocationBinding` associates nothing. It is a filtered copy of one `Location` with a
+   condition on it.
+3. **It repeats NFR3 one layer down.** NFR3 rejects separate resource types for
+   consumer-owned and platform-managed locations, and Decision 1 grounds that rejection in
+   Azure's `customLocations`. A distinct `LocationBinding` kind makes the same mistake
+   against a different axis: the consumer's view of a location and the platform's view of
+   the same location become two types with two schemas and two client code paths.
+4. **The redaction argument is gone.** The stated justification for a reduced projection
+   type was that provider-internal fields such as the GCP project ID and zone must not
+   reach consumers. D11 removes those fields from `Location` entirely. There is nothing
+   left on the object to withhold, so the projection can be the same kind.
+
+The organizational precedent is `ProvisioningReconciler`, which applies producer-declared
+objects into consumer control planes verbatim: same kind, same name, no projection type.
+`LocationBindingReconciler` already keeps `metadata.name` equal to the `Location` name, so
+the projected object is the same object under the same name in a different plane.
+
+Everything that made `LocationBinding` work keeps working, because none of it depended on
+the kind. The `Available` condition, the three gates, the controller owner reference to
+the `ServiceEntitlement`, the label-scoped prune, and the five-minute resync are all
+unchanged. The `spec.topology` map the compute workload webhook reads for city codes is
+already mirrored verbatim from the `Location`, so after this change it is not mirrored at
+all, it is simply present.
+
+The projected `Location` is distinguishable from a platform `Location` by which control
+plane it is in, and by the labels the reconciler already writes
+(`services.miloapis.com/service-name`, and the managed-by label). It carries the same
+`Available` condition, so a consumer still gets one list and one condition to read.
+
+#### Migration from today's `LocationBinding` objects
+
+The objects `LocationBindingReconciler` writes today are
+`networking.datumapis.com/v1alpha` `LocationBinding` resources, cluster-scoped in project
+control planes, owned by a `ServiceEntitlement`. Migrate in four steps, with no flag day:
+
+1. **Install.** `milo-os/locations` publishes the `locations.miloapis.com/v1alpha1`
+   `Location` and `LocationClass` CRDs, and the `Location` CRD is installed into project
+   control planes alongside the existing `LocationBinding` CRD. Nothing reads the new
+   objects yet.
+2. **Dual-write.** `LocationBindingReconciler` writes both: the existing
+   `LocationBinding` and a projected `Location` under the same name, same labels, same
+   owner reference, same `Available` condition. Both are upserts against the same desired
+   set, so the two stay consistent by construction, bounded by the five-minute resync.
+   `cleanupBindings` gains the new kind and prunes both under the same owner and label
+   scope.
+3. **Move readers.** The compute workload webhook's city-code resolution, `datumctl
+   compute locations list`, and the `NetworkBinding` path that reports
+   `LocationNotAvailable` switch to listing projected `Location` objects. Each can move
+   independently; during this step a reader on either kind sees the same answer. NSO's
+   `NetworkBindingReasonLocationNotAvailable` reason string does not need to change, since
+   it names a condition, not a kind.
+4. **Stop and sweep.** The reconciler stops writing `LocationBinding`. Existing objects
+   are removed by the prune that already exists: they carry a controller owner reference
+   to the `ServiceEntitlement` and the managed-by label the prune selects on, so removing
+   them from the desired set deletes them. Then uninstall the `LocationBinding` CRD from
+   project control planes. `cleanupBindings` already returns cleanly on
+   `apimeta.IsNoMatchError`, so a project whose CRD is gone before the sweep finishes does
+   not error.
+
+Nothing in this path requires a consumer to act at a particular moment, which satisfies
+NFR4.
+
+### D14: Distribution has two modes, `SelfService` and `GatedByProvider`
+
+Location distribution reuses `EnablementMode` rather than inventing a parallel vocabulary:
+
+- **`SelfService`** is today's derived behaviour, unchanged. An active
+  `ServiceEntitlement`, a `ServiceAvailability` reporting `Available=True`, and a class in
+  `ServiceConfiguration.spec.locations.supportedClasses` together produce the projected
+  `Location`. The consumer requests nothing.
+- **`GatedByProvider`** adds a consumer-initiated request. The consumer creates the
+  request in their own control plane; the controller mirrors it into the producer's
+  control plane under a deterministic hashed name; the provider writes
+  `spec.approval.decision` and an optional `spec.approval.message`; on `Approved` the
+  projection appears. This is exactly the `ServiceEntitlement` and `ServiceConsumer`
+  mechanism, including the `sc-<hash>` naming derived from
+  `sha256(serviceName + "/" + consumerProject)`, and it should share that machinery rather
+  than reimplement it.
+
+The request kind is **`LocationEntitlement`**, with `le-<hash>` as the mirrored name. The
+name follows the house vocabulary: `ServiceEntitlement` is already the consumer-initiated,
+provider-approved request object in this API, with the same three phases
+(`PendingApproval`, `Active`, `Rejected`) and the same `spec.approval` handshake, so a
+reader who knows one knows the other. `LocationRequest` was the runner-up and was rejected
+for describing the object at the moment it is created rather than for its whole lifetime;
+an approved `LocationRequest` is no longer a request.
+
+It is explicitly not called `LocationBinding`, for the D13 reasons plus one more: it would
+name the request object after the thing the request produces, which is the projected
+`Location`.
+
+One asymmetry to note. `ServiceEntitlement` and `ServiceConsumer` are two kinds because
+the consumer must not see other consumers' records and the provider must not write into
+the consumer's plane. `LocationEntitlement` as described mirrors one kind across both
+planes and relies on the mirrored copy being in the producer's plane for that isolation.
+Whether it needs a distinct producer-side kind for RBAC symmetry is a question for
+implementation, not a reason to change the name.
+
+### What this replaces in the sections below
+
+| Section | Status |
+|---------|--------|
+| Recommendation: Single `Location` Type | Group guidance replaced by D10; the single-type conclusion stands and D13 strengthens it |
+| `locationClassName` Values | Replaced by D11 and D12 |
+| Project-Level `LocationBinding` (new resource) | Replaced by D13 |
+| Platform-Level `Location`, and all `Location` examples | `spec.provider` replaced by D11; `spec.locationClassName` replaced by `spec.classRef` and `spec.operatedBy` |
+| Two-Tier Discovery Model, Three-Gate Model, lifecycle, Consumer-Facing API | Mechanism unchanged; every `LocationBinding` reads as "projected `Location`" |
+| Security Considerations | The "provider-internal fields are never copied" argument is moot under D11; the fields are not on `Location` |
+| Decision 9, Migration Path phase 4 | Replaced by D10 |
+| Q2, Q6 | Answered by D14 and D10 respectively |
 
 ---
 
@@ -91,6 +341,12 @@ different controller behavior and IAM constraints, not a different resource type
 **Immediate action: extract to shared module, define `locationClassName` values as a
 well-known set. Defer group rename to a separate RFC.**
 
+> **Amended by D10 and D11.** The group is `locations.miloapis.com/v1alpha1`, served by
+> `github.com/milo-os/locations`, and the move is no longer deferred to a separate RFC.
+> `locationClassName` is not a well-known string set; it is a reference to a
+> `LocationClass` resource. The paragraph's conclusion that one `Location` type serves all
+> variants is unchanged, and D13 extends it: the consumer's view is that same type too.
+
 ### `locationClassName` Values
 
 The following classes are defined. They are a typed enum in the Go type definition, not
@@ -106,6 +362,12 @@ free-form strings, to allow service providers to reliably reference them in
 This set is extensible. New classes require a platform-level decision (adding to the
 enum), not a code change in every consuming operator.
 
+> **Replaced by D11 and D12.** These three values are not one axis. `LocationClass` is now
+> a resource covering capacity and provider, `spec.operatedBy` covers who runs the
+> location, and `spec.ownerProjectRef` covers exclusivity. See the decomposition table in
+> D12 for how each value maps. New classes no longer require a platform-level enum change
+> at all; a provider creates a `LocationClass`.
+
 ### Three-Gate Model for Location Availability
 
 A `LocationBinding` is only created — and remains `Available=True` — when all three gates
@@ -118,6 +380,10 @@ accounting continuity and avoids reconciler storms when a gate briefly toggles.
 | 1. Service class support | `ServiceConfiguration.spec.locations.supportedClasses` | Service provider (immutable per config version) |
 | 2. Infrastructure ready | `Location.status.conditions[Ready]` | Platform operator / infra controller |
 | 3. Service operational | `ServiceAvailability.status.conditions[Available]` | Service operator per deployment |
+
+> **Unchanged by the review, except for naming.** Under D13 the object the gates resolve
+> onto is the projected `Location`, not a `LocationBinding`. Gate 1 still reads
+> `supportedClasses`; its members are now `LocationClass` names.
 
 `ServiceAvailability` (`catalog.miloapis.com/v1alpha1`) is a new resource that decouples
 "the PoP exists and hardware is ready" from "this specific service is deployed and
@@ -169,6 +435,11 @@ The `LocationBinding` is the consumer-facing API. All three gates feed into it t
 different controllers and different triggers, but the consumer always queries the same
 resource type.
 
+> **Amended by D13.** The consumer-facing API is a `Location` projected into the project
+> control plane, not a `LocationBinding`. The two-tier structure and the sentence about
+> querying one resource type are unchanged; under D13 that one resource type is now the
+> same one the platform uses.
+
 ### `ServiceConfiguration.spec.locations`
 
 Add a `locations` section to `ServiceConfiguration` that declares which location classes
@@ -213,8 +484,15 @@ Consumer-Owned and Dedicated Locations section).
 
 #### Platform-Level `Location` (shared type, new Go module home)
 
-Locations in the platform control plane are managed by platform operators. The type is
-unchanged in structure; what changes is the Go module where it is defined.
+Locations in the platform control plane are managed by platform operators.
+
+> **Amended by D10 and D11.** The structure does change. `apiVersion` becomes
+> `locations.miloapis.com/v1alpha1`, `spec.locationClassName` becomes `spec.classRef`
+> naming a `LocationClass`, `spec.operatedBy` is added, and the `spec.provider` block in
+> the example below is deleted from the type. Its GCP fields live in an
+> `infra-provider-gcp` parameters CRD that the class references. Read the example for the
+> topology and condition shape, which are unchanged, not for the group or the provider
+> block.
 
 ```yaml
 apiVersion: networking.datumapis.com/v1alpha
@@ -242,6 +520,13 @@ status:
 ```
 
 #### Project-Level `LocationBinding` (new resource)
+
+> **Replaced by D13.** `LocationBinding` is dropped as a kind. The consumer-facing object
+> is a `Location` in the project control plane, same group, same kind, same name. The
+> reduction argument in the paragraph below no longer holds: D11 removes the
+> provider-internal fields from `Location`, so there is nothing to withhold. Read this
+> section for the labels, the `Available` condition, and the gate-closure reasons, all of
+> which carry over verbatim onto the projected `Location`.
 
 `LocationBinding` is a thin projection. It carries only the topology fields a consumer
 needs for discovery and webhook validation, plus a reference to the canonical `Location`.
@@ -309,6 +594,13 @@ controller keeps the `Available` condition current by watching upstream `Locatio
 readiness. Consumer-owned and dedicated locations use the same binding resource and the
 same discovery surface. Accepted.
 
+> **Amended by D13.** Option C is still the right answer against A and B: the objection to
+> Option A was storage explosion and update fan-out, and a projection solves both. What
+> D13 changes is that the projection is a `Location`, not a new kind. Option A was
+> rejected for copying *full* location specs including provider config into every project;
+> after D11 there is no provider config to copy, so the projected object is already the
+> thin thing Option C wanted, without a second schema.
+
 ### Who Controls Location Access
 
 **Platform operators** control which `datum-managed` `Location` objects exist and are
@@ -328,6 +620,12 @@ controller projects it into that project's namespace.
 consumer's project. The consumer (or an automated workflow) creates the `Location` object
 with `spec.locationClassName: self-managed`; the appropriate controller projects it into
 their project namespace.
+
+> **Amended by D12 and D14.** Read `spec.locationClassName: self-managed` as
+> `spec.operatedBy: Consumer` with a consumer-supplied `LocationClass`, and
+> `provider-dedicated` as `spec.operatedBy: Platform` with `ownerProjectRef` set. The four
+> control points themselves are unchanged, and D14 gives the third one a concrete
+> mechanism: a `GatedByProvider` `LocationEntitlement` approved by the provider.
 
 ---
 
@@ -460,6 +758,12 @@ created by the same `ComputeServiceEntitlementReconciler` using a secondary watc
 `Location` objects filtered by `ownerProjectRef`. The split into separate controller
 types can happen when the volume or complexity warrants it.
 
+> **Amended by D12, D13, and D14.** The class column decomposes per the D12 table, the
+> object created is a projected `Location`, and under `GatedByProvider` the trigger is an
+> approved `LocationEntitlement` rather than the bare existence of a `Location` with
+> `ownerProjectRef` set. The observation that one reconciler can serve all rows still
+> holds.
+
 ### Referencing AWS Outposts as a Design Precedent
 
 AWS Outposts require declaring a parent AZ (`AvailabilityZone` field) when creating an
@@ -544,9 +848,10 @@ cleanup via the `LocationBindingReconciler` watch on that class.
 
 | Controller | Repository | Responsibility |
 |------------|-----------|----------------|
-| `LocationReconciler` | NSO or shared location operator | Manages platform `Location` objects; sets `Ready` condition (gate 2) |
+| `LocationReconciler` | `milo-os/locations` (D10) | Manages platform `Location` objects; sets `Ready` condition (gate 2) |
+| `LocationClassReconciler` | `milo-os/locations` (D11) | Resolves `spec.parametersRef`; sets the `Accepted` condition (Q8) |
 | `ServiceAvailabilityReconciler` | `milo-os/service-catalog` | Created by each service operator when deployed and validated at a PoP; sets `Available` condition (gate 3). See milo-os/service-catalog#24. |
-| `LocationBindingReconciler` | `milo-os/service-catalog` | Watches all three gates; creates and maintains `LocationBinding` projections in project namespaces; handles fan-out for new PoPs; handles entitlement deletion cleanup |
+| `LocationBindingReconciler` | `milo-os/service-catalog` | Watches all three gates; creates and maintains the projections in project control planes; handles fan-out for new PoPs; handles entitlement deletion cleanup. Under D13 it projects `Location` objects; rename it `LocationProjectionReconciler` when the `LocationBinding` write is retired |
 | `ComputeServiceEntitlementReconciler` | `datum-cloud/compute` | Compute-specific entitlement logic (quota allocation, RBAC provisioning); does NOT manage `LocationBinding` objects — that is the service catalog's responsibility |
 
 ---
@@ -564,6 +869,12 @@ ap-northeast1-a                datum-managed       NRT    ap-northeast1 True
 acme-corp-dfw-01               provider-dedicated  DFW    us-south1    True
 acme-corp-on-prem-chicago-01   self-managed        ORD    —            True
 ```
+
+> **Amended by D10 and D13.** The underlying resource is a projected `Location` and the
+> CLI calls `GET /apis/locations.miloapis.com/v1alpha1/locations` against the project
+> control plane. The `CLASS` column becomes `spec.classRef.name`, and an `OPERATED BY`
+> column surfaces `spec.operatedBy`. The list itself, one filtered view of what the
+> project can use, is unchanged.
 
 The underlying resource is `LocationBinding` in the project's namespace. The CLI calls
 `GET /apis/networking.datumapis.com/v1alpha/namespaces/{namespace}/locationbindings`. All
@@ -665,6 +976,12 @@ is readable only by platform operators and the binding controller service accoun
 Provider-internal fields on `Location` (GCP project ID, zone) are never copied into
 `LocationBinding` and never exposed to consumers.
 
+> **Moot under D11.** Those fields are not on `Location` any more. They live in a
+> provider-owned parameters resource in the platform control plane, referenced by
+> `LocationClass.spec.parametersRef`, and are protected by that resource's own RBAC rather
+> than by a projection that omits them. The class name itself remains visible to consumers
+> through `spec.classRef`, which is why Q13 treats it as public API surface.
+
 ---
 
 ## Migration Path
@@ -675,7 +992,16 @@ Provider-internal fields on `Location` (GCP project ID, zone) are never copied i
 | 1 | Webhook uses cluster-wide `Location` list; no per-project visibility | `LocationBinding` per project; webhook uses project-scoped list; three-gate model enforced | Implement `ServiceAvailability` CRD + `LocationBindingReconciler` in `milo-os/service-catalog`; compute service operator creates `ServiceAvailability` on each PoP deployment; update webhook to use `LocationBinding` list; add `locations` section to compute `ServiceConfiguration` |
 | 2 | No location dimension on `ResourceClaim`; no dedicated location support | Location dimension populated on all new claims; `provider-dedicated` bindings created on `Location` creation | Update `InstanceReconciler` claim construction; `LocationBindingReconciler` handles non-`datum-managed` classes via `ownerProjectRef` |
 | 3 (future) | `self-managed` location registration is manual | Consumer-facing registration workflow | Consumer-facing API and automation for registering self-managed sites; may include a `LocationRegistration` request resource |
-| 4 (future) | `networking.datumapis.com/Location` | `resourcemanager.miloapis.com/Location` | Separate RFC; requires milo-level work and graduated rename; tracked in milo-os tracking issue |
+| 4 | `networking.datumapis.com/v1alpha` `Location` and `LocationBinding` | `locations.miloapis.com/v1alpha1` `Location` and `LocationClass` in `milo-os/locations`; no `LocationBinding` | D10 and D13. Stand up `milo-os/locations`; install both CRDs; dual-write the projected `Location` beside the existing `LocationBinding`; move readers; stop writing `LocationBinding` and let the existing owner-scoped prune sweep it; uninstall the CRD. Steps are detailed under D13 |
+| 5 | `LocationSpec.Provider` with a `gcp` member; `locationClassName` as an enum | `LocationClass` resource with `controllerName` and `parametersRef`; `spec.classRef` and `spec.operatedBy` on `Location` | D11 and D12. `infra-provider-gcp` ships its own parameters CRD and a `LocationClass` per offering; delete `LocationProvider` and `GCPLocationProvider` from the core type; replace the `LocationClassName` enum in `serviceavailability_types.go` with a name reference |
+| 6 | Projection is always derived from the entitlement | `SelfService` derived projection plus a `GatedByProvider` `LocationEntitlement` request flow | D14. Reuse the `ServiceEntitlement` and `ServiceConsumer` mirroring and `spec.approval` handshake rather than reimplementing it |
+
+Phase 4 supersedes the earlier "future, separate RFC" framing of the group move: it is
+now a planned phase with a concrete dual-write path, and it does not block Phases 1
+through 3, which can be built against the current group and carried across by the
+dual-write. Phase 5 depends on Phase 4, because the class reference and `operatedBy` are
+introduced on the new type rather than retrofitted onto the old one. Phase 6 depends on
+Phase 5, because the gated flow approves access to a class.
 
 Phases 0 and 1 can proceed in parallel on the type extraction side; Phase 1 requires
 `ServiceAvailability` to be implemented in service catalog before the
@@ -739,12 +1065,58 @@ independent of each other.
   group — each service operator creates it, the service catalog reconciler reads it as gate
   3. Tracked in milo-os/service-catalog#24.
 
-- **Decision 9: API group target is `resourcemanager.miloapis.com`.** `Location` is a
+- **Decision 9: API group target is `resourcemanager.miloapis.com`.** ~~`Location` is a
   resource management primitive: it describes where platform resources exist and are
-  accessible. `networking.datumapis.com` is incorrect for the same reason
-  `Microsoft.ExtendedLocation` is confusing — it mixes infrastructure concerns with
-  networking API group semantics. The rename requires a milo-level RFC and graduated
-  migration; it is captured as a tracking item and does not block Phases 0-3.
+  accessible.~~ **Superseded by Decision 10.** The diagnosis stands: `Location` is not a
+  networking primitive, and `networking.datumapis.com` is wrong for the same reason
+  `Microsoft.ExtendedLocation` is confusing. The destination changed.
+  `resourcemanager.miloapis.com` owns the project and organization hierarchy, and a
+  location is not part of that hierarchy.
+
+The five decisions below were settled in the 2026-08-24 design review. They are stated in
+full, with their tradeoffs, under
+[Design Review Outcomes](#design-review-outcomes-2026-08-24).
+
+- **Decision 10: The API group is `locations.miloapis.com/v1alpha1`, served by
+  `github.com/milo-os/locations`.** A location has its own producers, lifecycle, and
+  controllers, so it gets its own group and its own service rather than being folded into
+  the resource manager. Supersedes Decision 9 and the "stay in `networking.datumapis.com`
+  for now" recommendation. Cost: a dual-write window against the live
+  `LocationBindingReconciler`, cheap because that reconciler already reads and writes
+  these objects unstructured against hard-coded GVK constants.
+
+- **Decision 11: `LocationClass` is a resource carrying `spec.controllerName` and
+  `spec.parametersRef`; provider configuration leaves `Location`.** The class encodes
+  capacity and provider. `LocationSpec.Provider` and `GCPLocationProvider` are deleted from
+  the core type and `infra-provider-gcp` owns its own parameters CRD. Rationale: a
+  locations primitive should not encode a vendor type in its CRD schema, and behind a
+  `parametersRef` a provider ships its own CRD on its own cadence. Cost: one extra read on
+  the reconcile path, and validation moves out of the core CRD, which is what Q8 addresses.
+
+- **Decision 12: Operational responsibility is `spec.operatedBy` (`Platform` |
+  `Consumer`), not part of the class name.** Who runs the location and who supplies its
+  capacity are orthogonal; fusing them produces a class cross-product that has to be
+  enumerated by hand, and leaves a consumer-operated location on GCP inexpressible.
+  `provider-dedicated` does not survive on either axis, because it described exclusivity,
+  which `ownerProjectRef` already carries.
+
+- **Decision 13: `LocationBinding` is dropped as a kind; the consumer-facing object is a
+  `Location` projected into the consumer's project control plane.** Four reasons: in this
+  API surface `XBinding` means "X is bound to a location" (`NetworkBinding.spec.location`),
+  so the name misreads; it is a replica rather than a relationship object, which breaks the
+  Kubernetes convention that `Binding` associates A with B; NFR3 already rejects a separate
+  type for consumer-owned versus platform-managed and a distinct kind is that same mistake
+  one layer down; and Decision 11 removes the provider fields that justified a reduced
+  projection type. Precedent: `ProvisioningReconciler` applies producer-declared objects
+  into consumer control planes verbatim, same kind, same name.
+
+- **Decision 14: Distribution is `SelfService` or `GatedByProvider`, reusing
+  `EnablementMode`.** `SelfService` is today's derived behaviour. `GatedByProvider` adds a
+  consumer-initiated `LocationEntitlement`, mirrored into the producer's control plane
+  under a deterministic `le-<hash>` name and approved through
+  `spec.approval{decision,message}`, sharing the `ServiceEntitlement` and `ServiceConsumer`
+  machinery rather than reimplementing it. The request kind is explicitly not called
+  `LocationBinding`.
 
 ### Open Questions
 
@@ -755,12 +1127,11 @@ independent of each other.
   for Phase 1 or deferred until there is a concrete use case? Proceed without topology
   selectors for Phase 1 — all `Ready` locations of a supported class are projected.
 
-- **Q2: `provider-dedicated` location provisioning workflow (non-blocking).** The design
-  says the service provider creates the `Location` object with `ownerProjectRef` set. What
-  is the exact workflow? Does the service provider do this through a control plane API, a
-  Helm chart, or a dedicated `LocationProvisioningRequest` resource? Phase 2 can proceed
-  with direct `Location` creation by platform operators; a self-service provisioning
-  workflow is deferred.
+- **Q2: `provider-dedicated` location provisioning workflow.** **Answered by Decision
+  14.** The workflow is a control plane API: a consumer-initiated `LocationEntitlement`
+  under `GatedByProvider`, approved by the provider through `spec.approval`. No
+  `LocationProvisioningRequest` resource is needed. Phase 2 can still proceed with direct
+  `Location` creation by platform operators; Phase 6 delivers the request flow.
 
 - **Q3: `LocationBinding` namespace choice (non-blocking).** The design assumes a single
   project namespace in the project control plane (e.g., `default`). If projects support
@@ -777,13 +1148,101 @@ independent of each other.
   or should they count against the same per-location bucket? The dimension model supports
   either; this is a quota policy decision for the platform team, not a structural change.
 
-- **Q6: Rename of `networking.datumapis.com/Location` to platform group (blocks Phase 4
-  only).** Target API group (`platform.miloapis.com` vs `resourcemanager.miloapis.com`)
-  needs a milo-level RFC. Does not block Phases 0-3.
+- **Q6: Rename of `networking.datumapis.com/Location` to platform group.** **Answered by
+  Decision 10.** The group is `locations.miloapis.com/v1alpha1` in a new service. Neither
+  `platform.miloapis.com` nor `resourcemanager.miloapis.com`.
+
+The questions below are open. Each carries a recommendation, which is a starting position
+for the next review, not a decision.
+
+- **Q7: `parametersRef` versus an inline `RawExtension` on `LocationClass`.** Decision 11
+  settles that provider configuration leaves `Location`; it does not settle how the class
+  carries it. There is an in-house counter-precedent for inlining:
+  `ServiceConfiguration.spec.provisioning.resources[].objects` embeds whole objects as
+  `runtime.RawExtension` with `+kubebuilder:validation:EmbeddedResource` and
+  `+kubebuilder:pruning:PreserveUnknownFields`, and `ProvisioningReconciler` decodes and
+  applies them. That works there because the objects are opaque payloads the platform
+  never interprets and the target API validates on write.
+
+  **Recommendation: the reference.** Provider parameters are not opaque payloads; the
+  provider's own controller reads them and should have them validated by a real schema at
+  admission rather than discovering a typo at reconcile time. A separate object also gets
+  separate RBAC, so credentials-adjacent configuration is not readable by everyone who can
+  read a `LocationClass`, and a separate lifecycle, so parameters can be rotated without
+  touching the class. And it keeps `x-kubernetes-preserve-unknown-fields` out of a core
+  platform CRD, where it disables server-side pruning and defaulting for the subtree.
+
+- **Q8: How `LocationClass` surfaces a parameters resolution failure.**
+  **Recommendation: a GatewayClass-style `Accepted` condition**, with reason
+  `InvalidParameters` when `spec.parametersRef` does not resolve, resolves to the wrong
+  kind, or fails the provider controller's own validation. This composes with the habit
+  the catalog already has: `ProvisioningReconciler` records `Unprovisionable` on the
+  entitlement ledger with a message naming the service and the resource rather than
+  skipping the declaration silently, on the stated grounds that the consumer has to be
+  told. A class that cannot resolve its parameters should be visibly not `Accepted`, not
+  quietly absent from projections.
+
+- **Q9: Deletion ordering between a parameters object and the locations that use it.**
+  A deleted parameters object must not withdraw a location that cells are actively
+  serving. **Recommendation: deleting the parameters resource marks the `LocationClass`
+  not `Accepted` and blocks new provisioning only.** Existing locations of that class keep
+  their `Ready` condition and keep serving; the class stops being eligible for new
+  projections and new `Location` objects referencing it are refused. This mirrors the
+  catalog's existing removal guard, where a `Service` cannot be deleted while meters or
+  monitored resource types still reference it: the reference is what blocks, and the
+  running system is never withdrawn out from under its users by a delete.
+
+- **Q10: The class reference must carry a project qualifier.** A projected `Location` in
+  the consumer's control plane names a `LocationClass` that lives in the producer's
+  control plane, so a bare `name` does not identify it. `spec.classRef` needs the producer
+  project alongside the name. `milo-os/ipam` hit the same shape with `IPClass` and had to
+  fold the consuming project into pool identity to disambiguate; the lesson is that a
+  cross-plane class reference is not a name, it is a name plus a plane, and deciding that
+  late is expensive. Recommendation: make `classRef` `{name, projectRef}` from the start,
+  even while there is only one producer.
+
+- **Q11: Projected `Location` name collisions.** `LocationBindingReconciler` today sets
+  `metadata.name` to the `Location` name, and projected `Location` objects are
+  cluster-scoped in the project control plane. One consumer subscribed to two producers
+  that both offer `us-east-1` gets a collision, and the current upsert would have the two
+  reconcile loops fight over one object. Options: qualify the projected name by producer
+  (a hash prefix, as `sc-<hash>` already does elsewhere), or keep the friendly name and
+  reject the second projection with a visible condition. Recommendation: qualify the name
+  and carry the producer's chosen name in a label or `spec.displayName` for the CLI to
+  render, because a silent last-writer-wins here is the failure mode that is hardest to
+  see. This interacts with Q13: if the name is hashed, the class name carries even more of
+  the human-facing identity.
+
+- **Q12: Who may create a `LocationClass`.** A class references provider credentials
+  through `spec.parametersRef` and names a controller that will act on them, so creating a
+  class is close to granting capacity. Candidates: platform operators only; the producer
+  project that owns the referenced parameters; or a producer with a platform approval step
+  reusing the Decision 14 handshake. Recommendation: scope create to the producer project
+  that owns the parameters resource, and let the `Accepted` condition from Q8 be the
+  platform's control point, so an unapproved class exists but projects nothing.
+
+- **Q13: The class name is public API surface.** A consumer reads `spec.classRef` on a
+  projected `Location` but cannot read the `LocationClass` itself: it is in another
+  control plane behind another IAM boundary. The name is therefore the entire
+  human-readable description of what that location is, and it appears in
+  `ServiceConfiguration.spec.locations.supportedClasses`, in `datumctl` output, and in
+  support conversations. Recommendation: treat class names as immutable once used and
+  document a naming convention before the first provider ships one, rather than letting
+  the first `LocationClass` set the precedent by accident.
 
 ### Implementation Notes
 
 **For api-dev:**
+
+> **Amended by D10 through D14.** These notes predate the review. `LocationBinding` is a
+> projected `Location`; `locationClassName` is `spec.classRef` plus `spec.operatedBy`;
+> there is no `LocationClassName` enum to add; the group is
+> `locations.miloapis.com/v1alpha1`. The multicluster mechanics, the finalizer, the
+> label-index requirement, and the three-gate check carry over unchanged, and so does the
+> `ownerProjectRef` invariant, restated as: `ownerProjectRef` is set exactly when the
+> location is dedicated to one project, which is every `operatedBy: Consumer` location and
+> those `operatedBy: Platform` locations a provider dedicates.
+
 - Add `ownerProjectRef` as an optional field to `LocationSpec`. It must be absent (or
   nil) for `datum-managed` locations and present for `provider-dedicated` and
   `self-managed` locations. A validating webhook should enforce this invariant.
