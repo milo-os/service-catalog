@@ -324,7 +324,7 @@ func (f *BillingFanOut) deleteMonitoredResourceTypeIfLabelsShrink(
 	if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete MonitoredResourceType %q for label shrink: %w", name, err)
 	}
-	return nil
+	return waitForMonitoredResourceTypeGone(ctx, f.Client, name)
 }
 
 func (f *BillingFanOut) deleteMeterDefinitionIfDimensionsShrink(
@@ -346,5 +346,5 @@ func (f *BillingFanOut) deleteMeterDefinitionIfDimensionsShrink(
 	if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete MeterDefinition %q for dimension shrink: %w", name, err)
 	}
-	return nil
+	return waitForMeterDefinitionGone(ctx, f.Client, name)
 }

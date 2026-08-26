@@ -166,6 +166,29 @@ func TestDimensionsShrink(t *testing.T) {
 	}
 }
 
+func TestMRTLabelNamesShrink(t *testing.T) {
+	label := func(name string) billingv1alpha1.MonitoredResourceLabel {
+		return billingv1alpha1.MonitoredResourceLabel{Name: name}
+	}
+	tests := []struct {
+		name     string
+		existing []billingv1alpha1.MonitoredResourceLabel
+		desired  []billingv1alpha1.MonitoredResourceLabel
+		want     bool
+	}{
+		{name: "no existing", existing: nil, desired: []billingv1alpha1.MonitoredResourceLabel{label("region")}, want: false},
+		{name: "additive", existing: []billingv1alpha1.MonitoredResourceLabel{label("region")}, desired: []billingv1alpha1.MonitoredResourceLabel{label("region"), label("project")}, want: false},
+		{name: "subtractive", existing: []billingv1alpha1.MonitoredResourceLabel{label("gateway"), label("region")}, desired: []billingv1alpha1.MonitoredResourceLabel{label("region")}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mrtLabelNamesShrink(tt.existing, tt.desired); got != tt.want {
+				t.Errorf("mrtLabelNamesShrink() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeleteMeterDefinitionIfDimensionsShrink(t *testing.T) {
 	const mdName = "networking-datumapis-com-gateway-requests"
 
@@ -224,5 +247,163 @@ func TestDeleteMonitoredResourceTypeIfLabelsShrink(t *testing.T) {
 	err := cl.Get(context.Background(), client.ObjectKey{Name: mrtName}, &billingv1alpha1.MonitoredResourceType{})
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("expected MonitoredResourceType to be deleted, get err = %v", err)
+	}
+}
+
+func TestDeleteMeterDefinitionIfDimensionsShrink_NoOpWhenAdditive(t *testing.T) {
+	const mdName = "networking-datumapis-com-gateway-requests"
+
+	existing := &billingv1alpha1.MeterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: mdName},
+		Spec: billingv1alpha1.MeterDefinitionSpec{
+			Measurement: billingv1alpha1.MeterMeasurement{
+				Dimensions: []string{"region"},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl}
+
+	if err := fanOut.deleteMeterDefinitionIfDimensionsShrink(
+		context.Background(),
+		mdName,
+		[]string{"region", "project_name"},
+	); err != nil {
+		t.Fatalf("deleteMeterDefinitionIfDimensionsShrink: %v", err)
+	}
+
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: mdName}, existing); err != nil {
+		t.Fatalf("expected MeterDefinition to remain, get err = %v", err)
+	}
+}
+
+func TestDeleteMonitoredResourceTypeIfLabelsShrink_NoOpWhenAdditive(t *testing.T) {
+	const mrtName = "networking-datumapis-com-httproute"
+
+	existing := &billingv1alpha1.MonitoredResourceType{
+		ObjectMeta: metav1.ObjectMeta{Name: mrtName},
+		Spec: billingv1alpha1.MonitoredResourceTypeSpec{
+			Labels: []billingv1alpha1.MonitoredResourceLabel{{Name: "region"}},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl}
+
+	if err := fanOut.deleteMonitoredResourceTypeIfLabelsShrink(
+		context.Background(),
+		mrtName,
+		[]servicesv1alpha1.MonitoredResourceLabel{{Name: "region"}, {Name: "gateway_class"}},
+	); err != nil {
+		t.Fatalf("deleteMonitoredResourceTypeIfLabelsShrink: %v", err)
+	}
+
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: mrtName}, existing); err != nil {
+		t.Fatalf("expected MonitoredResourceType to remain, get err = %v", err)
+	}
+}
+
+type shrinkTrackingClient struct {
+	client.Client
+	meterDeletes    int
+	meterApplies    int
+	lastAppliedDims []string
+}
+
+func (c *shrinkTrackingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if _, ok := obj.(*billingv1alpha1.MeterDefinition); ok {
+		c.meterDeletes++
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
+func (c *shrinkTrackingClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	if md, ok := obj.(*billingapply.MeterDefinitionApplyConfiguration); ok {
+		c.meterApplies++
+		c.lastAppliedDims = append([]string(nil), md.Spec.Measurement.Dimensions...)
+	}
+	return c.Client.Apply(ctx, obj, opts...)
+}
+
+func TestApplyMeterDefinitions_ShrinkDeletesBeforeApply(t *testing.T) {
+	const (
+		meterName = "networking.datumapis.com/gateway/requests"
+		mrtType   = "networking.datumapis.com/HTTPRoute"
+		mdName    = "networking-datumapis-com-gateway-requests"
+	)
+
+	existing := &billingv1alpha1.MeterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: mdName},
+		Spec: billingv1alpha1.MeterDefinitionSpec{
+			MeterName: meterName,
+			Measurement: billingv1alpha1.MeterMeasurement{
+				Dimensions: []string{"gateway", "gateway_namespace", "region"},
+			},
+		},
+	}
+
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "networking-sc", UID: "sc-uid-shrink"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			Metrics: []servicesv1alpha1.MetricSpec{
+				{
+					Name:       meterName,
+					Kind:       servicesv1alpha1.MetricKindDelta,
+					Unit:       "{request}",
+					Dimensions: []string{"region", "gateway_class"},
+				},
+			},
+			Billing: &servicesv1alpha1.ServiceBillingConfig{
+				ConsumerDestinations: []servicesv1alpha1.BillingConsumerDestination{
+					{
+						MonitoredResourceType: mrtType,
+						Metrics:               []string{meterName},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	tracking := &shrinkTrackingClient{Client: base}
+	fanOut := &BillingFanOut{Client: tracking}
+
+	if _, err := fanOut.applyMeterDefinitions(context.Background(), sc, "networking.datumapis.com"); err != nil {
+		t.Fatalf("applyMeterDefinitions: %v", err)
+	}
+
+	if tracking.meterDeletes != 1 {
+		t.Fatalf("meterDeletes = %d, want 1", tracking.meterDeletes)
+	}
+	if tracking.meterApplies != 1 {
+		t.Fatalf("meterApplies = %d, want 1", tracking.meterApplies)
+	}
+
+	wantDims := []string{"region", "gateway_class"}
+	if len(tracking.lastAppliedDims) != len(wantDims) {
+		t.Fatalf("applied dimensions = %v, want %v", tracking.lastAppliedDims, wantDims)
+	}
+	for i, dim := range wantDims {
+		if tracking.lastAppliedDims[i] != dim {
+			t.Fatalf("applied dimensions = %v, want %v", tracking.lastAppliedDims, wantDims)
+		}
+	}
+}
+
+func TestWaitForMeterDefinitionGone_AlreadyAbsent(t *testing.T) {
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	if err := waitForMeterDefinitionGone(
+		context.Background(),
+		cl,
+		"missing-meter",
+	); err != nil {
+		t.Fatalf("waitForMeterDefinitionGone: %v", err)
 	}
 }
