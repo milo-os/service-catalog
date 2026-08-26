@@ -69,7 +69,7 @@ func TestGateInteractiveSubmitLandsPending(t *testing.T) {
 		t.Fatalf("expected exactly 1 create, got %d", got)
 	}
 	out := errb.String()
-	if !strings.Contains(out, "sends an enablement request to the service provider for approval") {
+	if !strings.Contains(out, "needs approval from the team that provides compute") {
 		t.Fatalf("gated service must promise provider approval in the prompt:\n%s", out)
 	}
 	if !strings.Contains(out, "has been submitted") {
@@ -86,29 +86,61 @@ func TestGateInteractiveSubmitLandsPending(t *testing.T) {
 	}
 }
 
-func TestGateInteractiveSelfServicePromptIsImmediate(t *testing.T) {
-	// A self-service service enables on request with no provider approval step,
-	// so the prompt must not promise one.
-	selfService := ServiceInfo{
-		ObjectName:     "compute",
-		CanonicalName:  "compute.datumapis.com",
-		DisplayName:    "Compute",
-		EnablementMode: servicesv1alpha1.EnablementModeSelfService,
-	}
-	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "This service is enabled and ready to use.", ptrNow())
-	ec, _ := newFake(withWatch(modifiedEvent(active)))
-	io, _, errb := testIO("y\n", true)
+// selfServiceConfig is testConfig's counterpart for a service anyone can enable.
+var selfServiceConfig = ServiceInfo{
+	ObjectName:     "compute",
+	CanonicalName:  "compute.datumapis.com",
+	DisplayName:    "Compute",
+	EnablementMode: servicesv1alpha1.EnablementModeSelfService,
+}
 
-	g := Gate{Service: selfService, Client: ec, IO: io, Project: "datum-cloud"}
+// A self-service request cannot be refused, so there is nothing to confirm: the
+// gate enables the service and lets the command run.
+func TestGateSelfServiceEnablesWithoutPrompting(t *testing.T) {
+	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "This service is enabled and ready to use.", ptrNow())
+	ec, cs := newFake(withWatch(modifiedEvent(active)))
+	// A TTY is available and still must not be used to ask.
+	io, _, errb := testIO("", true)
+
+	g := Gate{Service: selfServiceConfig, Client: ec, IO: io, Project: "datum-cloud"}
 	if err := g.Run(context.Background()); err != nil {
 		t.Fatalf("Run() = %v, want nil once Active", err)
 	}
-	out := errb.String()
-	if !strings.Contains(out, "will enable compute for this project immediately") {
-		t.Fatalf("self-service service must promise immediate enablement in the prompt:\n%s", out)
+	if got := countVerb(cs, "create"); got != 1 {
+		t.Fatalf("expected exactly 1 create, got %d", got)
 	}
-	if strings.Contains(out, "service provider for approval") {
-		t.Fatalf("self-service prompt must not promise provider approval:\n%s", out)
+
+	out := errb.String()
+	if strings.Contains(out, "Would you like to request access?") {
+		t.Fatalf("self-service enablement prompted the user:\n%s", out)
+	}
+	// Silence would be worse than a prompt: this enabled a service on someone's
+	// project without asking, so it has to say so.
+	if !strings.Contains(out, `Enabling compute for project "datum-cloud"`) {
+		t.Fatalf("self-service enablement did not announce itself:\n%s", out)
+	}
+	if !strings.Contains(out, `Compute is now enabled for project "datum-cloud"`) {
+		t.Fatalf("missing the enabled confirmation:\n%s", out)
+	}
+}
+
+// The CI case, and the reason the mode decides rather than the TTY: with no one
+// to answer a prompt, a self-service service must still enable rather than
+// refuse.
+func TestGateSelfServiceEnablesNonInteractively(t *testing.T) {
+	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "This service is enabled and ready to use.", ptrNow())
+	ec, cs := newFake(withWatch(modifiedEvent(active)))
+	io, _, errb := testIO("", false)
+
+	g := Gate{Service: selfServiceConfig, Client: ec, IO: io, Project: "datum-cloud"}
+	if err := g.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v, want nil (a self-service gate must not block CI)", err)
+	}
+	if got := countVerb(cs, "create"); got != 1 {
+		t.Fatalf("expected exactly 1 create, got %d", got)
+	}
+	if strings.Contains(errb.String(), "Request access with:") {
+		t.Fatalf("self-service gate refused non-interactively:\n%s", errb.String())
 	}
 }
 
@@ -145,7 +177,7 @@ func TestGateCreateAdmissionRejectionMapsToUnavailable(t *testing.T) {
 
 	err := gateWith(t, ec, io).Run(context.Background())
 	wantExit(t, err, ExitUnavailable, StateUnavailable)
-	if !strings.Contains(errb.String(), "not available on this platform environment") {
+	if !strings.Contains(errb.String(), "is not available here") {
 		t.Fatalf("missing unavailable copy:\n%s", errb.String())
 	}
 }
@@ -163,7 +195,7 @@ func TestGatePendingReentryIsInstant(t *testing.T) {
 	if got := countVerb(cs, "create"); got != 0 {
 		t.Fatalf("pending re-entry must not create")
 	}
-	if !strings.Contains(errb.String(), "awaiting provider approval") {
+	if !strings.Contains(errb.String(), "is waiting for approval") {
 		t.Fatalf("missing pending re-entry copy:\n%s", errb.String())
 	}
 }
@@ -189,7 +221,7 @@ func TestGateCatalogUnavailable(t *testing.T) {
 	if got := countVerb(cs, "create"); got != 0 {
 		t.Fatalf("catalog-absent must never create")
 	}
-	if !strings.Contains(errb.String(), "not available on this platform environment") {
+	if !strings.Contains(errb.String(), "is not available here") {
 		t.Fatalf("missing unavailable copy:\n%s", errb.String())
 	}
 }
