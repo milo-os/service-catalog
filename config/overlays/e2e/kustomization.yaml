@@ -20,6 +20,16 @@ resources:
   - https://raw.githubusercontent.com/milo-os/milo/a78982bd81f2fb76010cdccd46cf287c79777892/config/crd/bases/infrastructure/infrastructure.miloapis.com_projectcontrolplanes.yaml
   - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_meterdefinitions.yaml
   - https://raw.githubusercontent.com/milo-os/billing/385a1b369d728ea084d2327e5abce87f7dc48907/config/base/crd/bases/billing.miloapis.com_monitoredresourcetypes.yaml
+  # The locations service's own CRDs, pinned to milo-os/locations 507ac2cb.
+  # Location is what the catalog projects into consumer control planes, and it
+  # carries required fields (spec.locationClassRef, spec.topology) a permissive
+  # stand-in would not enforce — so e2e installs the real schema rather than a
+  # copy of it, which would pass against a shape that had drifted from upstream.
+  # milo-os/locations has no release tag yet, so this is pinned to a commit;
+  # move it to a tag once one exists.
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_locations.yaml
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_locationclasses.yaml
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_servinglocations.yaml
 
 
 components:

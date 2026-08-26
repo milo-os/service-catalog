@@ -177,7 +177,6 @@ khost -n flux-system wait kustomization/billing-crds --for=condition=ready --tim
 log "installing the remaining CRDs into Milo"
 kroot apply -f "${REPO_ROOT}/config/overlays/e2e/ipclass-crd.yaml" >/dev/null
 kroot apply -f "${REPO_ROOT}/config/overlays/e2e/locationbinding-crd.yaml" >/dev/null
-kroot apply -f "${REPO_ROOT}/config/overlays/e2e/location-crd.yaml" >/dev/null
 kroot apply -k "${REPO_ROOT}/config/overlays/e2e-milo/milo-resources" >/dev/null
 
 log "creating projects"
