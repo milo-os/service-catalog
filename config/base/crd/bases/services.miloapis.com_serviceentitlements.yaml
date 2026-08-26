@@ -16,7 +16,7 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.serviceRef.name
+    - jsonPath: .status.serviceName
       name: Service
       type: string
     - jsonPath: .status.phase
