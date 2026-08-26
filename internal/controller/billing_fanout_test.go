@@ -140,3 +140,152 @@ func TestApplyMeterDefinitions_NoDimensions(t *testing.T) {
 		t.Errorf("MeterDefinition measurement.dimensions = %v, want empty", dims)
 	}
 }
+
+func TestDimensionsShrink(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		desired  []string
+		want     bool
+	}{
+		{name: "no existing", existing: nil, desired: []string{"region"}, want: false},
+		{name: "additive", existing: []string{"region"}, desired: []string{"region", "project"}, want: false},
+		{name: "unchanged", existing: []string{"region", "gateway"}, desired: []string{"region", "gateway"}, want: false},
+		{name: "reordered", existing: []string{"gateway", "region"}, desired: []string{"region", "gateway"}, want: false},
+		{name: "subtractive", existing: []string{"gateway", "region"}, desired: []string{"region"}, want: true},
+		{name: "cleared", existing: []string{"gateway"}, desired: nil, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dimensionsShrink(tt.existing, tt.desired); got != tt.want {
+				t.Errorf("dimensionsShrink(%v, %v) = %v, want %v", tt.existing, tt.desired, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyMeterDefinitions_RecreatesOnDimensionShrink(t *testing.T) {
+	const (
+		meterName = "networking.datumapis.com/gateway/requests"
+		mrtType   = "networking.datumapis.com/HTTPRoute"
+		mdName    = "networking-datumapis-com-gateway-requests"
+	)
+
+	existing := &billingv1alpha1.MeterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: mdName},
+		Spec: billingv1alpha1.MeterDefinitionSpec{
+			MeterName: meterName,
+			Measurement: billingv1alpha1.MeterMeasurement{
+				Dimensions: []string{"gateway", "gateway_namespace", "region"},
+			},
+		},
+	}
+
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "networking-sc", UID: "sc-uid-3"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			Metrics: []servicesv1alpha1.MetricSpec{
+				{
+					Name:       meterName,
+					Kind:       servicesv1alpha1.MetricKindDelta,
+					Unit:       "{request}",
+					Dimensions: []string{"region", "gateway_class"},
+				},
+			},
+			Billing: &servicesv1alpha1.ServiceBillingConfig{
+				ConsumerDestinations: []servicesv1alpha1.BillingConsumerDestination{
+					{
+						MonitoredResourceType: mrtType,
+						Metrics:               []string{meterName},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl, Scheme: scheme}
+
+	if _, err := fanOut.applyMeterDefinitions(context.Background(), sc, "networking.datumapis.com"); err != nil {
+		t.Fatalf("applyMeterDefinitions: %v", err)
+	}
+
+	got := &billingv1alpha1.MeterDefinition{}
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: mdName}, got); err != nil {
+		t.Fatalf("get MeterDefinition after apply: %v", err)
+	}
+
+	wantDims := []string{"region", "gateway_class"}
+	if len(got.Spec.Measurement.Dimensions) != len(wantDims) {
+		t.Fatalf("dimensions = %v, want %v", got.Spec.Measurement.Dimensions, wantDims)
+	}
+	for i, dim := range wantDims {
+		if got.Spec.Measurement.Dimensions[i] != dim {
+			t.Fatalf("dimensions = %v, want %v", got.Spec.Measurement.Dimensions, wantDims)
+		}
+	}
+}
+
+func TestApplyMonitoredResourceTypes_RecreatesOnLabelShrink(t *testing.T) {
+	const (
+		mrtTypeName = "networking.datumapis.com/HTTPRoute"
+		mrtName     = "networking-datumapis-com-httproute"
+	)
+
+	existing := &billingv1alpha1.MonitoredResourceType{
+		ObjectMeta: metav1.ObjectMeta{Name: mrtName},
+		Spec: billingv1alpha1.MonitoredResourceTypeSpec{
+			ResourceTypeName: mrtTypeName,
+			Labels: []billingv1alpha1.MonitoredResourceLabel{
+				{Name: "gateway"},
+				{Name: "gateway_namespace"},
+				{Name: "region"},
+			},
+		},
+	}
+
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "networking-sc", UID: "sc-uid-4"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			MonitoredResourceTypes: []servicesv1alpha1.MonitoredResourceTypeSpec{
+				{
+					Type: mrtTypeName,
+					GVK: servicesv1alpha1.GVKRef{
+						Group: "gateway.networking.k8s.io",
+						Kind:  "HTTPRoute",
+					},
+					Labels: []servicesv1alpha1.MonitoredResourceLabel{
+						{Name: "region"},
+						{Name: "gateway_class"},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl, Scheme: scheme}
+
+	if _, err := fanOut.applyMonitoredResourceTypes(context.Background(), sc, "networking.datumapis.com"); err != nil {
+		t.Fatalf("applyMonitoredResourceTypes: %v", err)
+	}
+
+	got := &billingv1alpha1.MonitoredResourceType{}
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: mrtName}, got); err != nil {
+		t.Fatalf("get MonitoredResourceType after apply: %v", err)
+	}
+
+	wantLabels := []string{"region", "gateway_class"}
+	if len(got.Spec.Labels) != len(wantLabels) {
+		t.Fatalf("labels = %v, want names %v", got.Spec.Labels, wantLabels)
+	}
+	for i, name := range wantLabels {
+		if got.Spec.Labels[i].Name != name {
+			t.Fatalf("labels = %v, want names %v", got.Spec.Labels, wantLabels)
+		}
+	}
+}

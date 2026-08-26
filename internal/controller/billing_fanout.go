@@ -141,7 +141,7 @@ func (f *BillingFanOut) applyMonitoredResourceTypes(
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("set controller ref on billing MonitoredResourceType %q: %w", name, err)
 		}
-		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
+		if err := f.applyMonitoredResourceType(ctx, obj); err != nil {
 			return nil, fmt.Errorf("apply billing MonitoredResourceType %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
@@ -225,10 +225,7 @@ func (f *BillingFanOut) applyMeterDefinitions(
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("setting controller reference on MeterDefinition %q: %w", name, err)
 		}
-		if err := f.Client.Patch(ctx, obj, client.Apply,
-			client.FieldOwner(fieldManagerName),
-			client.ForceOwnership,
-		); err != nil {
+		if err := f.applyMeterDefinition(ctx, obj); err != nil {
 			return nil, fmt.Errorf("applying MeterDefinition %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
@@ -305,4 +302,34 @@ func ownedBy(refs []metav1.OwnerReference, uid types.UID) bool {
 		}
 	}
 	return false
+}
+
+func (f *BillingFanOut) applyMonitoredResourceType(ctx context.Context, desired *billingv1alpha1.MonitoredResourceType) error {
+	existing := &billingv1alpha1.MonitoredResourceType{}
+	err := f.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	if err == nil && mrtLabelNamesShrink(existing.Spec.Labels, desired.Spec.Labels) {
+		if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete for label shrink: %w", err)
+		}
+		return f.Client.Create(ctx, desired)
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get existing: %w", err)
+	}
+	return f.Client.Patch(ctx, desired, client.Apply, client.FieldOwner(fieldManagerName), client.ForceOwnership)
+}
+
+func (f *BillingFanOut) applyMeterDefinition(ctx context.Context, desired *billingv1alpha1.MeterDefinition) error {
+	existing := &billingv1alpha1.MeterDefinition{}
+	err := f.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
+	if err == nil && dimensionsShrink(existing.Spec.Measurement.Dimensions, desired.Spec.Measurement.Dimensions) {
+		if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete for dimension shrink: %w", err)
+		}
+		return f.Client.Create(ctx, desired)
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get existing: %w", err)
+	}
+	return f.Client.Patch(ctx, desired, client.Apply, client.FieldOwner(fieldManagerName), client.ForceOwnership)
 }
