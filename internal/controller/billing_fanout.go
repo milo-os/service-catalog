@@ -130,6 +130,9 @@ func (f *BillingFanOut) applyMonitoredResourceTypes(
 				).
 				WithLabels(billingLabelsApplyFor(entry.Labels)...),
 			)
+		if err := f.deleteMonitoredResourceTypeIfLabelsShrink(ctx, name, entry.Labels); err != nil {
+			return nil, err
+		}
 		if err := f.Client.Apply(ctx, applyConfig, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply billing MonitoredResourceType %q: %w", name, err)
 		}
@@ -204,6 +207,9 @@ func (f *BillingFanOut) applyMeterDefinitions(
 				).
 				WithMonitoredResourceTypes(mrtTypes...),
 			)
+		if err := f.deleteMeterDefinitionIfDimensionsShrink(ctx, name, metric.Dimensions); err != nil {
+			return nil, err
+		}
 		if err := f.Client.Apply(ctx, applyConfig, client.FieldOwner(fieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("applying MeterDefinition %q: %w", name, err)
 		}
@@ -292,4 +298,53 @@ func ownedBy(refs []metav1.OwnerReference, uid types.UID) bool {
 		}
 	}
 	return false
+}
+
+func (f *BillingFanOut) deleteMonitoredResourceTypeIfLabelsShrink(
+	ctx context.Context,
+	name string,
+	desiredLabels []servicesv1alpha1.MonitoredResourceLabel,
+) error {
+	existing := &billingv1alpha1.MonitoredResourceType{}
+	err := f.Client.Get(ctx, client.ObjectKey{Name: name}, existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get MonitoredResourceType %q: %w", name, err)
+	}
+
+	desired := make([]billingv1alpha1.MonitoredResourceLabel, len(desiredLabels))
+	for i, label := range desiredLabels {
+		desired[i] = billingv1alpha1.MonitoredResourceLabel{Name: label.Name}
+	}
+	if !mrtLabelNamesShrink(existing.Spec.Labels, desired) {
+		return nil
+	}
+	if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete MonitoredResourceType %q for label shrink: %w", name, err)
+	}
+	return nil
+}
+
+func (f *BillingFanOut) deleteMeterDefinitionIfDimensionsShrink(
+	ctx context.Context,
+	name string,
+	desiredDims []string,
+) error {
+	existing := &billingv1alpha1.MeterDefinition{}
+	err := f.Client.Get(ctx, client.ObjectKey{Name: name}, existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get MeterDefinition %q: %w", name, err)
+	}
+	if !dimensionsShrink(existing.Spec.Measurement.Dimensions, desiredDims) {
+		return nil
+	}
+	if err := f.Client.Delete(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete MeterDefinition %q for dimension shrink: %w", name, err)
+	}
+	return nil
 }

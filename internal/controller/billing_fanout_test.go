@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -139,5 +140,89 @@ func TestApplyMeterDefinitions_NoDimensions(t *testing.T) {
 
 	if dims := capturing.meters[0].Spec.Measurement.Dimensions; len(dims) != 0 {
 		t.Errorf("MeterDefinition measurement.dimensions = %v, want empty", dims)
+	}
+}
+
+func TestDimensionsShrink(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		desired  []string
+		want     bool
+	}{
+		{name: "no existing", existing: nil, desired: []string{"region"}, want: false},
+		{name: "additive", existing: []string{"region"}, desired: []string{"region", "project"}, want: false},
+		{name: "unchanged", existing: []string{"region", "gateway"}, desired: []string{"region", "gateway"}, want: false},
+		{name: "reordered", existing: []string{"gateway", "region"}, desired: []string{"region", "gateway"}, want: false},
+		{name: "subtractive", existing: []string{"gateway", "region"}, desired: []string{"region"}, want: true},
+		{name: "cleared", existing: []string{"gateway"}, desired: nil, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dimensionsShrink(tt.existing, tt.desired); got != tt.want {
+				t.Errorf("dimensionsShrink(%v, %v) = %v, want %v", tt.existing, tt.desired, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeleteMeterDefinitionIfDimensionsShrink(t *testing.T) {
+	const mdName = "networking-datumapis-com-gateway-requests"
+
+	existing := &billingv1alpha1.MeterDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: mdName},
+		Spec: billingv1alpha1.MeterDefinitionSpec{
+			Measurement: billingv1alpha1.MeterMeasurement{
+				Dimensions: []string{"gateway", "region"},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl}
+
+	if err := fanOut.deleteMeterDefinitionIfDimensionsShrink(
+		context.Background(),
+		mdName,
+		[]string{"region"},
+	); err != nil {
+		t.Fatalf("deleteMeterDefinitionIfDimensionsShrink: %v", err)
+	}
+
+	err := cl.Get(context.Background(), client.ObjectKey{Name: mdName}, &billingv1alpha1.MeterDefinition{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected MeterDefinition to be deleted, get err = %v", err)
+	}
+}
+
+func TestDeleteMonitoredResourceTypeIfLabelsShrink(t *testing.T) {
+	const mrtName = "networking-datumapis-com-httproute"
+
+	existing := &billingv1alpha1.MonitoredResourceType{
+		ObjectMeta: metav1.ObjectMeta{Name: mrtName},
+		Spec: billingv1alpha1.MonitoredResourceTypeSpec{
+			Labels: []billingv1alpha1.MonitoredResourceLabel{
+				{Name: "gateway"},
+				{Name: "region"},
+			},
+		},
+	}
+
+	scheme := newBillingFanOutScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	fanOut := &BillingFanOut{Client: cl}
+
+	if err := fanOut.deleteMonitoredResourceTypeIfLabelsShrink(
+		context.Background(),
+		mrtName,
+		[]servicesv1alpha1.MonitoredResourceLabel{{Name: "region"}},
+	); err != nil {
+		t.Fatalf("deleteMonitoredResourceTypeIfLabelsShrink: %v", err)
+	}
+
+	err := cl.Get(context.Background(), client.ObjectKey{Name: mrtName}, &billingv1alpha1.MonitoredResourceType{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("expected MonitoredResourceType to be deleted, get err = %v", err)
 	}
 }
