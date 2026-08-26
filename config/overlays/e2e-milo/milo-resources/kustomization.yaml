@@ -15,10 +15,22 @@ kind: Kustomization
 
 # The setup task applies the hand-authored IPClass and LocationBinding CRDs
 # straight from config/overlays/e2e, as the single-cluster environment does.
-# Kustomize refuses to reference a file outside its own tree, and a copy would
-# let the two environments drift.
+# Kustomize refuses to reference a local file outside its own tree, and a copy
+# would let the two environments drift. That restriction does not apply to
+# remote resources, so the locations service's CRDs are pulled from upstream
+# here rather than applied by the setup script.
 resources:
   - ../../../base/crd
+  # The locations service's own CRDs, pinned to milo-os/locations 507ac2cb.
+  # Location is what the catalog projects into consumer control planes, and it
+  # carries required fields (spec.locationClassRef, spec.topology) a permissive
+  # stand-in would not enforce — so e2e installs the real schema rather than a
+  # copy of it, which would pass against a shape that had drifted from upstream.
+  # milo-os/locations has no release tag yet, so this is pinned to a commit;
+  # move it to a tag once one exists.
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_locations.yaml
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_locationclasses.yaml
+  - https://raw.githubusercontent.com/milo-os/locations/507ac2cbd48c0228f09baea64199882eca91e865/config/base/crd/bases/locations.miloapis.com_servinglocations.yaml
 
 # The billing CRDs are installed by Flux from the same published
 # billing-kustomize bundle config/overlays/e2e installs, rather than being

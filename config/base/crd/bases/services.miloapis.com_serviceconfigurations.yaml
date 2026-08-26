@@ -349,22 +349,21 @@ spec:
                 properties:
                   supportedClasses:
                     description: |-
-                      SupportedClasses is the set of location classes this service version
-                      runs on. The LocationBindingReconciler projects a Location into an
-                      entitled project only when the Location's class appears here.
+                      SupportedClasses is the set of location class names this service version
+                      runs on. A Location is projected into an entitled project only when the
+                      name of the LocationClass backing it appears here.
                     items:
-                      description: "LocationClassName is the operational class of
-                        a Location. It is a typed\nenum rather than a free-form string
-                        so that service providers can\nreliably reference classes
-                        in ServiceConfiguration.spec.locations and so\nthat controllers
-                        and IAM constraints can branch on a closed set.\n\n\tdatum-managed
-                        \      -> shared PoP operated by the Datum platform team\n\tprovider-dedicated
-                        \ -> infrastructure a provider dedicates to a consumer\n\tself-managed
-                        \       -> consumer-registered on-premises site"
-                      enum:
-                      - datum-managed
-                      - provider-dedicated
-                      - self-managed
+                      description: |-
+                        LocationClassName is the name of a LocationClass a Location can be backed
+                        by. It is the name of a real object, chosen by whoever owns the capacity
+                        behind that class, so this API cannot enumerate the set in advance.
+
+                        The names below are the classes the platform has published so far and are
+                        kept as constants for callers that reference them directly. Naming a class
+                        that does not exist is allowed: nothing is projected for it until a Location
+                        of that class shows up.
+                      maxLength: 253
+                      minLength: 1
                       type: string
                     maxItems: 8
                     minItems: 1

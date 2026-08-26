@@ -4,17 +4,20 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -32,12 +35,11 @@ const (
 
 // bindingScheme registers the services types plus the foreign Location and
 // LocationBinding GVKs as unstructured so the fake clients can serve gate
-// reads and binding writes.
+// reads and projection writes.
 func bindingScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
-	s.AddKnownTypeWithName(locationGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(locationGVK.GroupVersion().WithKind("LocationList"), &unstructured.UnstructuredList{})
+	registerLocationGVKs(s)
 	s.AddKnownTypeWithName(locationBindingGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(locationBindingGVK.GroupVersion().WithKind("LocationBindingList"), &unstructured.UnstructuredList{})
 	return s
@@ -57,12 +59,16 @@ func newBindingRootClient(objs ...client.Object) client.Client {
 // status-subresource support. ServiceEntitlement is left out of the subresource
 // set so the seeded status.phase survives object creation.
 func newBindingConsumerClient(objs ...client.Object) client.Client {
-	lb := &unstructured.Unstructured{}
-	lb.SetGroupVersionKind(locationBindingGVK)
+	subresourced := make([]client.Object, 0, len(projectionGVKs))
+	for _, gvk := range projectionGVKs {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		subresourced = append(subresourced, u)
+	}
 	return fake.NewClientBuilder().
 		WithScheme(bindingScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(lb).
+		WithStatusSubresource(subresourced...).
 		Build()
 }
 
@@ -120,6 +126,23 @@ func newAvailabilityWithCondition(locName string, available bool) *servicesv1alp
 func newClassyLocation(name string, ready bool, class string) *unstructured.Unstructured {
 	loc := newLocation(name, ready)
 	_ = unstructured.SetNestedField(loc.Object, class, "spec", "locationClassName")
+	return withLocationDetail(loc)
+}
+
+// newClassyMiloLocation is newClassyLocation against locations.miloapis.com,
+// where the class is a reference rather than a flat name and displayName has no
+// equivalent.
+func newClassyMiloLocation(name string, ready bool, class string) *unstructured.Unstructured {
+	loc := newMiloLocation(name, ready)
+	_ = unstructured.SetNestedField(loc.Object, class, "spec", "locationClassRef", "name")
+	_ = unstructured.SetNestedStringMap(loc.Object, map[string]string{
+		"topology.datum.net/city-code": "ORD",
+		"topology.datum.net/region":    "us-central1",
+	}, "spec", "topology")
+	return loc
+}
+
+func withLocationDetail(loc *unstructured.Unstructured) *unstructured.Unstructured {
 	_ = unstructured.SetNestedField(loc.Object, "Chicago", "spec", "displayName")
 	// City and region live in the NSO Location's spec.topology map, not as
 	// first-class spec fields.
@@ -153,12 +176,20 @@ func existingBinding(locName string, ownerUID types.UID) *unstructured.Unstructu
 // entitlement.
 func reconcileBindings(t *testing.T, rootClient, consumerClient client.Client) (ctrl.Result, error) {
 	t.Helper()
+	return reconcileBindingsFrom(t, rootClient, consumerClient, legacyLocationGVK)
+}
+
+// reconcileBindingsFrom runs one reconcile pass reading locations from the
+// given source.
+func reconcileBindingsFrom(t *testing.T, rootClient, consumerClient client.Client, locationGVK schema.GroupVersionKind) (ctrl.Result, error) {
+	t.Helper()
 	mgr := newTestManager()
 	mgr.add(lbConsumerProject, consumerClient)
 	r := &LocationBindingReconciler{
-		rootClient: rootClient,
-		Manager:    mgr,
-		Scheme:     bindingScheme(),
+		rootClient:  rootClient,
+		Manager:     mgr,
+		Scheme:      bindingScheme(),
+		LocationGVK: locationGVK,
 	}
 	req := mcreconcile.Request{
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: lbEntitlement}},
@@ -169,8 +200,18 @@ func reconcileBindings(t *testing.T, rootClient, consumerClient client.Client) (
 
 func getBinding(t *testing.T, c client.Client, locName string) (*unstructured.Unstructured, bool) {
 	t.Helper()
+	return getProjection(t, c, locationBindingGVK, locName)
+}
+
+func getProjectedLocation(t *testing.T, c client.Client, locName string) (*unstructured.Unstructured, bool) {
+	t.Helper()
+	return getProjection(t, c, projectedLocationGVK, locName)
+}
+
+func getProjection(t *testing.T, c client.Client, gvk schema.GroupVersionKind, locName string) (*unstructured.Unstructured, bool) {
+	t.Helper()
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(locationBindingGVK)
+	u.SetGroupVersionKind(gvk)
 	err := c.Get(context.Background(), types.NamespacedName{Name: locName}, u)
 	if err != nil {
 		return nil, false
@@ -377,5 +418,200 @@ func TestLocationBindingReconciler_Idempotent(t *testing.T) {
 	if second.GetResourceVersion() != first.GetResourceVersion() {
 		t.Errorf("second reconcile mutated binding (resourceVersion %s -> %s); expected a no-op",
 			first.GetResourceVersion(), second.GetResourceVersion())
+	}
+}
+
+func TestLocationBindingReconciler_ProjectsLocation(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	u, ok := getProjectedLocation(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected projected Location %q to exist", lbLoc)
+	}
+	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+
+	class, _, _ := unstructured.NestedString(u.Object, "spec", "locationClassRef", "name")
+	if class != lbClass {
+		t.Errorf("spec.locationClassRef.name = %q, want %q", class, lbClass)
+	}
+	if project, found, _ := unstructured.NestedString(u.Object, "spec", "locationClassRef", "project"); found {
+		t.Errorf("spec.locationClassRef.project = %q, want unset", project)
+	}
+	topology, found, err := unstructured.NestedStringMap(u.Object, "spec", "topology")
+	if err != nil || !found {
+		t.Fatalf("spec.topology not set on projected Location (found=%v, err=%v)", found, err)
+	}
+	if got := topology["topology.datum.net/city-code"]; got != "ORD" {
+		t.Errorf("spec.topology[city-code] = %q, want ORD", got)
+	}
+	if !ownedBy(u.GetOwnerReferences(), lbEntitlementUID) {
+		t.Errorf("projected Location is not owned by the entitlement")
+	}
+	// The binding is still written until the network-services operator moves
+	// off it.
+	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
+		t.Errorf("expected LocationBinding %q to still be written alongside the Location", lbLoc)
+	}
+}
+
+// With the source set to the locations service, projections are driven by that
+// group, including the class read from spec.locationClassRef.
+func TestLocationBindingReconciler_ReadsConfiguredSource(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyMiloLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindingsFrom(t, rootClient, consumerClient, miloLocationGVK); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	u, ok := getProjectedLocation(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected projected Location %q to exist", lbLoc)
+	}
+	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+
+	b, ok := getBinding(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected LocationBinding %q to exist", lbLoc)
+	}
+	if got := b.GetLabels()[labelClass]; got != lbClass {
+		t.Errorf("class label = %q, want %q", got, lbClass)
+	}
+}
+
+// A location in the group that is not configured is not read, so no projection
+// is made for it. Nothing resolves across groups behind the operator's back.
+func TestLocationBindingReconciler_IgnoresUnconfiguredSource(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindingsFrom(t, rootClient, consumerClient, miloLocationGVK); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getBinding(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected no LocationBinding: the location lives in a group that is not the configured source")
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected no projected Location: the location lives in a group that is not the configured source")
+	}
+}
+
+// A configured source the control plane does not serve makes every location
+// look absent. The reconcile must fail rather than treat that as "no locations"
+// and tear down every projection an entitled project already has.
+func TestLocationBindingReconciler_SourceNotServedKeepsProjections(t *testing.T) {
+	rootClient := fake.NewClientBuilder().
+		WithScheme(bindingScheme()).
+		WithObjects(
+			newPublishedConfigWithClasses(lbClass),
+			newAvailabilityWithCondition(lbLoc, true),
+			newClassyLocation(lbLoc, true, lbClass),
+		).
+		Build()
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("setup reconcile: %v", err)
+	}
+	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
+		t.Fatalf("setup: expected LocationBinding %q", lbLoc)
+	}
+
+	// Now read through a root client that answers the configured source the
+	// way a control plane without that CRD does.
+	unserved := interceptor.NewClient(rootClient, noMatchOn(miloLocationGVK))
+	_, err := reconcileBindingsFrom(t, unserved, consumerClient, miloLocationGVK)
+	if err == nil {
+		t.Fatalf("expected an error when the configured location source is not served")
+	}
+	if !errors.Is(err, errLocationSourceUnavailable) {
+		t.Errorf("error = %v, want it to wrap errLocationSourceUnavailable", err)
+	}
+
+	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
+		t.Errorf("LocationBinding %q was pruned because the location source was unreachable", lbLoc)
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); !ok {
+		t.Errorf("projected Location %q was pruned because the location source was unreachable", lbLoc)
+	}
+}
+
+// A source Location with no topology cannot satisfy the locations.miloapis.com
+// schema, which requires it. The binding is still projected.
+func TestLocationBindingReconciler_SkipsLocationWithoutTopology(t *testing.T) {
+	loc := newLocation(lbLoc, true)
+	_ = unstructured.SetNestedField(loc.Object, lbClass, "spec", "locationClassName")
+
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		loc,
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected no projected Location for a source location with no topology")
+	}
+	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
+		t.Errorf("expected LocationBinding %q to be projected regardless", lbLoc)
+	}
+}
+
+// An entitlement that stops being Active tears down every projection kind, not just the
+// binding.
+func TestLocationBindingReconciler_PrunesEveryProjection(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); !ok {
+		t.Fatalf("setup: expected projected Location %q", lbLoc)
+	}
+
+	ent := newActiveEntitlement()
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: lbEntitlement}, ent); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumerClient.Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement: %v", err)
+	}
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected projected Location %q to be pruned", lbLoc)
+	}
+	if _, ok := getBinding(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected LocationBinding %q to be pruned", lbLoc)
 	}
 }

@@ -5,12 +5,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -26,14 +28,38 @@ const (
 	saLocName     = "us-central1-a"
 )
 
-// availabilityScheme registers the services types plus the foreign Location
-// GVK as unstructured so the fake client can serve gate-2 reads.
+// availabilityScheme registers the services types plus both foreign Location
+// GVKs as unstructured so the fake client can serve gate-2 reads from either
+// group.
 func availabilityScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
-	s.AddKnownTypeWithName(locationGVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(locationGVK.GroupVersion().WithKind("LocationList"), &unstructured.UnstructuredList{})
+	registerLocationGVKs(s)
 	return s
+}
+
+// legacyLocationGVK and miloLocationGVK are the two configurable location
+// sources, spelled out here so the tests do not depend on config wiring.
+var (
+	legacyLocationGVK = schema.GroupVersionKind{
+		Group:   "networking.datumapis.com",
+		Version: "v1alpha",
+		Kind:    "Location",
+	}
+	miloLocationGVK = schema.GroupVersionKind{
+		Group:   "locations.miloapis.com",
+		Version: "v1alpha1",
+		Kind:    "Location",
+	}
+)
+
+// registerLocationGVKs teaches a scheme both Location groups plus the
+// projected Location, so a fake client can serve either source.
+func registerLocationGVKs(s *runtime.Scheme) {
+	for _, gvk := range []schema.GroupVersionKind{legacyLocationGVK, miloLocationGVK} {
+		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
 }
 
 func newAvailabilityClient(objs ...client.Object) client.Client {
@@ -64,13 +90,25 @@ func newServiceInPhase(name string, phase servicesv1alpha1.Phase) *servicesv1alp
 	}
 }
 
+// newLocation builds a networking.datumapis.com Location — the group the
+// catalog is moving off, and the only one production serves today.
 func newLocation(name string, ready bool) *unstructured.Unstructured {
+	return newLocationOfGVK(legacyLocationGVK, name, ready)
+}
+
+// newMiloLocation builds a locations.miloapis.com Location, the group the
+// gate-2 read prefers.
+func newMiloLocation(name string, ready bool) *unstructured.Unstructured {
+	return newLocationOfGVK(miloLocationGVK, name, ready)
+}
+
+func newLocationOfGVK(gvk schema.GroupVersionKind, name string, ready bool) *unstructured.Unstructured {
 	status := string(metav1.ConditionFalse)
 	if ready {
 		status = string(metav1.ConditionTrue)
 	}
 	loc := &unstructured.Unstructured{}
-	loc.SetGroupVersionKind(locationGVK)
+	loc.SetGroupVersionKind(gvk)
 	loc.SetName(name)
 	_ = unstructured.SetNestedSlice(loc.Object, []any{
 		map[string]any{"type": "Ready", "status": status},
@@ -78,11 +116,18 @@ func newLocation(name string, ready bool) *unstructured.Unstructured {
 	return loc
 }
 
-// reconcileAvailability runs one reconcile pass and returns the refreshed
-// object.
+// reconcileAvailability runs one reconcile pass against the default location
+// source and returns the refreshed object.
 func reconcileAvailability(t *testing.T, c client.Client) *servicesv1alpha1.ServiceAvailability {
 	t.Helper()
-	r := &ServiceAvailabilityReconciler{client: c, Scheme: availabilityScheme()}
+	return reconcileAvailabilityFrom(t, c, legacyLocationGVK)
+}
+
+// reconcileAvailabilityFrom runs one reconcile pass reading locations from the
+// given source.
+func reconcileAvailabilityFrom(t *testing.T, c client.Client, locationGVK schema.GroupVersionKind) *servicesv1alpha1.ServiceAvailability {
+	t.Helper()
+	r := &ServiceAvailabilityReconciler{client: c, Scheme: availabilityScheme(), LocationGVK: locationGVK}
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: saName}}
 	if _, err := r.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -203,7 +248,7 @@ func TestServiceAvailabilityReconciler_TransientErrorRequeues(t *testing.T) {
 		},
 	})
 
-	r := &ServiceAvailabilityReconciler{client: c, Scheme: availabilityScheme()}
+	r := &ServiceAvailabilityReconciler{client: c, Scheme: availabilityScheme(), LocationGVK: legacyLocationGVK}
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: saName}}
 	if _, err := r.Reconcile(context.Background(), req); err == nil {
 		t.Fatalf("expected a requeue error from the transient Service read failure, got nil")
@@ -215,5 +260,84 @@ func TestServiceAvailabilityReconciler_TransientErrorRequeues(t *testing.T) {
 	}
 	if cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeAvailable); cond != nil {
 		t.Errorf("Available condition was written despite a transient error: %+v", cond)
+	}
+}
+
+// With the source set to the locations service, that group is read.
+func TestServiceAvailabilityReconciler_ReadsConfiguredSource(t *testing.T) {
+	c := newAvailabilityClient(
+		newAvailability(),
+		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
+		newMiloLocation(saLocName, true),
+	)
+	got := reconcileAvailabilityFrom(t, c, miloLocationGVK)
+	assertAvailable(t, got, metav1.ConditionTrue, reasonServiceOperational)
+}
+
+// The configured source is the only one read. A location present in the other
+// group does not answer for it, so nothing silently resolves across groups.
+func TestServiceAvailabilityReconciler_IgnoresUnconfiguredSource(t *testing.T) {
+	c := newAvailabilityClient(
+		newAvailability(),
+		newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
+		newLocation(saLocName, true),
+	)
+	got := reconcileAvailabilityFrom(t, c, miloLocationGVK)
+	assertAvailable(t, got, metav1.ConditionFalse, reasonLocationNotFound)
+
+	// ... and the same client read the other way round.
+	got = reconcileAvailabilityFrom(t, c, legacyLocationGVK)
+	assertAvailable(t, got, metav1.ConditionTrue, reasonServiceOperational)
+}
+
+// A configured source the control plane does not serve is reported, not
+// swallowed and not fallen back from.
+func TestServiceAvailabilityReconciler_SourceNotServed(t *testing.T) {
+	base := fake.NewClientBuilder().
+		WithScheme(availabilityScheme()).
+		WithObjects(
+			newAvailability(),
+			newServiceInPhase(saServiceName, servicesv1alpha1.PhasePublished),
+		).
+		WithStatusSubresource(&servicesv1alpha1.ServiceAvailability{}).
+		Build()
+	c := interceptor.NewClient(base, noMatchOn(miloLocationGVK))
+
+	r := &ServiceAvailabilityReconciler{client: c, Scheme: availabilityScheme(), LocationGVK: miloLocationGVK}
+	res, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: saName},
+	})
+	if err != nil {
+		t.Fatalf("reconcile returned an error instead of reporting the misconfiguration: %v", err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Errorf("expected the availability to re-check so it recovers once the group is installed")
+	}
+
+	var got servicesv1alpha1.ServiceAvailability
+	if err := base.Get(context.Background(), types.NamespacedName{Name: saName}, &got); err != nil {
+		t.Fatalf("get availability: %v", err)
+	}
+	assertAvailable(t, &got, metav1.ConditionUnknown, reasonLocationSourceUnavailable)
+
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeAvailable)
+	if !strings.Contains(cond.Message, miloLocationGVK.GroupVersion().String()) {
+		t.Errorf("condition message %q does not name the unserved group", cond.Message)
+	}
+}
+
+// noMatchOn makes a client answer reads of one GVK the way a control plane
+// without that CRD does: a RESTMapper no-match, not a NotFound.
+func noMatchOn(absent schema.GroupVersionKind) interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if obj.GetObjectKind().GroupVersionKind() == absent {
+				return &apimeta.NoKindMatchError{
+					GroupKind:        absent.GroupKind(),
+					SearchedVersions: []string{absent.Version},
+				}
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
 	}
 }

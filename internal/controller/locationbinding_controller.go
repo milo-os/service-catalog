@@ -25,17 +25,35 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// locationBindingGVK is the consumer-facing projection the reconciler writes
-// into a project's virtual control plane. LocationBinding is owned by the
-// network-services operator (networking.datumapis.com); the typed Go types
-// are not yet available in go.miloapis.com/milo, so it is read and written as
-// an unstructured object — the same deliberate choice the ServiceAvailability
-// reconciler makes for Location.
+// locationBindingGVK is the projection this reconciler is moving off.
+// LocationBinding is owned by the network-services operator
+// (networking.datumapis.com) and is still read by that operator's
+// NetworkPresence controller, so it keeps being written alongside the Location
+// projection until those consumers move. See projectionGVKs.
 var locationBindingGVK = schema.GroupVersionKind{
 	Group:   "networking.datumapis.com",
 	Version: "v1alpha",
 	Kind:    "LocationBinding",
 }
+
+// projectedLocationGVK is the consumer-facing object going forward: the same
+// Location kind the locations service declares, projected into a project that
+// may use it. What is projected is deliberately independent of which group
+// locations are READ from (config.LocationSource) — a control plane can serve
+// consumers the new object while still sourcing locations from the old group,
+// and the two move on their own schedules.
+var projectedLocationGVK = schema.GroupVersionKind{
+	Group:   "locations.miloapis.com",
+	Version: "v1alpha1",
+	Kind:    "Location",
+}
+
+// projectionGVKs are the kinds a reconcile pass owns in a consumer control
+// plane, in the order they are written and pruned. Both are written as
+// unstructured, and a kind whose CRD is not installed in a given control plane
+// is skipped rather than treated as a failure, so a control plane needs only
+// the kinds its consumers actually read.
+var projectionGVKs = []schema.GroupVersionKind{projectedLocationGVK, locationBindingGVK}
 
 const (
 	// locationBindingResyncInterval bounds how long a gate change on the root
@@ -71,15 +89,22 @@ const (
 )
 
 // LocationBindingReconciler projects platform Locations into entitled projects
-// as consumer-facing, cluster-scoped LocationBinding objects. It is the
-// tier-2 half of the location two-tier discovery model and the place where the
-// three location gates are combined:
+// as consumer-facing, cluster-scoped objects. It writes two kinds while the
+// platform moves onto the locations service: a locations.miloapis.com Location,
+// which is what consumers read going forward, and the LocationBinding the
+// network-services operator still reads. It is the tier-2 half of the location
+// two-tier discovery model and the place where the three location gates are
+// combined:
 //
 //	gate 1: the Location's class is in the active ServiceConfiguration's
 //	        spec.locations.supportedClasses
 //	gate 2: the Location's status.conditions[Ready] is True
 //	gate 3: a ServiceAvailability for (service, location) reports
 //	        status.conditions[Available] = True
+//
+// Every projection carries the combined verdict as its own Available condition
+// rather than being deleted when a gate closes, which keeps quota accounting
+// continuous and avoids churn when a gate briefly toggles.
 //
 // It runs on the multicluster manager so each reconcile is scoped to one
 // engaged project cluster (req.ClusterName), where it reads the project's
@@ -94,6 +119,10 @@ type LocationBindingReconciler struct {
 	rootClient client.Client
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme
+
+	// LocationGVK is the configured location source. Only this group is read.
+	// It is unrelated to projectedLocationGVK, which is what gets written.
+	LocationGVK schema.GroupVersionKind
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -101,6 +130,8 @@ type LocationBindingReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations/status,verbs=get;update;patch
 // The Milo multicluster provider watches resourcemanager Projects to discover
 // which project control planes to engage; without list/watch here its informer
 // never syncs and the manager crash-loops on the cache-sync timeout.
@@ -135,7 +166,7 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 	// approval, rejected, deleting) tears its bindings down.
 	if !entitlement.DeletionTimestamp.IsZero() ||
 		entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.cleanupBindings(ctx, consumerClient, entitlement.UID, nil); err != nil {
+		if err := r.cleanupProjections(ctx, consumerClient, entitlement.UID, nil); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -163,7 +194,7 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 	if sc.Spec.Locations == nil || len(sc.Spec.Locations.SupportedClasses) == 0 {
 		// The service version declares no location classes; nothing is
 		// projectable. Ensure no stale bindings remain.
-		if err := r.cleanupBindings(ctx, consumerClient, entitlement.UID, nil); err != nil {
+		if err := r.cleanupProjections(ctx, consumerClient, entitlement.UID, nil); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: locationBindingResyncInterval}, nil
@@ -197,34 +228,36 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 		// Gate-source 2: load the referenced Location. A transient read failure
 		// must requeue without disturbing existing bindings — never flip a
 		// binding to unavailable on a blip.
-		loc := &unstructured.Unstructured{}
-		loc.SetGroupVersionKind(locationGVK)
-		locKey := types.NamespacedName{Name: locName}
-		if err := r.rootClient.Get(ctx, locKey, loc); err != nil {
-			if apierrors.IsNotFound(err) {
-				// The Location vanished out from under an Available record;
-				// treat as a closed gate and let the prune remove any binding.
-				continue
-			}
+		loc, found, err := getLocation(ctx, r.rootClient, r.LocationGVK, locName)
+		if err != nil {
+			// A location source the control plane does not serve is a
+			// misconfiguration, and every location looks absent through it.
+			// Returning before the prune below is what stops that from
+			// tearing down every projection an entitled project has.
 			return ctrl.Result{}, fmt.Errorf("failed to get Location %q: %w", locName, err)
+		}
+		if !found {
+			// The Location vanished out from under an Available record; treat
+			// as a closed gate and let the prune remove any projection.
+			continue
 		}
 
 		fields := extractLocationFields(loc)
 
 		available, reason, message := evaluateGates(fields.class, supported, locationReady(loc), locName)
-		if err := r.upsertBinding(ctx, consumerClient, &entitlement, serviceName, locName, fields, available, reason, message); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to upsert LocationBinding %q: %w", locName, err)
+		if err := r.project(ctx, consumerClient, &entitlement, serviceName, locName, fields, available, reason, message); err != nil {
+			return ctrl.Result{}, err
 		}
 		desired[locName] = struct{}{}
 	}
 
 	// Prune any binding we own that is no longer backed by an Available
 	// ServiceAvailability (gate 3 closed, or the Location/SA was removed).
-	if err := r.cleanupBindings(ctx, consumerClient, entitlement.UID, desired); err != nil {
+	if err := r.cleanupProjections(ctx, consumerClient, entitlement.UID, desired); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.V(1).Info("reconciled location bindings", "service", serviceRefName, "bindings", len(desired))
+	logger.V(1).Info("reconciled location projections", "service", serviceRefName, "locations", len(desired))
 	return ctrl.Result{RequeueAfter: locationBindingResyncInterval}, nil
 }
 
@@ -290,12 +323,15 @@ func moreRecent(a, b *servicesv1alpha1.ServiceConfiguration) bool {
 type locationFields struct {
 	class       servicesv1alpha1.LocationClassName
 	displayName string
-	// topology mirrors the referenced Location's spec.topology verbatim. The
-	// network-services LocationBinding API expects spec.topology to carry the
-	// well-known keys (e.g. topology.datum.net/city-code,
-	// topology.datum.net/region) that downstream consumers like the compute
-	// workload webhook read to resolve a binding's valid city codes.
+	// topology mirrors the referenced Location's spec.topology verbatim. Both
+	// projections expect spec.topology to carry the well-known keys (e.g.
+	// topology.datum.net/city-code, topology.datum.net/region) that downstream
+	// consumers like the compute workload webhook read to resolve a location's
+	// valid city codes.
 	topology map[string]string
+	// coordinates mirrors spec.coordinates where the source Location carries
+	// it. Only locations.miloapis.com defines the field.
+	coordinates map[string]any
 }
 
 // extractLocationFields pulls the projection fields out of an unstructured
@@ -303,22 +339,22 @@ type locationFields struct {
 // still yields a binding, just with the corresponding fields omitted.
 func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 	var f locationFields
-	if s, _, _ := unstructured.NestedString(loc.Object, "spec", "locationClassName"); s != "" {
-		f.class = servicesv1alpha1.LocationClassName(s)
-	}
+	f.class = locationClass(loc)
+	// displayName exists only on the network-services Location; a location read
+	// from the locations service simply has none to carry.
 	f.displayName, _, _ = unstructured.NestedString(loc.Object, "spec", "displayName")
 	// City, region, and other location attributes are not first-class spec
-	// fields on the NSO Location; they are carried in spec.topology under
-	// datum.net topology keys. Mirror the whole map onto the binding verbatim.
+	// fields on either Location; they are carried in spec.topology under
+	// datum.net topology keys. Mirror the whole map verbatim.
 	f.topology, _, _ = unstructured.NestedStringMap(loc.Object, "spec", "topology")
+	f.coordinates, _, _ = unstructured.NestedMap(loc.Object, "spec", "coordinates")
 	return f
 }
 
-// upsertBinding creates or updates the LocationBinding for one location and
-// reconciles its Available condition. Metadata/spec are written via
-// CreateOrUpdate; the status condition is written separately (and only when it
-// changes) so an already-settled binding is a no-op.
-func (r *LocationBindingReconciler) upsertBinding(
+// project writes every projection kind for one location. A kind whose CRD is
+// absent from the consumer control plane is skipped, so a project that reads
+// only one of them does not have to install the other.
+func (r *LocationBindingReconciler) project(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
@@ -328,8 +364,81 @@ func (r *LocationBindingReconciler) upsertBinding(
 	available bool,
 	reason, message string,
 ) error {
+	for _, gvk := range projectionGVKs {
+		spec, ok := projectionSpec(gvk, locName, fields)
+		if !ok {
+			continue
+		}
+		if err := r.upsertProjection(ctx, consumerClient, gvk, spec, entitlement, serviceName, locName, fields.class, available, reason, message); err != nil {
+			return fmt.Errorf("failed to upsert %s %q: %w", gvk.Kind, locName, err)
+		}
+	}
+	return nil
+}
+
+// projectionSpec builds the spec for one projection kind, reporting false when
+// the source location cannot satisfy that kind's schema.
+func projectionSpec(gvk schema.GroupVersionKind, locName string, fields locationFields) (map[string]any, bool) {
+	topology := make(map[string]any, len(fields.topology))
+	for k, v := range fields.topology {
+		topology[k] = v
+	}
+
+	if gvk == projectedLocationGVK {
+		// locations.miloapis.com requires both a class name and a non-empty
+		// topology. A source location carrying neither can still be projected
+		// as the legacy binding, so skip this kind rather than failing.
+		if fields.class == "" || len(topology) == 0 {
+			return nil, false
+		}
+		// The class is named without a project qualifier: the consumer control
+		// plane does not hold the platform's LocationClass, and no locations
+		// controller runs there to resolve it. This reconciler owns the
+		// projection's conditions itself.
+		spec := map[string]any{
+			"locationClassRef": map[string]any{"name": string(fields.class)},
+			"topology":         topology,
+		}
+		if len(fields.coordinates) > 0 {
+			spec["coordinates"] = fields.coordinates
+		}
+		return spec, true
+	}
+
+	spec := map[string]any{
+		"locationRef":       map[string]any{"name": locName},
+		"locationClassName": string(fields.class),
+	}
+	if fields.displayName != "" {
+		spec["displayName"] = fields.displayName
+	}
+	// Downstream consumers (e.g. the compute workload webhook) read
+	// spec.topology to resolve a location's valid city codes, so an empty
+	// topology silently makes every location-scoped deploy fail.
+	if len(topology) > 0 {
+		spec["topology"] = topology
+	}
+	return spec, true
+}
+
+// upsertProjection creates or updates one projected object for one location and
+// reconciles its Available condition. Metadata/spec are written via
+// CreateOrUpdate; the status condition is written separately (and only when it
+// changes) so an already-settled projection is a no-op.
+func (r *LocationBindingReconciler) upsertProjection(
+	ctx context.Context,
+	consumerClient client.Client,
+	gvk schema.GroupVersionKind,
+	spec map[string]any,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	serviceName string,
+	locName string,
+	class servicesv1alpha1.LocationClassName,
+	available bool,
+	reason, message string,
+) error {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(locationBindingGVK)
+	u.SetGroupVersionKind(gvk)
 	u.SetName(locName)
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
@@ -339,45 +448,30 @@ func (r *LocationBindingReconciler) upsertBinding(
 		}
 		labels[labelManagedBy] = labelManagedByValue
 		labels[labelLocation] = locName
-		labels[labelClass] = string(fields.class)
+		labels[labelClass] = string(class)
 		labels[labelServiceName] = serviceName
 		u.SetLabels(labels)
 
-		// The cluster-scoped ServiceEntitlement owns its projected bindings so
-		// that deleting the entitlement garbage-collects them.
+		// The cluster-scoped ServiceEntitlement owns its projections so that
+		// deleting the entitlement garbage-collects them.
 		if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
 			return fmt.Errorf("set controller reference: %w", err)
 		}
-
-		spec := map[string]any{
-			"locationRef":       map[string]any{"name": locName},
-			"locationClassName": string(fields.class),
-		}
-		if fields.displayName != "" {
-			spec["displayName"] = fields.displayName
-		}
-		// Mirror the referenced Location's spec.topology onto the binding.
-		// Downstream consumers (e.g. the compute workload webhook) read
-		// spec.topology to resolve a binding's valid city codes, so an empty
-		// topology silently makes every location-scoped deploy fail.
-		if len(fields.topology) > 0 {
-			topology := make(map[string]any, len(fields.topology))
-			for k, v := range fields.topology {
-				topology[k] = v
-			}
-			spec["topology"] = topology
-		}
 		return unstructured.SetNestedMap(u.Object, spec, "spec")
 	}); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			// The kind is not installed in this consumer control plane.
+			return nil
+		}
 		return err
 	}
 
-	return r.setBindingAvailable(ctx, consumerClient, u, available, reason, message)
+	return r.setProjectionAvailable(ctx, consumerClient, u, available, reason, message)
 }
 
-// setBindingAvailable updates the binding's Available condition, writing to the
-// status subresource only when the condition actually changes.
-func (r *LocationBindingReconciler) setBindingAvailable(
+// setProjectionAvailable updates a projection's Available condition, writing to
+// the status subresource only when the condition actually changes.
+func (r *LocationBindingReconciler) setProjectionAvailable(
 	ctx context.Context,
 	consumerClient client.Client,
 	u *unstructured.Unstructured,
@@ -405,42 +499,44 @@ func (r *LocationBindingReconciler) setBindingAvailable(
 		return err
 	}
 	if err := consumerClient.Status().Update(ctx, u, client.FieldOwner(locationBindingFieldManager)); err != nil {
-		return fmt.Errorf("failed to update LocationBinding status: %w", err)
+		return fmt.Errorf("failed to update %s status: %w", u.GetKind(), err)
 	}
 	return nil
 }
 
-// cleanupBindings deletes LocationBindings owned by the entitlement that are
-// not in the keep set. A nil keep set deletes every owned binding (used when
-// the entitlement is no longer Active).
-func (r *LocationBindingReconciler) cleanupBindings(
+// cleanupProjections deletes projected objects owned by the entitlement that
+// are not in the keep set. A nil keep set deletes every owned projection (used
+// when the entitlement is no longer Active).
+func (r *LocationBindingReconciler) cleanupProjections(
 	ctx context.Context,
 	consumerClient client.Client,
 	entitlementUID types.UID,
 	keep map[string]struct{},
 ) error {
-	var list unstructured.UnstructuredList
-	list.SetGroupVersionKind(locationBindingGVK.GroupVersion().WithKind("LocationBindingList"))
-	if err := consumerClient.List(ctx, &list,
-		client.MatchingLabelsSelector{Selector: managedByFanoutSelector},
-	); err != nil {
-		if apimeta.IsNoMatchError(err) {
-			// The LocationBinding CRD is not installed in this project cluster;
-			// nothing to prune.
-			return nil
+	for _, gvk := range projectionGVKs {
+		var list unstructured.UnstructuredList
+		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+		if err := consumerClient.List(ctx, &list,
+			client.MatchingLabelsSelector{Selector: managedByFanoutSelector},
+		); err != nil {
+			if apimeta.IsNoMatchError(err) {
+				// The kind is not installed in this project cluster; nothing
+				// to prune.
+				continue
+			}
+			return fmt.Errorf("failed to list %s: %w", gvk.Kind, err)
 		}
-		return fmt.Errorf("failed to list LocationBindings: %w", err)
-	}
-	for i := range list.Items {
-		item := &list.Items[i]
-		if !ownedBy(item.GetOwnerReferences(), entitlementUID) {
-			continue
-		}
-		if _, ok := keep[item.GetName()]; ok {
-			continue
-		}
-		if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete stale LocationBinding %q: %w", item.GetName(), err)
+		for i := range list.Items {
+			item := &list.Items[i]
+			if !ownedBy(item.GetOwnerReferences(), entitlementUID) {
+				continue
+			}
+			if _, ok := keep[item.GetName()]; ok {
+				continue
+			}
+			if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete stale %s %q: %w", gvk.Kind, item.GetName(), err)
+			}
 		}
 	}
 	return nil
