@@ -25,7 +25,7 @@ func (c ServiceInfo) pendingNextSteps() string {
 func reportSubmittedPending(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
 	_, _ = fmt.Fprintf(io.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", cfg.noun(), project)
 	_, _ = fmt.Fprintf(io.Err, "  Status:  Pending approval — %s\n", serverMessage(StatePendingApproval, e))
-	_, _ = fmt.Fprintf(io.Err, "           Approval is a manual step by the service provider and may take a while.\n\n")
+	_, _ = fmt.Fprintf(io.Err, "           Someone reviews this by hand, so it can take a while.\n\n")
 	_, _ = fmt.Fprintf(io.Err, "%s\n", cfg.pendingNextSteps())
 	return newError(ExitPending, StatePendingApproval, "request submitted; awaiting provider approval", nil)
 }
@@ -35,7 +35,7 @@ func reportSubmittedPending(io IOStreams, cfg ServiceInfo, project string, e *se
 // degraded detail line; exit ExitPending.
 func reportSubmittedProcessing(io IOStreams, cfg ServiceInfo, project string) *Error {
 	_, _ = fmt.Fprintf(io.Err, "\nYour request to enable %s for project %q has been submitted.\n\n", cfg.noun(), project)
-	_, _ = fmt.Fprintf(io.Err, "  Status:  Processing — the platform hasn't recorded a decision yet.\n")
+	_, _ = fmt.Fprintf(io.Err, "  Status:  Processing — still being set up.\n")
 	_, _ = fmt.Fprintf(io.Err, "           This normally takes only a few seconds.\n\n")
 	_, _ = fmt.Fprintf(io.Err, "%s\n", cfg.pendingNextSteps())
 	return newError(ExitPending, StateProcessing, "request submitted; awaiting first status", nil)
@@ -44,7 +44,7 @@ func reportSubmittedProcessing(io IOStreams, cfg ServiceInfo, project string) *E
 // reportPendingReentry prints the awaiting-approval copy when a gated command is
 // re-invoked while the request is already pending. Instant: no watch, no wait.
 func reportPendingReentry(io IOStreams, cfg ServiceInfo, project string, e *servicesv1alpha1.ServiceEntitlement) *Error {
-	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q is awaiting provider approval (requested %s).\n",
+	_, _ = fmt.Fprintf(io.Err, "Error: %s access for project %q is waiting for approval (requested %s).\n",
 		cfg.noun(), project, requestedAge(e))
 	_, _ = fmt.Fprintf(io.Err, "  %s\n\n", serverMessage(StatePendingApproval, e))
 	_, _ = fmt.Fprintf(io.Err, "%s\n", cfg.pendingNextSteps())
@@ -85,7 +85,7 @@ func reportRevoked(io IOStreams, cfg ServiceInfo, project string, e *servicesv1a
 // reportUnavailable prints the not-available-on-this-platform copy. It covers
 // both a Rejected/ServiceNotPublished entitlement and the create-time mapping.
 func reportUnavailable(io IOStreams, cfg ServiceInfo, e *servicesv1alpha1.ServiceEntitlement) *Error {
-	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available on this platform environment.\n", cfg.noun())
+	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available here.\n", cfg.noun())
 	if msg := serverMessage(StateUnavailable, e); msg != "" {
 		_, _ = fmt.Fprintf(io.Err, "  %s\n", msg)
 	}
@@ -95,7 +95,7 @@ func reportUnavailable(io IOStreams, cfg ServiceInfo, e *servicesv1alpha1.Servic
 // reportCatalogUnavailable prints the same copy when the enablement API group is
 // absent entirely. Distinguished only by the reported State.
 func reportCatalogUnavailable(io IOStreams, cfg ServiceInfo) *Error {
-	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available on this platform environment.\n", cfg.noun())
+	_, _ = fmt.Fprintf(io.Err, "Error: the %s service is not available here.\n", cfg.noun())
 	return newError(ExitUnavailable, StateCatalogUnavailable, "enablement API not served", nil)
 }
 
