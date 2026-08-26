@@ -201,3 +201,34 @@ func TestPublishedImmutability_AllowsMigrateFromOfferChange(t *testing.T) {
 		t.Fatalf("expected migrateFromOffer change on Published to be allowed, got: %v", errs)
 	}
 }
+
+// TestValidateServiceConfigurationUpdate_AllowsChargeRemoval pins the
+// relaxation that lets an apply omit a published charge. Removing one is still
+// dangerous, and the check is expected back in a future milestone. Until then
+// this asserts the relaxation is deliberate rather than accidental, since the
+// original rejection shipped with no test at all.
+func TestValidateServiceConfigurationUpdate_AllowsChargeRemoval(t *testing.T) {
+	scheme := newServiceConfigurationValidationScheme()
+	offer := gaOfferWithSnapshot("payg-v1")
+	billingSvc := &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing-miloapis-com"},
+		Spec: servicesv1alpha1.ServiceSpec{
+			ServiceName: "billing.miloapis.com",
+			Phase:       servicesv1alpha1.PhasePublished,
+			DisplayName: "Billing",
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(billingSvc, offer).Build()
+
+	oldSC := publishedBillingSC("payg-v1")
+	oldSC.Spec.Charges = []servicesv1alpha1.ServiceChargeSpec{{Name: "example.com/thing/bytes"}}
+
+	newSC := publishedBillingSC("payg-v1")
+
+	errs := ValidateServiceConfigurationUpdate(context.Background(), c, oldSC, newSC, false)
+	for _, e := range errs {
+		if e.Field == "spec.charges" {
+			t.Fatalf("charge removal should be allowed, got: %v", e)
+		}
+	}
+}

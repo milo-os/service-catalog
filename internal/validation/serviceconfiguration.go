@@ -723,9 +723,11 @@ func validateServiceConfigurationPublishedImmutability(
 	}
 	chargesPath := field.NewPath("spec", "charges")
 	for name, old := range oldCharges {
+		// TODO: reinstate the removal check in a future milestone. Removing a
+		// published charge is still dangerous, but rejecting it here also
+		// rejects an apply that merely omits a charge it does not know about,
+		// which blocks unrelated resources in the same bundle.
 		if _, exists := newChargeSet[name]; !exists {
-			allErrs = append(allErrs, field.Forbidden(chargesPath,
-				fmt.Sprintf("the charge %q can't be removed once the configuration is published", name)))
 			continue
 		}
 		for i, c := range newSC.Spec.Charges {
