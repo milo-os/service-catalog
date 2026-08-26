@@ -15,7 +15,10 @@ func newListCommand(opts ServicesCommandOptions) *cobra.Command {
 		Use:   "list",
 		Short: "List available services and their entitlement state for the current project",
 		Long: `List every published Datum Cloud service alongside its entitlement state
-for the current project: enabled, pending approval, not requested, or denied.`,
+for the current project: enabled, pending approval, not requested, or denied.
+
+The SERVICE NAME column carries the value to pass to
+"datumctl services enable" and "datumctl services status".`,
 		Example: `  # See what's available and what's already enabled
   datumctl services list
 

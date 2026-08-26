@@ -112,5 +112,5 @@ func FindService(services *servicesv1alpha1.ServiceList, name string) (ServiceIn
 			return *fallback, nil
 		}
 	}
-	return ServiceInfo{}, fmt.Errorf("service %q not found; run `datumctl services list` to see available services", name)
+	return ServiceInfo{}, fmt.Errorf("service %q not found; run `datumctl services list` and pass the value from the SERVICE NAME column", name)
 }
