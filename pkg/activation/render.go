@@ -71,13 +71,22 @@ func NewCatalogReport(project string, entries []CatalogEntry) CatalogReport {
 // RenderList writes the human-readable catalog table for the `services list`
 // verb to w: one row per published service, showing its current entitlement
 // state for the active project.
+//
+// The table carries both names a service has: the display name people read,
+// and the canonical name the enable/status verbs actually accept. Listing only
+// the display name left operators typing "AI Assistant" into `services enable`
+// and getting a not-found error, so the canonical name is a column of its own
+// and a trailing hint names it as the argument to pass.
 func RenderList(w io.Writer, entries []CatalogEntry) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tSTATE\tSINCE")
+	_, _ = fmt.Fprintln(tw, "NAME\tSERVICE NAME\tSTATE\tSINCE")
 	for _, entry := range entries {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", entry.Service.DisplayName, entry.State, listSince(entry.Entitlement))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", entry.Service.DisplayName, entry.Service.CanonicalName, entry.State, listSince(entry.Entitlement))
 	}
 	_ = tw.Flush()
+	if len(entries) > 0 {
+		_, _ = fmt.Fprint(w, "\nEnable a service with: datumctl services enable <SERVICE NAME>\n")
+	}
 }
 
 // listSince returns the age of the entitlement backing a catalog row, or ""
