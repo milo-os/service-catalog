@@ -221,7 +221,7 @@ func getProjection(t *testing.T, c client.Client, gvk schema.GroupVersionKind, l
 
 func assertBindingAvailable(t *testing.T, u *unstructured.Unstructured, wantStatus metav1.ConditionStatus, wantReason string) {
 	t.Helper()
-	cond := apimeta.FindStatusCondition(bindingConditions(u), ConditionTypeAvailable)
+	cond := apimeta.FindStatusCondition(objectConditions(u), ConditionTypeAvailable)
 	if cond == nil {
 		t.Fatalf("Available condition not set on binding %q", u.GetName())
 	}
@@ -614,4 +614,144 @@ func TestLocationBindingReconciler_PrunesEveryProjection(t *testing.T) {
 	if _, ok := getBinding(t, consumerClient, lbLoc); ok {
 		t.Errorf("expected LocationBinding %q to be pruned", lbLoc)
 	}
+}
+
+// withCondition sets a condition on an unstructured Location, preserving any
+// already present.
+func withCondition(loc *unstructured.Unstructured, condType, status, reason, message string) *unstructured.Unstructured {
+	conds := objectConditions(loc)
+	apimeta.SetStatusCondition(&conds, metav1.Condition{
+		Type:    condType,
+		Status:  metav1.ConditionStatus(status),
+		Reason:  reason,
+		Message: message,
+	})
+	_ = setObjectConditions(loc, conds)
+	return loc
+}
+
+func findProjectedCondition(t *testing.T, c client.Client, locName, condType string) *metav1.Condition {
+	t.Helper()
+	u, ok := getProjectedLocation(t, c, locName)
+	if !ok {
+		t.Fatalf("expected projected Location %q to exist", locName)
+	}
+	return apimeta.FindStatusCondition(objectConditions(u), condType)
+}
+
+// The platform Location's own conditions reach the consumer. Available alone
+// says a location is unusable but never which gate is shut, and Ready is only
+// ever written on the platform copy a consumer cannot read.
+func TestLocationBindingReconciler_MirrorsLocationStatus(t *testing.T) {
+	loc := withCondition(newClassyLocation(lbLoc, true, lbClass),
+		"Ready", string(metav1.ConditionTrue), "Ready", "Location is serving.")
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		loc,
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	ready := findProjectedCondition(t, consumerClient, lbLoc, "Ready")
+	if ready == nil {
+		t.Fatalf("Ready condition was not mirrored onto the projected Location")
+	}
+	if ready.Status != metav1.ConditionTrue || ready.Reason != "Ready" {
+		t.Errorf("mirrored Ready = %q/%q, want True/Ready", ready.Status, ready.Reason)
+	}
+	if ready.Message != "Location is serving." {
+		t.Errorf("mirrored Ready message = %q, want the platform message", ready.Message)
+	}
+
+	u, _ := getProjectedLocation(t, consumerClient, lbLoc)
+	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+}
+
+// A status change on the platform Location reaches an already-projected copy;
+// the projection is not create-only.
+func TestLocationBindingReconciler_MirroredStatusTracksSource(t *testing.T) {
+	loc := withCondition(newClassyLocation(lbLoc, true, lbClass),
+		"Ready", string(metav1.ConditionTrue), "Ready", "Location is serving.")
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		loc,
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	current := &unstructured.Unstructured{}
+	current.SetGroupVersionKind(legacyLocationGVK)
+	if err := rootClient.Get(context.Background(), types.NamespacedName{Name: lbLoc}, current); err != nil {
+		t.Fatalf("get location: %v", err)
+	}
+	withCondition(current, "Ready", string(metav1.ConditionFalse), "MissingTopology", "No city code.")
+	if err := rootClient.Update(context.Background(), current); err != nil {
+		t.Fatalf("update location: %v", err)
+	}
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	ready := findProjectedCondition(t, consumerClient, lbLoc, "Ready")
+	if ready == nil {
+		t.Fatalf("Ready condition missing from the projected Location")
+	}
+	if ready.Status != metav1.ConditionFalse || ready.Reason != "MissingTopology" {
+		t.Errorf("mirrored Ready = %q/%q, want False/MissingTopology", ready.Status, ready.Reason)
+	}
+}
+
+// Available on the projection is this reconciler's combined verdict over three
+// gates. A platform Location carrying its own Available must not displace it.
+func TestLocationBindingReconciler_SourceAvailableDoesNotOverrideVerdict(t *testing.T) {
+	loc := withCondition(newClassyLocation(lbLoc, true, lbClass),
+		ConditionTypeAvailable, string(metav1.ConditionFalse), "SomethingElse", "not this reconciler's verdict")
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		loc,
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	u, _ := getProjectedLocation(t, consumerClient, lbLoc)
+	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+}
+
+// LocationBinding has its own status contract, read by the network-services
+// operator. Platform conditions are mirrored onto the Location projection only.
+func TestLocationBindingReconciler_DoesNotMirrorOntoBinding(t *testing.T) {
+	loc := withCondition(newClassyLocation(lbLoc, true, lbClass),
+		"Ready", string(metav1.ConditionTrue), "Ready", "Location is serving.")
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		loc,
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	binding, ok := getBinding(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected LocationBinding %q to exist", lbLoc)
+	}
+	if c := apimeta.FindStatusCondition(objectConditions(binding), "Ready"); c != nil {
+		t.Errorf("Ready was mirrored onto the LocationBinding, want it left alone")
+	}
+	assertBindingAvailable(t, binding, metav1.ConditionTrue, reasonAllGatesOpen)
 }
