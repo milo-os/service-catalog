@@ -11,3 +11,4 @@ resources:
   - serviceentitlement.yaml
   - serviceconsumer.yaml
   - serviceavailability.yaml
+  - serviceavailability-project.yaml

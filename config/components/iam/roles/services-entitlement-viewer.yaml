@@ -14,3 +14,6 @@ spec:
     - services.miloapis.com/serviceconsumers.list
     - services.miloapis.com/serviceconsumers.get
     - services.miloapis.com/serviceconsumers.watch
+    - services.miloapis.com/serviceavailabilities.list
+    - services.miloapis.com/serviceavailabilities.get
+    - services.miloapis.com/serviceavailabilities.watch

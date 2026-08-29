@@ -59,12 +59,13 @@ func newBindingRootClient(objs ...client.Object) client.Client {
 // status-subresource support. ServiceEntitlement is left out of the subresource
 // set so the seeded status.phase survives object creation.
 func newBindingConsumerClient(objs ...client.Object) client.Client {
-	subresourced := make([]client.Object, 0, len(projectionGVKs))
+	subresourced := make([]client.Object, 0, len(projectionGVKs)+1)
 	for _, gvk := range projectionGVKs {
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(gvk)
 		subresourced = append(subresourced, u)
 	}
+	subresourced = append(subresourced, &servicesv1alpha1.ServiceAvailability{})
 	return fake.NewClientBuilder().
 		WithScheme(bindingScheme()).
 		WithObjects(objs...).
@@ -256,8 +257,8 @@ func TestLocationBindingReconciler_AllGatesOpen(t *testing.T) {
 	if class != lbClass {
 		t.Errorf("spec.locationClassName = %q, want %q", class, lbClass)
 	}
-	if got := u.GetLabels()[labelServiceName]; got != lbServiceName {
-		t.Errorf("service-name label = %q, want %q", got, lbServiceName)
+	if _, ok := u.GetLabels()[labelServiceName]; ok {
+		t.Errorf("service-name label present, want it dropped: a Location projection is no longer service-specific")
 	}
 	if got := u.GetLabels()[labelClass]; got != lbClass {
 		t.Errorf("class label = %q, want %q", got, lbClass)
@@ -276,8 +277,8 @@ func TestLocationBindingReconciler_AllGatesOpen(t *testing.T) {
 	if got := topology["topology.datum.net/region"]; got != "us-central1" {
 		t.Errorf("spec.topology[region] = %q, want us-central1", got)
 	}
-	if !ownedBy(u.GetOwnerReferences(), lbEntitlementUID) {
-		t.Errorf("binding is not owned by the entitlement")
+	if len(u.GetOwnerReferences()) != 0 {
+		t.Errorf("binding carries an owner reference, want none: projections are pruned by desired-state, not GC cascade")
 	}
 }
 
@@ -453,8 +454,8 @@ func TestLocationBindingReconciler_ProjectsLocation(t *testing.T) {
 	if got := topology["topology.datum.net/city-code"]; got != "ORD" {
 		t.Errorf("spec.topology[city-code] = %q, want ORD", got)
 	}
-	if !ownedBy(u.GetOwnerReferences(), lbEntitlementUID) {
-		t.Errorf("projected Location is not owned by the entitlement")
+	if len(u.GetOwnerReferences()) != 0 {
+		t.Errorf("projected Location carries an owner reference, want none: projections are pruned by desired-state, not GC cascade")
 	}
 	// The binding is still written until the network-services operator moves
 	// off it.
@@ -754,4 +755,242 @@ func TestLocationBindingReconciler_DoesNotMirrorOntoBinding(t *testing.T) {
 		t.Errorf("Ready was mirrored onto the LocationBinding, want it left alone")
 	}
 	assertBindingAvailable(t, binding, metav1.ConditionTrue, reasonAllGatesOpen)
+}
+
+// Second service fixtures for tests exercising more than one active
+// entitlement in the same project — the scenario the per-entitlement
+// ownership model could not survive.
+const (
+	lbServiceName2    = "storage.miloapis.com"
+	lbConfigName2     = "storage-miloapis-com"
+	lbEntitlement2    = "storage"
+	lbLoc2            = "us-east1-b"
+	lbEntitlementUID2 = types.UID("ent-storage-uid")
+)
+
+func newActiveEntitlementNamed(name string, uid types.UID, serviceRef string) *servicesv1alpha1.ServiceEntitlement {
+	return &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: uid},
+		Spec: servicesv1alpha1.ServiceEntitlementSpec{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: serviceRef},
+		},
+		Status: servicesv1alpha1.ServiceEntitlementStatus{
+			Phase: servicesv1alpha1.EntitlementPhaseActive,
+		},
+	}
+}
+
+func newPublishedConfigFor(configName, serviceRef string, classes ...servicesv1alpha1.LocationClassName) *servicesv1alpha1.ServiceConfiguration {
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: configName},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: serviceRef},
+			Phase:      servicesv1alpha1.PhasePublished,
+		},
+		Status: servicesv1alpha1.ServiceConfigurationStatus{ServiceName: serviceRef},
+	}
+	if len(classes) > 0 {
+		sc.Spec.Locations = &servicesv1alpha1.ServiceLocationConfig{SupportedClasses: classes}
+	}
+	return sc
+}
+
+func newAvailabilityFor(serviceRef, locName string, available bool) *servicesv1alpha1.ServiceAvailability {
+	sa := &servicesv1alpha1.ServiceAvailability{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceRef + "--" + locName},
+		Spec: servicesv1alpha1.ServiceAvailabilitySpec{
+			ServiceRef:  servicesv1alpha1.ServiceRef{Name: serviceRef},
+			LocationRef: servicesv1alpha1.LocationRef{Name: locName},
+		},
+	}
+	status := metav1.ConditionFalse
+	if available {
+		status = metav1.ConditionTrue
+	}
+	apimeta.SetStatusCondition(&sa.Status.Conditions, metav1.Condition{
+		Type: ConditionTypeAvailable, Status: status, Reason: "Test", Message: "test",
+	})
+	return sa
+}
+
+func getAvailabilityMirror(t *testing.T, c client.Client, name string) (*servicesv1alpha1.ServiceAvailability, bool) {
+	t.Helper()
+	var sa servicesv1alpha1.ServiceAvailability
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, &sa); err != nil {
+		return nil, false
+	}
+	return &sa, true
+}
+
+// TestLocationBindingReconciler_TwoEntitlementsBothProject is the direct
+// regression test for the defect this design fixes: a project entitled to two
+// services previously failed permanently on the second entitlement's
+// projection ("already owned by another ServiceEntitlement controller").
+// Reconciling the project rather than one entitlement removes the single
+// owner both entitlements used to race for, so both project cleanly.
+func TestLocationBindingReconciler_TwoEntitlementsBothProject(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+		newPublishedConfigFor(lbConfigName2, lbServiceName2, lbClass),
+		newAvailabilityFor(lbServiceName2, lbLoc2, true),
+		newClassyLocation(lbLoc2, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(
+		newActiveEntitlement(),
+		newActiveEntitlementNamed(lbEntitlement2, lbEntitlementUID2, lbServiceName2),
+	)
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); !ok {
+		t.Errorf("expected projected Location %q for the first entitlement's service", lbLoc)
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc2); !ok {
+		t.Errorf("expected projected Location %q for the second entitlement's service", lbLoc2)
+	}
+
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); !ok {
+		t.Errorf("expected mirrored ServiceAvailability for %q at %q", lbServiceName, lbLoc)
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName2+"--"+lbLoc2); !ok {
+		t.Errorf("expected mirrored ServiceAvailability for %q at %q", lbServiceName2, lbLoc2)
+	}
+}
+
+// TestLocationBindingReconciler_MigrationClearsStaleOwnerReference locks in
+// the migration hazard called out in the design: CreateOrUpdate does not
+// clear metadata its mutate function does not touch, so a controller owner
+// reference left over from the per-entitlement model must be explicitly
+// stripped. Left in place, deleting that one entitlement would cascade a
+// delete of a projection a second, still-active entitlement needs.
+func TestLocationBindingReconciler_MigrationClearsStaleOwnerReference(t *testing.T) {
+	pre := &unstructured.Unstructured{}
+	pre.SetGroupVersionKind(projectedLocationGVK)
+	pre.SetName(lbLoc)
+	pre.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
+	pre.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion:         servicesv1alpha1.GroupVersion.String(),
+		Kind:               "ServiceEntitlement",
+		Name:               lbEntitlement,
+		UID:                lbEntitlementUID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}})
+	// A real API server always carries a status object once one is ever
+	// written, even if only as {}; seed that here so the fake client's
+	// status-subresource Update path (which copies the old status forward)
+	// has a map to copy rather than a bare absent key.
+	_ = unstructured.SetNestedMap(pre.Object, map[string]any{}, "status")
+
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement(), pre)
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	u, ok := getProjectedLocation(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected projected Location %q to survive migration", lbLoc)
+	}
+	if len(u.GetOwnerReferences()) != 0 {
+		t.Errorf("stale owner reference survived migration: %+v", u.GetOwnerReferences())
+	}
+}
+
+// A ServiceAvailability the project holds no entitlement for is never
+// mirrored, even though it exists on the root cluster right alongside one the
+// project is entitled to. This is the isolation boundary the design's
+// Leakage section relies on: absence, not filtering, is what keeps an
+// un-entitled service invisible.
+func TestLocationBindingReconciler_DoesNotMirrorUnentitledService(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+		newPublishedConfigFor(lbConfigName2, lbServiceName2, lbClass),
+		newAvailabilityFor(lbServiceName2, lbLoc2, true),
+		newClassyLocation(lbLoc2, true, lbClass),
+	)
+	// Only entitled to the first service.
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); !ok {
+		t.Errorf("expected mirrored ServiceAvailability for the entitled service")
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName2+"--"+lbLoc2); ok {
+		t.Errorf("expected no mirrored ServiceAvailability for a service the project holds no entitlement for")
+	}
+}
+
+// The mirror is a literal copy: it exists whenever an active entitlement
+// reaches a matching platform ServiceAvailability, whether or not that
+// record itself reports Available=True. The project's own gate reading is
+// gate 3 alone; gates 1 and 2 are for the Location projection to decide.
+func TestLocationBindingReconciler_MirrorsUnavailableService(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, false),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	mirror, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc)
+	if !ok {
+		t.Fatalf("expected mirrored ServiceAvailability even though the source is not Available")
+	}
+	if apimeta.IsStatusConditionTrue(mirror.Status.Conditions, ConditionTypeAvailable) {
+		t.Errorf("mirrored Available = True, want the source's own False verdict preserved")
+	}
+}
+
+// A mirror is pruned the same way a Location projection is: once the
+// project's last active entitlement for that service goes away, the mirror
+// is no longer in the desired set and is deleted on the next reconcile.
+func TestLocationBindingReconciler_PrunesStaleMirror(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); !ok {
+		t.Fatalf("setup: expected mirrored ServiceAvailability")
+	}
+
+	ent := newActiveEntitlement()
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: lbEntitlement}, ent); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumerClient.Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement: %v", err)
+	}
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); ok {
+		t.Errorf("expected mirrored ServiceAvailability to be pruned once its entitlement is no longer Active")
+	}
 }
