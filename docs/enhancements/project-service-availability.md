@@ -1,13 +1,13 @@
 ---
 id: project-service-availability
-title: A Service-Agnostic Location Projection and Per-Project Service Availability
+title: Seeing Which Services Work Where, From Inside a Project
 status: draft
 created: 2026-08-29
-updated: 2026-08-29
+updated: 2026-08-30
 author: Scot Wells
 ---
 
-# A Service-Agnostic Location Projection and Per-Project Service Availability
+# Seeing Which Services Work Where, From Inside a Project
 
 - [Summary](#summary)
 - [Motivation](#motivation)
@@ -15,7 +15,7 @@ author: Scot Wells
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
   - [User Stories](#user-stories)
-  - [Notes/Constraints/Caveats](#notesconstraintscaveats)
+  - [What a consumer sees](#what-a-consumer-sees)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
@@ -23,516 +23,305 @@ author: Scot Wells
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
-- [Infrastructure Needed](#infrastructure-needed)
+- [References](#references)
 
 ## Summary
 
-A project entitled to a single service can today discover, from inside its own
-control plane, which Locations that service works at. A project entitled to
-**two** services cannot: the second service's projection fails, permanently.
-This document proposes fixing that by separating two questions that are
-currently fused onto one object — which Locations a project can use at all, and
-which of the project's entitled services actually work at each of them — and by
-making the answer to the second question directly readable from inside a
-project's own control plane, which it is not today.
+A project using one service can discover, from its own control plane, which
+locations that service works at. A project using **two** services cannot. The
+second service's locations never appear, and never will.
 
-The consumer-facing object here is `Location`
-(`locations.miloapis.com/v1alpha1`), projected into an entitled project by this
-repo's `LocationBindingReconciler`. `LocationBinding` is written alongside it
-only until its remaining readers move off; it is not the object this design
-builds on. See [LocationBinding's retirement](#locationbindings-retirement).
+This proposes separating two questions that are currently answered by one
+object: which locations a project can use at all, and which of the project's
+services actually work at each of them. The first stops being tied to a single
+service. The second becomes readable from inside the project, which it is not
+today.
 
 This extends [Locations as Platform Primitives for Service
-Consumers](./locations-platform-primitive.md), which defined the three-gate
-availability model these projections read. It does not revisit that model; it
-scopes how per-project visibility into it should work.
+Consumers](./locations-platform-primitive.md), which defined the availability
+model these answers come from. It does not revisit that model. It scopes how a
+project sees into it.
 
 ## Motivation
 
-A projected `Location` is the object a project's own control plane holds so a
-consumer can discover, without leaving their project, which Locations they can
-use. It is written once per (consumer project, `ServiceEntitlement`) by
-`LocationBindingReconciler`. That per-entitlement design was fine when a project
-held a single entitlement. It breaks as soon as a project holds two.
+A project's control plane holds a `Location` for each place the project can use,
+so a consumer can answer "where can I deploy this?" without leaving their
+project. That record is produced once per service the project is entitled to.
+That was fine when a project used one service.
 
-**A second entitlement fails hard, permanently, on every retry.** The projected
-object is named by Location alone (`u.SetName(locName)`), carries a
-`services.miloapis.com/service-name` label recording which service produced it,
-and is Kubernetes-owned by the one `ServiceEntitlement` whose reconcile happened
-to create it first (`controllerutil.SetControllerReference`, in
-`upsertProjection`). A second service's entitlement, reconciling independently,
-tries to take ownership of the same object and is rejected:
+**A second service fails permanently.** Each service claims sole ownership of
+the location records it produces. The first service to run takes them. Every
+other service in that project is refused, on every retry, forever. It is not a
+race that settles; it is decided by identity and stays decided.
 
-```
-failed to upsert Location "us-central1-a": set controller reference:
-  Object /us-central1-a is already owned by another ServiceEntitlement
-  controller compute
-```
+Nothing in production exercises this today, because projects hold a single
+entitlement. It fires the first time any project holds a second one, which is a
+product goal.
 
-This was reproduced directly against the reconciler on `main`. Whichever
-entitlement reconciles first wins; every other service entitled in that project
-never gets its Locations projected, and the failure does not resolve itself on
-retry — it is deterministic on object identity, not a transient race. Nothing
-about today's single-entitlement deployments exercises this path, so it has
-shipped unnoticed; it fires the first time any project holds a second
-entitlement. Because both projection kinds are written through the same
-`upsertProjection` path, `LocationBinding` fails the same way.
+**The record cannot express the answer a customer needs.** It carries one
+availability flag covering three separate facts: whether the service supports
+that kind of location, whether the location itself is healthy, and whether the
+service has confirmed it is actually running there. Two of those are per-service.
+One flag on one per-location record cannot say "Compute is available in Dallas,
+but the AI gateway is not." The platform models that distinction. A project
+cannot see it.
 
-**Even where it doesn't fail outright, the object can't express the answer a
-customer actually needs.** The projection folds three separate facts into one
-`Available` condition, computed in `evaluateGates`: whether the service's
-published configuration supports this Location's class, whether the Location is
-Ready, and whether the service has separately confirmed it is operational there
-(a `ServiceAvailability` with `Available=True`, which is what makes the
-projection exist at all). The first and third of those are per-service facts.
-Keyed by Location alone, one object cannot represent "Compute is available in
-Dallas, but the AI gateway is not" — the case the three-gate model in
-[locations-platform-primitive.md](./locations-platform-primitive.md) was built
-to represent for the platform as a whole is currently impossible to see from
-inside a single project once that project uses more than one service.
-
-**And there's no way to see the per-service verdict from inside a project at
-all today**, independent of the bug above. `ServiceAvailability` — the object
-that records "this service is confirmed live at this Location" — is
-cluster-scoped in the root key space, read by the reconciler through
-`rootClient`. Its `ProtectedResource`
-(`config/components/iam/protected-resources/serviceavailability.yaml`) declares
-no `parentResources`, and the type is annotated
-`discovery.miloapis.com/parent-contexts=Platform`. An ordinary project member
-has no IAM path to read it and no copy of it in their own control plane.
+**And the per-service answer is not visible from a project at all.** The record
+of "this service is confirmed live at this location" lives in the platform's own
+key space. A project member has no permission to read it and no copy of it. Even
+without the failure above, there is nothing to look at.
 
 ### Goals
 
-- Fix the failure: any number of entitled services in the same project must be
-  able to project Locations without one clobbering another.
-- Let a project see, for each service it's entitled to, exactly which of its
-  visible Locations that service actually works at — not just an aggregate
-  "some Location works for something" signal.
-- Keep discovery inside the project's own control plane, consistent with every
-  other Milo consumer-facing resource — no new cross-project read path.
-- Show a service's availability only for services the project actually holds an
-  active entitlement for.
+- Any number of services in the same project can offer locations without one
+  displacing another.
+- A project can see, per service it uses, which of its locations that service
+  actually works at, rather than one aggregate signal.
+- Discovery stays inside the project's own control plane, like every other
+  consumer-facing resource.
+- A service's availability is visible only to projects actually using it.
 
 ### Non-Goals
 
-- Revisiting the three-gate availability model itself, or the `Location`
-  primitive, both defined in
-  [locations-platform-primitive.md](./locations-platform-primitive.md). This
-  document is scoped to per-project visibility into gates already defined there.
-- A public catalog surface for browsing availability across services a project
-  has *not* entitled (see [Leakage](#leakage)).
-- Driving `LocationBinding`'s retirement, which depends on readers outside this
-  repo. See [LocationBinding's retirement](#locationbindings-retirement).
-- A migration plan for `edge.datum.net` or any other pre-existing location
-  surface — out of scope of the referenced document and unchanged here.
+- Revisiting the availability model or the `Location` primitive themselves, both
+  defined in
+  [locations-platform-primitive.md](./locations-platform-primitive.md).
+- A catalog for browsing availability of services a project does *not* use. See
+  [Leakage](#leakage).
+- Retiring `LocationBinding`, which depends on readers outside this repo.
+- A migration plan for `edge.datum.net` or any other pre-existing surface.
 
 ## Proposal
 
-Split what is today one object and one reconcile path into two:
+Split one object into two.
 
 | Question | Today | Proposed |
 |---|---|---|
-| Which places can this project use at all? | A projected `Location` per (project, entitlement, location) — breaks past one entitlement | A projected `Location` per (project, location), service-agnostic |
-| Which of the project's services work at each place? | Not visible from inside a project | A per-(service, location) record, mirrored into the project for each entitled service |
+| Which places can this project use at all? | One record per service, per location. Breaks past one service. | One record per location, independent of service. |
+| Which of the project's services work at each place? | Not visible from inside a project. | One record per service and location, for each service the project uses. |
 
-The projected `Location` becomes what its name and its consumer-facing behavior
-already imply it should be: a place the project can use, independent of which
-service asked for it. It exists because *some* active entitlement in the project
-reaches it, and carries the platform Location's own service-agnostic facts —
-its class, topology, coordinates, and, once
-[#85](https://github.com/milo-os/service-catalog/pull/85) lands, the platform
-Location's own status conditions. It stops carrying a single per-service
-verdict.
+A project's `Location` becomes what its name already implies: a place the
+project can use. It exists because some service the project holds reaches it,
+and carries only facts true of the place itself, not of any one service.
 
-`ServiceAvailability` — gate 3 — is mirrored per (service, Location) into every
-project holding an active entitlement for that service. A project entitled to
-Compute and Object Storage, at a Location where only Compute has shipped, sees
-`Location/us-east-1` (a usable place) and a Compute availability record for it,
-but no Object Storage record. The absence is the signal, exactly as the
-platform-scoped model already establishes in
-[locations-platform-primitive.md](./locations-platform-primitive.md).
+Availability becomes its own record, one per service and location, present in a
+project only for services that project actually uses. Where a service has not
+shipped, there is no record. The absence is the answer.
 
 ### User Stories
 
-#### Story 1: A project entitled to two services can see both
+#### A project using two services can see both
 
-Acme's project holds active entitlements for Compute and Object Storage. Today,
-only whichever service's entitlement reconciled first successfully projects any
-Locations at all; the other silently gets none, forever. Under this proposal,
-both entitlements' Locations are visible, and Acme can further tell, per
-Location, which of the two services is actually confirmed running there.
+Acme uses Compute and Object Storage. Today only whichever service ran first
+gets any locations at all; the other silently gets none, forever. Under this
+proposal both appear, and Acme can tell, per location, which of the two is
+confirmed running there.
 
-#### Story 2: A service is healthy at a Location, another isn't — visible from inside the project
+#### A service is live somewhere another isn't
 
-At `us-east-1`, Compute is confirmed live; Object Storage hasn't shipped there
-yet. From inside Acme's own project, `Location/us-east-1` shows the place is
-usable, and an availability record exists for Compute at that Location but not
-for Object Storage. Acme does not need platform access, or a support ticket, to
-learn this distinction — today they have no way to see it at all from their own
-project.
+At `us-east-1` Compute is live and Object Storage has not shipped yet. From
+inside Acme's project, `us-east-1` shows as a usable place, with an availability
+record for Compute and none for Object Storage. Acme learns this without
+platform access and without a support ticket. Today they cannot learn it at all.
 
-#### Story 3: A service Acme has never entitled stays invisible
+#### A service Acme never bought stays invisible
 
-Acme's project has no entitlement for the AI Gateway service. Nothing about AI
-Gateway's availability — anywhere — is mirrored into Acme's project. The absence
-is total, not filtered client-side: the object is never created in Acme's
-control plane in the first place.
+Acme does not use the AI gateway. Nothing about where the AI gateway runs
+appears in Acme's project. The records are never created there, rather than
+created and hidden.
 
-### Notes/Constraints/Caveats
+### What a consumer sees
 
-Everything from here down is mechanism.
+Two locations, one service live at both, a second service live at only one:
 
-#### Ownership and garbage collection
+```
+$ datumctl get locations
+NAME           CLASS           CITY
+us-east-1      datum-managed   IAD
+us-central-1   datum-managed   DFW
 
-This is the central design question and deserves the most scrutiny in this
-document.
-
-**Why the current model breaks.** `LocationBindingReconciler` reconciles once
-per `ServiceEntitlement`, and each reconcile independently decides the full set
-of projections *that entitlement* wants, using
-`controllerutil.SetControllerReference` in `upsertProjection` to make that one
-entitlement the Kubernetes-native, garbage-collecting owner. Ownership by
-exactly one controller is a hard Kubernetes invariant, so a second entitlement's
-reconcile cannot become a second owner of the same object and fails outright.
-Once the projection stops being per-service, no single entitlement is the right
-owner: the object's existence should depend on *whether any* active entitlement
-in the project still needs it, not on which one happened to create it.
-
-**Proposed model: reconcile the project, not the entitlement.** Change the unit
-of reconciliation from "one `ServiceEntitlement`" to "the project as a whole." A
-reconcile is still triggered by a `ServiceEntitlement` watch event, but the
-reconcile body lists every *Active* `ServiceEntitlement` in that project cluster
-(`req.ClusterName`), computes the full desired set of projections across all of
-them, upserts everything desired, and prunes anything the reconciler manages
-that is no longer in that set.
-
-This is a generalization of a pattern already in the codebase.
-`cleanupProjections` already does mark-and-sweep pruning against a keep-set —
-it lists by the `managedByFanoutSelector` label selector and then narrows to one
-entitlement's objects via `ownedBy(item.GetOwnerReferences(), entitlementUID)`.
-`QuotaFanOut` and `BillingFanOut` apply and prune fan-out sets the same way.
-Widening the keep-set from "one entitlement's desired Locations" to "the union
-of every active entitlement's desired Locations" removes the ownership conflict
-entirely, because no per-entitlement `SetControllerReference` call happens
-anymore.
-
-Concretely:
-
-- Projections are no longer Kubernetes-owned by a `ServiceEntitlement`. They
-  keep the `app.kubernetes.io/managed-by: services.miloapis.com` label the
-  prune selector already matches, and garbage collection is driven entirely by
-  the reconciler's desired-state computation rather than the Kubernetes GC
-  cascade. `cleanupProjections` drops its `ownedBy` narrowing and prunes on the
-  label selector alone, project-wide.
-- The `Reconcile` fast-path that returns on a `NotFound` entitlement — today
-  correct only because the projections carry that entitlement's owner reference
-  and are GC'd — must instead fall through to the project-wide recompute. Same
-  for the non-Active and empty-`supportedClasses` branches, which today call
-  `cleanupProjections(..., nil)` to tear down one entitlement's projections and
-  must become "recompute the project without this entitlement's contribution."
-- Deleting the last entitlement in a project prunes every managed projection
-  there, as the project-wide recompute of an empty Active set.
-- The existing `locationBindingResyncInterval` resync (5 minutes, covering
-  root-cluster gates that multicluster-runtime cannot watch into a
-  project-scoped request) doubles as a self-healing pass, so a dropped watch
-  event does not leave a stale or under-provisioned projection indefinitely.
-- The same model applies to the `ServiceAvailability` mirror: desired state per
-  project is "one mirrored record per (service, Location) where the project
-  holds an Active entitlement for that service and a matching platform
-  `ServiceAvailability` exists," recomputed and pruned the same way.
-
-**Alternative considered: multiple non-owning `ownerReferences`.** Kubernetes
-supports attaching more than one `ownerReference` as long as at most one is
-marked as the controller, and native garbage collection deletes the dependent
-once *none* of its owners still resolve — reference-counted cleanup for free.
-Set aside for this document: it would be a second garbage collection mechanism
-alongside the mark-and-sweep pruning this codebase already uses everywhere else,
-and correctness would depend on Kubernetes GC cascade behavior rather than
-reconciler logic that is easy to read, test, and reason about locally. Worth
-revisiting if project-wide recompute proves too expensive at high entitlement or
-Location counts — see [Open Questions](#open-questions).
-
-**Project deletion** is out of scope for this cleanup logic. A project's entire
-control plane and key space go away when Milo deletes the project, taking every
-object stored there with it. No finalizer-driven cleanup is needed, consistent
-with how `ServiceEntitlement` already relies on the project's own lifecycle.
-
-#### IAM
-
-The projected `Location` needs no new IAM work: `milo-os/locations` already
-ships a project-scoped `ProtectedResource` for
-`locations.miloapis.com` `Location` with
-
-```yaml
-parentResources:
-  - apiGroup: resourcemanager.miloapis.com
-    kind: Project
+$ datumctl get serviceavailabilities
+NAME                             SERVICE           LOCATION       AVAILABLE
+compute--us-east-1               compute           us-east-1      True
+compute--us-central-1            compute           us-central-1   True
+object-storage--us-east-1        object-storage    us-east-1      True
 ```
 
-and a `locations.miloapis.com-location-viewer` role granting list/get/watch.
+Object Storage is absent at `us-central-1`. That is the signal, and it reads the
+same whether the service has not shipped there or the project does not use that
+service at all.
 
-The mirrored `ServiceAvailability` is the gap. It is a new consumer-visible kind
-inside a project's control plane, and it needs its own registration or it is
-invisible even once it exists. As noted above, the existing `ProtectedResource`
-declares no `parentResources` and the type is annotated for the `Platform`
-discovery context only, so an ordinary project member has no IAM path to it
-today. Mirroring the object without also registering it as a project-scoped
-resource would produce an object nobody entitled to see it can read.
+Command and column names are illustrative.
 
-The fix follows the same pattern: a second, project-scoped `ProtectedResource`
-for the mirrored copy with a `resourcemanager.miloapis.com` `Project` parent,
-plus a viewer role — either a new one or an addition to
-`services.miloapis.com-entitlement-viewer`, which already covers project-scoped
-`ServiceEntitlement` and `ServiceConsumer`. The platform-scoped
-`ProtectedResource` is unaffected and continues to gate the root copy.
+### Risks and Mitigations
 
-#### Leakage
+- **Risk:** A project's records are no longer cleaned up by the platform's own
+  ownership rules, but by the reconciler working out what should exist.
+  **Mitigation:** This is already how fan-out sets elsewhere in this service are
+  maintained. What changes is the scope of the calculation, not the mechanism.
+  It does mean cleanup depends on the controller running; see
+  [Drawbacks](#drawbacks).
+- **Risk:** Migration leaves behind a stale ownership marker, so removing one
+  service deletes locations another service still needs.
+  **Mitigation:** Ownership markers must be cleared explicitly during migration,
+  covered by a test that removes one service and asserts the locations survive.
+  This is the one part of migration that is not free. See
+  [Migration](#migration).
+- **Risk:** The availability records ship without the permissions to read them,
+  and nothing errors. The records simply exist with no reader.
+  **Mitigation:** The permission changes land with the records, not after.
+- **Risk:** Recalculating a whole project's records on each pass costs more than
+  today's per-service pass.
+  **Mitigation:** Bounded by the number of services one project uses, which is
+  small. The existing periodic refresh already assumes a full recalculation.
 
-The availability matrix — which services exist and where they've shipped — is
-not necessarily something every customer should be able to enumerate, and a
-project's control plane is a strict isolation boundary elsewhere in Milo. This
-design mirrors a `ServiceAvailability` into a project only for a service the
-project holds an *Active* entitlement for — the same restriction the projection
-path already applies today, generalized across every entitled service instead of
-the single one it currently assumes. No aggregate or cross-project endpoint is
-introduced; a project can only ever see availability for services it has itself
-entitled.
+## Design Details
 
-#### Object count
+Light on mechanism by intent. Exact shapes belong to the implementation.
 
-Per project, the count is bounded by (active entitlements) × (Locations that
-service is available at) for the mirrors, plus one `Location` per distinct
-Location visible to any of those entitlements. That is usage-bound, not
-catalog-bound: a project's object count tracks what it uses, not the size of the
-platform's service or Location catalog — the same shape the projection already
-has today. This should not need bounding at current scale. If the Location
-catalog grows into the hundreds and projects routinely hold many entitlements,
-the mirror set should be revisited, but nothing here suggests that is imminent.
+### Ownership and cleanup
 
-#### Migration
+This is the central decision.
 
-The projected `Location` keeps its name and identity under this proposal; only
-the ownership model changes underneath it, through the same
-`controllerutil.CreateOrUpdate` upsert already in use. Existing objects are
-updated on their next reconcile, not recreated. No dual-write, no
-customer-visible cutover, no coordination with consumers.
+Today each service claims sole ownership of the records it produces, and the
+platform removes them when that service's entitlement goes away. Sole ownership
+is exactly what makes a second service fail, so it has to go. Once a location
+record is shared, no single service is the right owner: it should exist as long
+as *any* service in the project still needs it.
 
-One migration step is not free, and the naive version of it is a data-loss bug:
-the stale controller `ownerReference` must be **explicitly removed** in the
-mutate function. `CreateOrUpdate` does not clear metadata the mutate function
-does not touch, so an owner reference left behind means deleting that one
-entitlement still cascades a delete of projections other entitlements need. The
-implementation must strip any `ServiceEntitlement` owner reference on the way
-through, and that should be covered by a test that deletes the first-created
-entitlement and asserts the projection survives while a second entitlement still
-wants it.
+The proposal is to calculate at the level of the project rather than one
+service. A change to any service still triggers the work, but the work considers
+every service the project actively uses, decides the full set of records that
+should exist, writes them, and removes anything left over. Removing the last
+service in a project empties that set and cleans up everything.
+
+An alternative is to let each service hold a non-exclusive claim and have the
+platform delete a record once no claims remain, which gives reference-counted
+cleanup for free. It is set aside rather than rejected: it would add a second
+cleanup mechanism alongside the one this service already uses everywhere else.
+Worth revisiting if project-wide recalculation proves expensive.
+
+Project deletion needs nothing. The project's whole control plane goes away with
+it.
+
+### Permissions
+
+A project's `Location` needs no new work. The locations service already
+registers it as a project-scoped resource with a viewer role.
+
+The availability records are the gap. Today that type is registered only as a
+platform resource, so a project member has no path to read it. Mirroring the
+records without registering them as project-scoped would ship objects nobody
+entitled to see them can read. The fix is a project-scoped registration and a
+viewer role, either new or folded into the existing entitlement viewer.
+
+### Leakage
+
+Which services exist and where they have shipped is not necessarily something
+every customer should be able to enumerate. Records are mirrored into a project
+only for services that project actively uses, which is the restriction the
+current path already applies for its single service. No cross-project or
+aggregate surface is introduced.
+
+### Object count
+
+Per project: one record per location the project can reach, plus one per service
+and location where that service is available. That is bound by what a project
+uses, not by the size of the platform's catalog, which is the shape it already
+has. No bounding needed at current scale. Revisit if the location catalog
+reaches the hundreds and projects routinely hold many services.
+
+### Migration
+
+Records keep their names and identity. Existing ones are updated in place, not
+recreated. Nothing is dual-written and consumers see no cutover.
+
+The exception is the stale ownership marker described in
+[Risks](#risks-and-mitigations), which must be cleared deliberately.
 
 Sequencing:
 
 1. [#85](https://github.com/milo-os/service-catalog/pull/85) first. It is
-   additive, does not touch ownership, and lands in the same functions this
-   design restructures (`upsertProjection`, and `setProjectionAvailable`, which
-   it renames to `setProjectionStatus`). Rebasing it onto an ownership rewrite
-   is strictly more work than the reverse.
-2. The ownership fix on its own. It is a pure bugfix for something already
-   broken the moment a project holds two entitlements, independent of everything
-   else here.
-3. The `ServiceAvailability` mirror and its IAM registration, together. Additive
-   and separable: a project's `Location` visibility is not conditioned on the
-   mirror existing.
+   additive, does not touch ownership, and changes the same area. Rebasing it
+   onto an ownership rewrite is more work than the reverse.
+2. The ownership fix alone. It is a pure bugfix for something already broken.
+3. The availability records and their permissions, together. A project's
+   location visibility does not depend on them.
 
-#### LocationBinding's retirement
+### LocationBinding
 
-`LocationBinding` is being retired. `locationBindingGVK`'s comment in the
-reconciler is explicit that it is written only until the network-services
-operator's remaining readers move off it, and
-[locations-platform-primitive.md](./locations-platform-primitive.md#migration-off-locationbinding)
-tracks the reader set. This document adds nothing to it and does not extend it.
+`LocationBinding` is being retired, and this design adds nothing to it. It
+inherits the ownership fix, which it needs, because it fails on a second service
+the same way. When its last reader moves, it drops out of this design with no
+other change.
 
-Under this design it inherits the ownership fix automatically, because both
-kinds are written through the same `project` / `upsertProjection` /
-`cleanupProjections` path — which it needs, since it fails on a second
-entitlement exactly as the `Location` projection does. It gains no new fields
-and is not made a target of the `ServiceAvailability` mirror. When the last
-reader moves, dropping it from `projectionGVKs` removes it from this design with
-no other change.
-
-The precise reader set is in flux and this document does not attempt to pin it:
-`locations-platform-primitive.md` names four readers, and the
-`NetworkPresence` controller the reconciler's comment cites is not on
-`network-services-operator`'s `main` as of this writing. Treat that table, not
-this document, as the source of truth.
-
-### Risks and Mitigations
-
-- **Risk:** Recomputing the full desired set for every entitlement in a project
-  on every reconcile is more work per reconcile than today's single-entitlement
-  pass.
-  **Mitigation:** Bounded by the number of active entitlements in one project,
-  which is small in practice; the existing 5-minute resync already assumes a
-  full-recompute cost model for the cross-cluster gates.
-- **Risk:** Dropping Kubernetes-native controller ownership means garbage
-  collection depends entirely on the reconciler's mark-and-sweep logic being
-  correct, rather than on a platform-enforced cascade.
-  **Mitigation:** Not a new pattern here — `cleanupProjections`, `QuotaFanOut`,
-  and `BillingFanOut` already work this way. The change is the scope of the
-  desired-set computation, not the mechanism.
-- **Risk:** A stale controller `ownerReference` surviving migration cascades a
-  delete of projections other entitlements still need.
-  **Mitigation:** Explicit removal in the mutate function plus the survival test
-  described in [Migration](#migration).
-- **Risk:** A mirrored `ServiceAvailability` without correct IAM registration
-  ships invisible, and nothing errors — the object simply exists with no reader.
-  **Mitigation:** The project-scoped `ProtectedResource` and role change land in
-  the same change as the mirror, not as a follow-up.
-- **Risk:** A future service with a very large entitled-Location footprint
-  drives per-project object counts up faster than expected.
-  **Mitigation:** Object count is usage-bound, not catalog-bound (see [Object
-  count](#object-count)); revisit if a specific service's adoption pattern makes
-  this a real concern.
-
-## Design Details
-
-Illustrative, not exact — field names and shapes are a technical design question
-for the follow-up implementation, consistent with how
-[locations-platform-primitive.md](./locations-platform-primitive.md) treats its
-own examples.
-
-**The projected `Location`, service-agnostic, one per (project, Location):**
-
-```yaml
-# Project: acme-corp-project
-apiVersion: locations.miloapis.com/v1alpha1
-kind: Location
-metadata:
-  name: us-east-1
-  labels:
-    app.kubernetes.io/managed-by: services.miloapis.com
-    networking.datumapis.com/location: us-east-1
-    networking.datumapis.com/class: datum-managed
-    # services.miloapis.com/service-name is dropped — no longer meaningful
-    # once one projection can represent more than one entitled service.
-spec:
-  locationClassRef:
-    name: datum-managed
-  topology:
-    topology.datum.net/city-code: NYC
-status:
-  conditions:
-    # The platform Location's own conditions, mirrored by #85. Service-agnostic
-    # by construction, which is what makes them safe to keep here.
-    - type: Ready
-      status: "True"
-```
-
-**`ServiceAvailability`, mirrored per (service, Location) into every project
-holding an active entitlement for that service:**
-
-```yaml
-# Project: acme-corp-project — mirrored from the platform copy because
-# Acme holds an Active entitlement for Compute.
-apiVersion: services.miloapis.com/v1alpha1
-kind: ServiceAvailability
-metadata:
-  name: compute-miloapis-com--us-east-1
-spec:
-  serviceRef:
-    name: compute-miloapis-com
-  locationRef:
-    name: us-east-1
-status:
-  conditions:
-    - type: Available
-      status: "True"
-      reason: ServiceOperational
----
-# No object-storage mirror exists at us-east-1 in acme-corp-project, because
-# either Object Storage hasn't confirmed availability there yet, or Acme has
-# no Object Storage entitlement in the first place — both cases look identical
-# from inside the project: the record is simply absent.
-```
-
-The `<service>--<location>` name follows the convention in
-`config/samples/services_v1alpha1_serviceavailability.yaml`; it is a convention,
-not something the API enforces.
+The reader set is in flux, and
+[locations-platform-primitive.md](./locations-platform-primitive.md#migration-off-locationbinding),
+not this document, is the source of truth for it.
 
 ## Production Readiness Review Questionnaire
 
 Deferred, consistent with
 [locations-platform-primitive.md](./locations-platform-primitive.md#production-readiness-review-questionnaire).
-This document stops short of a fully implementable technical design; the PRR
-questionnaire belongs with the follow-up implementation once the reconcile-scope
-and IAM mechanics are settled.
+This document stops short of an implementable technical design.
 
 ## Open Questions
 
-- **What does `Available` mean on a service-agnostic `Location` projection?**
-  Today `evaluateGates` writes a single per-service verdict there. Once the
-  projection represents every entitled service, that condition either becomes an
-  aggregate ("at least one entitled service is available here") or is dropped in
-  favor of the platform conditions #85 mirrors plus the per-service records.
-  Retaining it as an aggregate is the conservative choice, because existing
-  readers may key off it, but the reader set is not fully enumerated (see
-  [LocationBinding's retirement](#locationbindings-retirement)). Blocking for
-  implementation.
-- **Is the mirrored `ServiceAvailability` a literal copy of the platform
-  object's spec/status, or a per-project recomputed verdict?** The platform
-  object's `Available` condition does not itself fold in gate 1 (does the
-  entitled service's published configuration support this Location's class);
-  that is evaluated only inside `LocationBindingReconciler`. A straight copy
-  therefore asserts something narrower than the projection's current
-  `Available`. Non-blocking — either shape satisfies this document's product
-  requirements, but it changes what the mirror asserts.
-- **Should the multi-owner `ownerReferences` alternative be revisited** if
-  project-wide recompute proves too expensive at scale? Non-blocking; noted in
-  [Ownership and garbage collection](#ownership-and-garbage-collection).
-- **Where does the mirror's reconcile live?** It shares every input with
-  `LocationBindingReconciler` (root `ServiceAvailability` list, per-project
-  Active entitlements) and could reasonably be a second writer inside the same
-  reconcile pass or its own controller. Non-blocking.
+- **What does the availability flag on a shared location record mean?** Today it
+  carries one service's verdict. Once the record covers every service, it either
+  becomes an aggregate, meaning at least one service works here, or it goes away
+  in favour of the per-service records. Keeping it as an aggregate is
+  conservative, because existing readers may depend on it, but the reader set is
+  not fully known. **Blocking for implementation.**
+- **Is a mirrored availability record a copy of the platform's, or recalculated
+  per project?** The platform's own record does not account for whether the
+  service supports that kind of location, so a straight copy asserts something
+  narrower than today's flag. Either satisfies the product requirements here,
+  but they assert different things. Non-blocking.
+- **Should reference-counted cleanup be revisited** if project-wide
+  recalculation proves expensive? Non-blocking.
+- **Where does the mirroring work live?** It shares every input with the
+  existing location work and could sit alongside it or stand alone.
+  Non-blocking.
 
 ## Implementation History
 
-- 2026-08-29: Initial draft, scoping the two-entitlement projection failure and
-  the lack of per-project `ServiceAvailability` visibility.
+- 2026-08-29: Initial draft, scoping the two-service failure and the lack of
+  per-project availability visibility.
+- 2026-08-30: Recast around product behaviour, with mechanism reduced to
+  [Design Details](#design-details).
 
 ## Drawbacks
 
-- Removing Kubernetes-native controller ownership means a projection's garbage
-  collection is no longer visible in its `ownerReferences` — an operator
-  debugging why an object persists or disappears has to reason about the
-  reconciler's desired-state computation instead of reading owner references.
-- Two objects instead of one means a consumer has to look in two places to get
-  the full picture for a given service and Location, rather than reading one
-  flag.
-- The mirror adds a second, project-scoped `ProtectedResource` for a type that
-  already has a platform-scoped one, a small but real increase in IAM surface to
-  keep in sync.
+- Cleanup is no longer visible in the record itself. Someone debugging why an
+  object persists has to reason about what the controller decided, rather than
+  reading ownership off the object. It also means cleanup depends on the
+  controller running to observe a change.
+- A consumer reads two records rather than one flag to get the full picture for
+  a service and a place.
+- A second, project-scoped registration for a type that already has a
+  platform-scoped one, which is a small increase in permission surface to keep
+  in step.
 
 ## Alternatives
 
-- **Keep one object, add a per-service map field to the `Location` projection
-  instead of a separate mirrored type.** Rejected — it re-couples the two
-  questions this document separates, and the projection is the same kind the
-  locations service declares, so a services-specific field on it is not this
-  repo's to add. A map keyed by service name also gets no independent IAM
-  scoping or lifecycle.
-- **Reference-counted garbage collection via multiple non-controller
-  `ownerReferences`.** Considered; deferred rather than rejected — see
-  [Ownership and garbage collection](#ownership-and-garbage-collection).
-- **Don't mirror `ServiceAvailability`; have consumers read it from the root key
-  space with narrowly scoped IAM.** Rejected — it breaks the isolation model
-  every other project-visible resource here relies on, and scoping root IAM per
-  consumer per service is a materially harder access-control problem than
-  mirroring already solves elsewhere.
+- **Keep one record and add a per-service section to it.** Rejected. It
+  re-couples the two questions this separates, and the record is the same kind
+  the locations service declares, so a services-specific field on it is not this
+  repo's to add. It also gets no independent permissions or lifecycle.
+- **Reference-counted cleanup.** Deferred rather than rejected. See
+  [Ownership and cleanup](#ownership-and-cleanup).
+- **Have consumers read the platform's records directly under narrow
+  permissions.** Rejected. It breaks the isolation model every other
+  project-visible resource relies on, and scoping platform permissions per
+  consumer per service is a harder access-control problem than mirroring, which
+  is already solved elsewhere.
 
 ## References
 
 - [Locations as Platform Primitives for Service
-  Consumers](./locations-platform-primitive.md) — the three-gate model this
-  document extends, and the `LocationBinding` reader table.
-- [service-catalog#85](https://github.com/milo-os/service-catalog/pull/85) —
-  mirrors platform `Location` status conditions onto the `Location` projection;
-  in flight against the same reconciler, sequenced first.
-- [infra#4299](https://github.com/datum-cloud/infra/pull/4299) — points staging
-  at the locations service.
+  Consumers](./locations-platform-primitive.md)
+- [#85](https://github.com/milo-os/service-catalog/pull/85), mirroring platform
+  location status into a project
+- [datum-cloud/infra#4299](https://github.com/datum-cloud/infra/pull/4299),
+  pointing staging at the locations service
