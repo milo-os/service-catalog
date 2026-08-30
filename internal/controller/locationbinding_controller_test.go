@@ -282,6 +282,39 @@ func TestLocationBindingReconciler_AllGatesOpen(t *testing.T) {
 	}
 }
 
+// TestLocationBindingReconciler_LocationCarriesNoAvailableCondition locks in
+// the design's breaking change: a flag on a record shared by every service in
+// the project could only mean that some unnamed service works here, so the
+// locations.miloapis.com projection carries no Available condition at all.
+// LocationBinding, whose contract predates and is unchanged by this design,
+// still carries the aggregate verdict.
+func TestLocationBindingReconciler_LocationCarriesNoAvailableCondition(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	loc, ok := getProjectedLocation(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected projected Location %q to exist", lbLoc)
+	}
+	if c := apimeta.FindStatusCondition(objectConditions(loc), ConditionTypeAvailable); c != nil {
+		t.Errorf("projected Location carries an Available condition (%+v), want none", c)
+	}
+
+	binding, ok := getBinding(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected LocationBinding %q to exist", lbLoc)
+	}
+	assertBindingAvailable(t, binding, metav1.ConditionTrue, reasonAllGatesOpen)
+}
+
 func TestLocationBindingReconciler_ClassNotSupported(t *testing.T) {
 	rootClient := newBindingRootClient(
 		newPublishedConfigWithClasses(servicesv1alpha1.LocationClassProviderDedicated), // does not include datum-managed
@@ -438,7 +471,9 @@ func TestLocationBindingReconciler_ProjectsLocation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected projected Location %q to exist", lbLoc)
 	}
-	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+	if c := apimeta.FindStatusCondition(objectConditions(u), ConditionTypeAvailable); c != nil {
+		t.Errorf("projected Location carries an Available condition (%+v), want none: presence of the location is the signal", c)
+	}
 
 	class, _, _ := unstructured.NestedString(u.Object, "spec", "locationClassRef", "name")
 	if class != lbClass {
@@ -458,10 +493,13 @@ func TestLocationBindingReconciler_ProjectsLocation(t *testing.T) {
 		t.Errorf("projected Location carries an owner reference, want none: projections are pruned by desired-state, not GC cascade")
 	}
 	// The binding is still written until the network-services operator moves
-	// off it.
-	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
-		t.Errorf("expected LocationBinding %q to still be written alongside the Location", lbLoc)
+	// off it, and it still carries the aggregate Available verdict the
+	// Location projection no longer does.
+	b, ok := getBinding(t, consumerClient, lbLoc)
+	if !ok {
+		t.Fatalf("expected LocationBinding %q to still be written alongside the Location", lbLoc)
 	}
+	assertBindingAvailable(t, b, metav1.ConditionTrue, reasonAllGatesOpen)
 }
 
 // With the source set to the locations service, projections are driven by that
@@ -482,7 +520,9 @@ func TestLocationBindingReconciler_ReadsConfiguredSource(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected projected Location %q to exist", lbLoc)
 	}
-	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+	if c := apimeta.FindStatusCondition(objectConditions(u), ConditionTypeAvailable); c != nil {
+		t.Errorf("projected Location carries an Available condition (%+v), want none", c)
+	}
 
 	b, ok := getBinding(t, consumerClient, lbLoc)
 	if !ok {
@@ -491,6 +531,7 @@ func TestLocationBindingReconciler_ReadsConfiguredSource(t *testing.T) {
 	if got := b.GetLabels()[labelClass]; got != lbClass {
 		t.Errorf("class label = %q, want %q", got, lbClass)
 	}
+	assertBindingAvailable(t, b, metav1.ConditionTrue, reasonAllGatesOpen)
 }
 
 // A location in the group that is not configured is not read, so no projection
@@ -669,7 +710,9 @@ func TestLocationBindingReconciler_MirrorsLocationStatus(t *testing.T) {
 	}
 
 	u, _ := getProjectedLocation(t, consumerClient, lbLoc)
-	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+	if c := apimeta.FindStatusCondition(objectConditions(u), ConditionTypeAvailable); c != nil {
+		t.Errorf("projected Location carries an Available condition (%+v), want none", c)
+	}
 }
 
 // A status change on the platform Location reaches an already-projected copy;
@@ -711,9 +754,10 @@ func TestLocationBindingReconciler_MirroredStatusTracksSource(t *testing.T) {
 	}
 }
 
-// Available on the projection is this reconciler's combined verdict over three
-// gates. A platform Location carrying its own Available must not displace it.
-func TestLocationBindingReconciler_SourceAvailableDoesNotOverrideVerdict(t *testing.T) {
+// The Location projection carries no Available condition of its own. A
+// platform Location carrying its own Available must not leak onto the
+// projection either: mirrored conditions strip Available unconditionally.
+func TestLocationBindingReconciler_SourceAvailableNotMirrored(t *testing.T) {
 	loc := withCondition(newClassyLocation(lbLoc, true, lbClass),
 		ConditionTypeAvailable, string(metav1.ConditionFalse), "SomethingElse", "not this reconciler's verdict")
 	rootClient := newBindingRootClient(
@@ -728,7 +772,9 @@ func TestLocationBindingReconciler_SourceAvailableDoesNotOverrideVerdict(t *test
 	}
 
 	u, _ := getProjectedLocation(t, consumerClient, lbLoc)
-	assertBindingAvailable(t, u, metav1.ConditionTrue, reasonAllGatesOpen)
+	if c := apimeta.FindStatusCondition(objectConditions(u), ConditionTypeAvailable); c != nil {
+		t.Errorf("projected Location carries an Available condition (%+v), want none", c)
+	}
 }
 
 // LocationBinding has its own status contract, read by the network-services
@@ -935,11 +981,10 @@ func TestLocationBindingReconciler_DoesNotMirrorUnentitledService(t *testing.T) 
 	}
 }
 
-// The mirror is a literal copy: it exists whenever an active entitlement
-// reaches a matching platform ServiceAvailability, whether or not that
-// record itself reports Available=True. The project's own gate reading is
-// gate 3 alone; gates 1 and 2 are for the Location projection to decide.
-func TestLocationBindingReconciler_MirrorsUnavailableService(t *testing.T) {
+// A mirror requires gate 3 (the platform's own Available) open, the same as
+// LocationBinding. A service that merely exists is not enough to publish a
+// record a consumer would read as "this works here".
+func TestLocationBindingReconciler_MirrorRequiresGate3(t *testing.T) {
 	rootClient := newBindingRootClient(
 		newPublishedConfigWithClasses(lbClass),
 		newAvailabilityWithCondition(lbLoc, false),
@@ -951,13 +996,41 @@ func TestLocationBindingReconciler_MirrorsUnavailableService(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	mirror, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc)
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); ok {
+		t.Errorf("expected no mirrored ServiceAvailability for a source that is not Available")
+	}
+}
+
+// A mirror additionally requires gate 1: the service's published
+// configuration must support the location's class. The platform record alone
+// only asserts that the service runs at the location, not that it supports
+// this kind of location, so a mirror gated on gate 3 alone would assert less
+// than a consumer needs to act on. LocationBinding, whose contract predates
+// this design, still projects with Available=False for the same input.
+func TestLocationBindingReconciler_MirrorRequiresClassSupport(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(servicesv1alpha1.LocationClassProviderDedicated), // does not include datum-managed
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); ok {
+		t.Errorf("expected no mirrored ServiceAvailability when the configuration does not support the location's class")
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); ok {
+		t.Errorf("expected no projected Location when no service reaches it with class support")
+	}
+
+	b, ok := getBinding(t, consumerClient, lbLoc)
 	if !ok {
-		t.Fatalf("expected mirrored ServiceAvailability even though the source is not Available")
+		t.Fatalf("expected LocationBinding %q to still exist with Available=False", lbLoc)
 	}
-	if apimeta.IsStatusConditionTrue(mirror.Status.Conditions, ConditionTypeAvailable) {
-		t.Errorf("mirrored Available = True, want the source's own False verdict preserved")
-	}
+	assertBindingAvailable(t, b, metav1.ConditionFalse, reasonLocationClassNotSupported)
 }
 
 // A mirror is pruned the same way a Location projection is: once the
