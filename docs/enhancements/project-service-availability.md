@@ -87,10 +87,14 @@ and no copy of it.
 
 ## Proposal
 
-| Question | Today | Proposed |
-|---|---|---|
-| Which places can this project use? | One record per service and location. Fails past one service. | One record per location. |
-| Which services work at each place? | Not visible to the project. | One record per service and location. |
+One record answers two questions today, and answers both badly.
+
+**Which places can this project use?** One record exists per service and
+location, so the record fails past one service. Keep one record per location
+instead.
+
+**Which services work at each place?** The project cannot see this at all. Add
+one record per service and location.
 
 A `Location` names a place, not a service. It exists while any service in the
 project reaches it. It carries only facts about the place.
@@ -136,12 +140,20 @@ Command and column names are illustrative.
 
 ### Risks and Mitigations
 
-| Risk | Mitigation |
-|---|---|
-| The controller, not the platform, cleans up records. | Other fan-out sets in this service already work this way. Cleanup now depends on the controller running. See [Drawbacks](#drawbacks). |
-| A stale ownership marker survives migration, so removing one service deletes locations another service needs. | Clear the marker during migration. Test that removing one service leaves the locations in place. |
-| Availability records ship without read permission, and nothing errors. | Ship the permission change with the records. |
-| Recalculating a whole project costs more than recalculating one service. | The count of services in a project is small. The periodic refresh already recalculates in full. |
+**The controller, not the platform, cleans up records.** Other fan-out sets in
+this service already work this way. Cleanup now depends on the controller
+running. See [Drawbacks](#drawbacks).
+
+**A stale ownership marker survives migration.** Removing one service then
+deletes locations another service needs. Clear the marker during migration. Test
+that removing one service leaves the locations in place.
+
+**Availability records ship without read permission, and nothing errors.** Ship
+the permission change with the records.
+
+**Recalculating a whole project costs more than recalculating one service.** The
+count of services in a project is small. The periodic refresh already
+recalculates in full.
 
 ## Design Details
 
