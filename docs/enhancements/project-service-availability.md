@@ -19,7 +19,6 @@ author: Scot Wells
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
-- [Open Questions](#open-questions)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -97,11 +96,20 @@ instead.
 one record per service and location.
 
 A `Location` names a place, not a service. It exists while any service in the
-project reaches it. It carries only facts about the place.
+project reaches it, and carries only facts about the place: where it is, what
+kind of location it is, and whether the location itself is healthy. It carries
+no availability flag. A flag on a shared record could only mean that some
+unnamed service works here, which is the conflation this design removes.
 
-An availability record names one service at one location. A project holds
-records only for the services it uses. Where a service does not run, no record
-exists.
+An availability record names one service at one location, and asserts that the
+service works there for this project. That is a stronger claim than the platform
+makes. The platform records only that a service runs at a location; it does not
+account for whether the service supports that kind of location. A consumer
+reading a record needs both, so each record is calculated for the project rather
+than copied.
+
+A project holds records only for the services it uses. Where a service does not
+work, no record exists.
 
 ### User Stories
 
@@ -127,14 +135,15 @@ us-east-1      datum-managed   IAD
 us-central-1   datum-managed   DFW
 
 $ datumctl get serviceavailabilities
-NAME                        SERVICE          LOCATION       AVAILABLE
-compute--us-east-1          compute          us-east-1      True
-compute--us-central-1       compute          us-central-1   True
-object-storage--us-east-1   object-storage   us-east-1      True
+NAME                        SERVICE          LOCATION
+compute--us-east-1          compute          us-east-1
+compute--us-central-1       compute          us-central-1
+object-storage--us-east-1   object-storage   us-east-1
 ```
 
-Object Storage has no record at `us-central-1`. A missing record means the
-service does not run there, or the project does not use it. Both read the same.
+A record exists where the service works, so the records carry no flag to read.
+Object Storage has none at `us-central-1`. A missing record means the service
+does not work there, or the project does not use it. Both read the same.
 
 Command and column names are illustrative.
 
@@ -174,6 +183,10 @@ service triggers the work. The work then:
 
 Removing the last service empties the set and deletes everything. Deleting a
 project removes its control plane, so project deletion needs no handling.
+
+Both kinds of record come out of that one pass. They share every input, and the
+set of services a project uses has to be the same for both, so calculating them
+apart would duplicate the reads and let the two answers drift.
 
 An alternative gives each service a non-exclusive claim and lets the platform
 delete a record once no claims remain. That yields reference-counted cleanup at
@@ -233,27 +246,14 @@ Deferred, as in
 [locations-platform-primitive.md](./locations-platform-primitive.md#production-readiness-review-questionnaire).
 This document stops short of an implementable design.
 
-## Open Questions
-
-- **What does the availability flag on a shared `Location` mean?** It carries
-  one service's verdict today. Once the record covers every service, it either
-  aggregates, meaning at least one service works here, or it goes away in favour
-  of the per-service records. Aggregating is the conservative choice, because
-  readers may depend on the flag, but the reader set is unknown. **Blocking.**
-- **Does an availability record copy the platform's record, or recalculate per
-  project?** The platform's record ignores whether the service supports that
-  kind of location, so a copy asserts less than today's flag. Both satisfy the
-  goals above. Non-blocking.
-- **Should reference-counted cleanup be revisited** if per-project
-  recalculation proves expensive? Non-blocking.
-- **Where does the mirroring run?** It shares every input with the existing
-  location work. Non-blocking.
-
 ## Implementation History
 
 - 2026-08-29: Initial draft.
 - 2026-08-30: Recast around consumer behaviour. Mechanism moved to
   [Design Details](#design-details).
+- 2026-08-30: Settled what each record asserts. A `Location` carries no
+  availability flag, and an availability record is calculated per project rather
+  than copied from the platform.
 
 ## Drawbacks
 
@@ -269,8 +269,8 @@ This document stops short of an implementable design.
 - **Add a per-service section to `Location`.** Rejected. It recouples the two
   questions, adds a services-specific field to a resource this repo does not
   own, and gets no separate permissions or lifecycle.
-- **Reference-counted cleanup.** Deferred. See
-  [Ownership and cleanup](#ownership-and-cleanup).
+- **Reference-counted cleanup.** Deferred until per-project recalculation shows
+  up as a cost. See [Ownership and cleanup](#ownership-and-cleanup).
 - **Let consumers read platform records under narrow permissions.** Rejected. It
   breaks the isolation model that every other project-visible resource relies
   on, and per-consumer, per-service platform permissions are harder than
