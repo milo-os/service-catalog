@@ -332,6 +332,12 @@ type locationFields struct {
 	// coordinates mirrors spec.coordinates where the source Location carries
 	// it. Only locations.miloapis.com defines the field.
 	coordinates map[string]any
+	// conditions are the platform Location's own status conditions, mirrored
+	// onto the projection so a consumer reading only their own control plane
+	// sees why a location is in the state it is in. Available is excluded on
+	// the way out: that condition is this reconciler's combined verdict, not
+	// the platform's.
+	conditions []metav1.Condition
 }
 
 // extractLocationFields pulls the projection fields out of an unstructured
@@ -348,6 +354,7 @@ func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 	// datum.net topology keys. Mirror the whole map verbatim.
 	f.topology, _, _ = unstructured.NestedStringMap(loc.Object, "spec", "topology")
 	f.coordinates, _, _ = unstructured.NestedMap(loc.Object, "spec", "coordinates")
+	f.conditions = objectConditions(loc)
 	return f
 }
 
@@ -369,7 +376,7 @@ func (r *LocationBindingReconciler) project(
 		if !ok {
 			continue
 		}
-		if err := r.upsertProjection(ctx, consumerClient, gvk, spec, entitlement, serviceName, locName, fields.class, available, reason, message); err != nil {
+		if err := r.upsertProjection(ctx, consumerClient, gvk, spec, entitlement, serviceName, locName, fields, available, reason, message); err != nil {
 			return fmt.Errorf("failed to upsert %s %q: %w", gvk.Kind, locName, err)
 		}
 	}
@@ -422,9 +429,14 @@ func projectionSpec(gvk schema.GroupVersionKind, locName string, fields location
 }
 
 // upsertProjection creates or updates one projected object for one location and
-// reconciles its Available condition. Metadata/spec are written via
-// CreateOrUpdate; the status condition is written separately (and only when it
-// changes) so an already-settled projection is a no-op.
+// reconciles its status. Metadata/spec are written via CreateOrUpdate; status is
+// written separately (and only when it changes) so an already-settled projection
+// is a no-op.
+//
+// Only the locations.miloapis.com projection carries the platform Location's own
+// conditions. LocationBinding is a different kind with its own status contract,
+// read by the network-services operator, so foreign conditions are not mirrored
+// onto it.
 func (r *LocationBindingReconciler) upsertProjection(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -433,7 +445,7 @@ func (r *LocationBindingReconciler) upsertProjection(
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	locName string,
-	class servicesv1alpha1.LocationClassName,
+	fields locationFields,
 	available bool,
 	reason, message string,
 ) error {
@@ -448,7 +460,7 @@ func (r *LocationBindingReconciler) upsertProjection(
 		}
 		labels[labelManagedBy] = labelManagedByValue
 		labels[labelLocation] = locName
-		labels[labelClass] = string(class)
+		labels[labelClass] = string(fields.class)
 		labels[labelServiceName] = serviceName
 		u.SetLabels(labels)
 
@@ -466,15 +478,32 @@ func (r *LocationBindingReconciler) upsertProjection(
 		return err
 	}
 
-	return r.setProjectionAvailable(ctx, consumerClient, u, available, reason, message)
+	var mirrored []metav1.Condition
+	if gvk == projectedLocationGVK {
+		mirrored = fields.conditions
+	}
+	return r.setProjectionStatus(ctx, consumerClient, u, mirrored, available, reason, message)
 }
 
-// setProjectionAvailable updates a projection's Available condition, writing to
-// the status subresource only when the condition actually changes.
-func (r *LocationBindingReconciler) setProjectionAvailable(
+// setProjectionStatus reconciles a projection's conditions: the platform
+// Location's own conditions mirrored verbatim, plus this reconciler's Available
+// verdict. It writes the status subresource only when the set actually changes,
+// so a settled projection costs one comparison and no write.
+//
+// The mirrored conditions are the whole reason a consumer can act on a
+// projection at all. Available collapses three gates into one bit; Ready and its
+// reason say which of them is shut, and they are only ever written on the
+// platform copy the consumer cannot see. A mirrored Available is dropped because
+// this reconciler owns that type on the projection.
+//
+// observedGeneration is deliberately not carried across: on a mirrored condition
+// it refers to the platform Location's generation, which means nothing against
+// the projection's own.
+func (r *LocationBindingReconciler) setProjectionStatus(
 	ctx context.Context,
 	consumerClient client.Client,
 	u *unstructured.Unstructured,
+	mirrored []metav1.Condition,
 	available bool,
 	reason, message string,
 ) error {
@@ -483,8 +512,20 @@ func (r *LocationBindingReconciler) setProjectionAvailable(
 		status = metav1.ConditionTrue
 	}
 
-	before := bindingConditions(u)
-	after := append([]metav1.Condition(nil), before...)
+	before := objectConditions(u)
+
+	after := make([]metav1.Condition, 0, len(mirrored)+1)
+	for _, c := range mirrored {
+		if c.Type == ConditionTypeAvailable {
+			continue
+		}
+		after = append(after, c)
+	}
+	// Carry the existing Available forward so SetStatusCondition can keep its
+	// lastTransitionTime when the verdict has not moved.
+	if prev := apimeta.FindStatusCondition(before, ConditionTypeAvailable); prev != nil {
+		after = append(after, *prev)
+	}
 	apimeta.SetStatusCondition(&after, metav1.Condition{
 		Type:    ConditionTypeAvailable,
 		Status:  status,
@@ -492,16 +533,35 @@ func (r *LocationBindingReconciler) setProjectionAvailable(
 		Message: message,
 	})
 
-	if conditionsEqual(before, after, ConditionTypeAvailable) {
+	if conditionSetsEqual(before, after) {
 		return nil
 	}
-	if err := setBindingConditions(u, after); err != nil {
+	if err := setObjectConditions(u, after); err != nil {
 		return err
 	}
 	if err := consumerClient.Status().Update(ctx, u, client.FieldOwner(locationBindingFieldManager)); err != nil {
 		return fmt.Errorf("failed to update %s status: %w", u.GetKind(), err)
 	}
 	return nil
+}
+
+// conditionSetsEqual compares two condition sets by type, ignoring order and
+// lastTransitionTime. A mirrored condition whose only change is its transition
+// time is not worth a write.
+func conditionSetsEqual(a, b []metav1.Condition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		other := apimeta.FindStatusCondition(b, a[i].Type)
+		if other == nil ||
+			other.Status != a[i].Status ||
+			other.Reason != a[i].Reason ||
+			other.Message != a[i].Message {
+			return false
+		}
+	}
+	return true
 }
 
 // cleanupProjections deletes projected objects owned by the entitlement that
@@ -542,10 +602,10 @@ func (r *LocationBindingReconciler) cleanupProjections(
 	return nil
 }
 
-// bindingConditions parses status.conditions off an unstructured binding into
+// objectConditions parses status.conditions off an unstructured object into
 // typed conditions. LastTransitionTime is preserved so apimeta.SetStatusCondition
 // can decide whether a write is needed.
-func bindingConditions(u *unstructured.Unstructured) []metav1.Condition {
+func objectConditions(u *unstructured.Unstructured) []metav1.Condition {
 	raw, found, err := unstructured.NestedSlice(u.Object, "status", "conditions")
 	if err != nil || !found {
 		return nil
@@ -573,9 +633,9 @@ func bindingConditions(u *unstructured.Unstructured) []metav1.Condition {
 	return out
 }
 
-// setBindingConditions writes typed conditions back onto an unstructured
-// binding's status.conditions.
-func setBindingConditions(u *unstructured.Unstructured, conds []metav1.Condition) error {
+// setObjectConditions writes typed conditions back onto an unstructured
+// object's status.conditions.
+func setObjectConditions(u *unstructured.Unstructured, conds []metav1.Condition) error {
 	arr := make([]any, 0, len(conds))
 	for _, c := range conds {
 		entry := map[string]any{
