@@ -4,7 +4,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.4
-    discovery.miloapis.com/parent-contexts: Platform
+    discovery.miloapis.com/parent-contexts: Platform,Project
   name: serviceavailabilities.services.miloapis.com
 spec:
   group: services.miloapis.com
@@ -36,6 +36,10 @@ spec:
           is the third gate in the location three-gate model: it asserts that a
           service is deployed and operational at a specific Location, decoupled
           from the Location's own hardware readiness.
+
+          The platform copy lives in the platform context; the copy mirrored into a
+          project has to be served in the project context too, or a consumer's control
+          plane does not list the kind and the mirror is skipped without an error.
         properties:
           apiVersion:
             description: |-
