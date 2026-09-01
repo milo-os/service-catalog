@@ -171,6 +171,9 @@ func TestUserInterfaceFanOut_ProviderOnly(t *testing.T) {
 	if got := nestedStringOrEmpty(pp, "spec", "slug"); got != "compute-datumapis-com" {
 		t.Errorf("spec.slug = %q, want %q", got, "compute-datumapis-com")
 	}
+	if got := nestedStringOrEmpty(pp, "spec", "serviceRef", "name"); got != "compute" {
+		t.Errorf("spec.serviceRef.name = %q, want %q (the Service's resource name)", got, "compute")
+	}
 }
 
 // TestUserInterfaceFanOut_Both verifies that setting both Consumer and
@@ -211,6 +214,9 @@ func TestUserInterfaceFanOut_Both(t *testing.T) {
 	}
 	if got := nestedStringOrEmpty(capturing.consumerPlugins[0], "spec", "visibility", "entitlement"); got != "Required" {
 		t.Errorf("spec.visibility.entitlement = %q, want %q", got, "Required")
+	}
+	if got := nestedStringOrEmpty(capturing.providerPlugins[0], "spec", "serviceRef", "name"); got != "compute" {
+		t.Errorf("spec.serviceRef.name = %q, want %q", got, "compute")
 	}
 }
 

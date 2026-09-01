@@ -63,7 +63,7 @@ func (f *UserInterfaceFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha
 		if err != nil {
 			return err
 		}
-		desiredProvider, err = f.applyProviderPlugin(ctx, sc, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
+		desiredProvider, err = f.applyProviderPlugin(ctx, sc, svc.Name, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
 		if err != nil {
 			return err
 		}
@@ -141,10 +141,21 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	return slug, nil
 }
 
+// applyProviderPlugin returns the desired object name (for pruning) when
+// sc.Spec.UserInterface.Provider is set, or "" when it's nil — same
+// no-op-on-nil contract as applyConsumerPlugin above.
+//
+// serviceResourceName vs serviceName: these are two different identifiers
+// for the same Service and are easy to transpose — serviceResourceName is
+// svc.Name (the Service's own resource/object name, e.g. "compute"), while
+// serviceName is svc.Spec.ServiceName (the canonical dotted name, e.g.
+// "compute.datumapis.com", used only for the managed-by label here).
+// serviceResourceName is what staff-portal's /admin/service-catalog/:name
+// route matches against, so it must be svc.Name specifically.
 func (f *UserInterfaceFanOut) applyProviderPlugin(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
-	serviceName, displayName, slug string,
+	serviceResourceName, serviceName, displayName, slug string,
 	deprecated bool,
 ) (string, error) {
 	spec := sc.Spec.UserInterface.Provider
@@ -165,6 +176,13 @@ func (f *UserInterfaceFanOut) applyProviderPlugin(
 		"deprecated":  deprecated,
 		"suspend":     spec.Suspend,
 		"assets":      pluginAssetsMap(spec.Assets),
+		// Anchors this plugin's portal.page/service extensions to
+		// staff-portal's /admin/service-catalog/:name detail page — :name is
+		// the Service's resource name (svc.Name in Reconcile, threaded through
+		// here as serviceResourceName; see this function's doc comment).
+		"serviceRef": map[string]interface{}{
+			"name": serviceResourceName,
+		},
 	}, "spec"); err != nil {
 		return "", fmt.Errorf("build ProviderPortalPlugin %q spec: %w", slug, err)
 	}
