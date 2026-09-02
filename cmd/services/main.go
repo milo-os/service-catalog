@@ -285,6 +285,10 @@ func main() {
 			os.Exit(1)
 		}
 
+		// No leader election of its own: it derives leadership from
+		// consumerMcMgr instead, and is only started once that manager is
+		// elected. See the Start goroutine below for why a second lease here
+		// would be actively harmful.
 		providerMgr, err := ctrl.NewManager(providerProjectCfg, ctrl.Options{
 			Scheme: scheme,
 			Metrics: metricsserver.Options{
@@ -330,11 +334,28 @@ func main() {
 			os.Exit(1)
 		}
 
+		// mcmanager.Options is controller-runtime's manager.Options verbatim and
+		// mcmanager.New passes it straight to manager.New, so this manager
+		// leader-elects exactly like the primary one — including routing the
+		// LocationBinding controller and the auto-wired consumerProvider.Start
+		// into the leader-election runnable group.
+		//
+		// This is the one lease that decides which replica projects into
+		// consumer projects. Unlike the all-projects manager (see
+		// newDiscoveryManager and #62), nothing here has to work on a
+		// non-leader: consumerMcMgr hosts only the LocationBinding reconciler,
+		// and no webhook resolves clusters through it. Its ID is distinct from
+		// the primary manager's so the two do not contend for one lease — they
+		// are separate managers in the same process and would otherwise elect
+		// each other out.
 		consumerMcMgr, err := mcmanager.New(cfg, consumerProvider, mcmanager.Options{
 			Scheme: scheme,
 			Metrics: metricsserver.Options{
 				BindAddress: "0",
 			},
+			LeaderElection:          enableLeaderElection,
+			LeaderElectionID:        "consumer-projection.services.miloapis.com",
+			LeaderElectionNamespace: leaderElectionNamespace,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to create consumer multicluster manager")
@@ -358,6 +379,27 @@ func main() {
 				setupLog.Error(err, "provider project did not become ready")
 				os.Exit(1)
 			}
+
+			// Hold the provider-project manager until this replica leads the
+			// consumer projection, so the whole consumer-scoped path is
+			// single-active off ONE lease. A second, independent lease here
+			// would be worse than none: the two elections are decided
+			// separately, so a replica could hold this one while another holds
+			// consumerMcMgr's — and then neither engages anything. The
+			// ServiceConsumer reconciler that drives engagement lives on this
+			// manager, while the multicluster.Aware it engages through is only
+			// bound by consumerProvider.Start on consumerMcMgr. Split those
+			// across pods and the reconciler requeues forever on an unbound
+			// manager in one and never runs in the other.
+			//
+			// Elected() is closed immediately when leader election is off, so
+			// this is a no-op for single-replica and local runs.
+			select {
+			case <-ctx.Done():
+				return
+			case <-consumerMcMgr.Elected():
+			}
+
 			if err := providerMgr.Start(ctx); err != nil {
 				setupLog.Error(err, "provider-project manager failed")
 				os.Exit(1)
