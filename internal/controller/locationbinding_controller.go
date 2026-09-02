@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -105,6 +106,22 @@ const (
 	reasonLocationClassNotSupported = "LocationClassNotSupported"
 	// reasonLocationNotReady ("LocationNotReady", gate 2) is shared with the
 	// ServiceAvailability reconciler; it is declared there.
+
+	// locationBindingMaxConcurrentReconciles is how many project clusters this
+	// controller projects into at once. One reconcile is one project: it reads
+	// that project's entitlements, reads the root cluster's gates, and writes
+	// up to a few dozen small objects into the project's control plane — almost
+	// entirely API round-trips, so a serial controller spends its time waiting.
+	// Activating a service across a fleet enqueues one request per project at
+	// once, and at the default of 1 the tail of that queue waits for every
+	// project ahead of it (#90).
+	//
+	// Five is deliberately modest rather than tuned: the write amplification is
+	// per-project and the root-cluster reads all hit the same shared cache, so
+	// the ceiling that matters is how much concurrent write load a project
+	// control plane should see from one operator, not this operator's own
+	// throughput. Raising it is not free for the API servers on the other end.
+	locationBindingMaxConcurrentReconciles = 5
 )
 
 // LocationBindingReconciler projects platform Locations into entitled projects
@@ -851,11 +868,19 @@ func (r *LocationBindingReconciler) prune(
 // to translate a root-cluster object event into a project-scoped reconcile
 // request, so those gates are picked up by the periodic resync configured via
 // RequeueAfter rather than by additional watches.
+//
+// Reconciles run concurrently across projects. Two passes over the same project
+// are still serialized by controller-runtime's per-key locking, so the
+// concurrency here only ever puts different projects in flight at once. See
+// locationBindingMaxConcurrentReconciles.
 func (r *LocationBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
 	r.rootClient = rootClient
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("location-binding").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: locationBindingMaxConcurrentReconciles,
+		}).
 		Complete(r)
 }
