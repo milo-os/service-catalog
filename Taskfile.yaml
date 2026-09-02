@@ -233,6 +233,9 @@ tasks:
         echo "Installing LocationBinding CRD..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
 
+        echo "Installing HTTPProxy CRD..."
+        task test-infra:kubectl -- apply -f config/overlays/e2e/httpproxy-crd.yaml
+
         echo "Installing resourcemanager CRDs..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml
 

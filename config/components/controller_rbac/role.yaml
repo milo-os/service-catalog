@@ -62,6 +62,15 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - httpproxies
+  - locations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
   - locationbindings
   verbs:
   - create
@@ -70,14 +79,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - networking.datumapis.com
-  resources:
-  - locations
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - portal.miloapis.com

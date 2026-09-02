@@ -59,6 +59,7 @@ func init() {
 	utilruntime.Must(billingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(resourcemanagerv1alpha1.AddToScheme(scheme))
+	controller.RegisterHTTPProxyScheme(scheme)
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -243,6 +244,14 @@ func main() {
 
 	if err = (&controller.ServiceEntitlementReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceEntitlement")
+		os.Exit(1)
+	}
+	// HTTPProxy enrollment runs on the all-projects manager. ALB-only
+	// projects have no ServiceConsumer, so the consumer-scoped projection
+	// manager never engages them — they would never get a networking
+	// entitlement if this watch lived there.
+	if err = (&controller.HTTPProxyEntitlementReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HTTPProxyEntitlement")
 		os.Exit(1)
 	}
 	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {

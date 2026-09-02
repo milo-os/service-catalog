@@ -48,6 +48,12 @@ jobs:
         run: |
           task --yes test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
 
+      - name: Install HTTPProxy CRD
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/httpproxy-crd.yaml
+
       - name: Install resourcemanager CRDs
         env:
           KUBECONFIG: .test-infra/kubeconfig
