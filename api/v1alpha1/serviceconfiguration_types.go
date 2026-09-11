@@ -612,6 +612,13 @@ type ProvisionedResourceSpec struct {
 	// refused with no webhook in the picture. Whether the object is acceptable
 	// is the owning API's decision, made when it accepts or refuses the write.
 	//
+	// An object may state its status. For a kind that serves a status
+	// subresource, the declared status is applied there, because an ordinary
+	// write never carries status past the API server. Without it, a consumer
+	// reading a kind that reports its own usability sees only the kind's
+	// default. An object that states no status leaves status to the API that
+	// owns it.
+	//
 	// The cap bounds one declaration's fan-out into one project.
 	//
 	// +kubebuilder:validation:Required

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,6 +63,18 @@ const (
 	reasonKindNotServed  = "KindNotServed"
 	reasonApplyFailed    = "ApplyFailed"
 
+	// reasonStatusNotApplied marks a declaration whose objects are installed
+	// but whose declared status did not reach at least one of them. The state
+	// stays Installed, because delivery succeeded and only the status is
+	// missing.
+	reasonStatusNotApplied = "StatusNotApplied"
+
+	// maxLedgerMessageBytes matches the schema's MaxLength for a ledger entry's
+	// message. A declaration that installs many objects collects one note per
+	// object and can exceed the limit. The API server refuses an over-long
+	// message, which loses the whole ledger write.
+	maxLedgerMessageBytes = 1024
+
 	// authorizationCaveat explains the gap to the consumer, on every installed
 	// resource. It reaches the entitlement ledger, so the gap is visible in a
 	// running system rather than only in a design document.
@@ -102,7 +115,9 @@ type ProvisioningReconciler struct {
 // objects go — only projects that created an entitlement, only once it is
 // Active — and the shape each object must take, both checked at admission and
 // again before every write. Whether a given object is acceptable is the owning
-// API's own decision, made when it accepts or rejects the write.
+// API's own decision, made when it accepts or rejects the write. The status
+// subresource works the same way. There is no grant to add for it, because
+// there is no grant here for the kinds themselves.
 
 func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -238,9 +253,14 @@ func (r *ProvisioningReconciler) reconcileResource(
 		objects = append(objects, obj)
 	}
 
+	var statusNotes []string
 	desired := make(map[schema.GroupVersionKind]map[string]struct{}, len(objects))
 	for _, obj := range objects {
-		if err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl.Name, obj); err != nil {
+		note, err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl.Name, obj)
+		if note != "" {
+			statusNotes = append(statusNotes, note)
+		}
+		if err != nil {
 			if apimeta.IsNoMatchError(err) {
 				entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
 				entry.Reason = reasonKindNotServed
@@ -298,16 +318,30 @@ func (r *ProvisioningReconciler) reconcileResource(
 	// on the target API's rigour rather than on what the platform did.
 	entry.AuthorizationEstablished = false
 	entry.Message = authorizationCaveat
+
+	// A status that did not land leaves the resource delivered. The object is
+	// installed, owned, and reclaimable. The reason goes on the entry that
+	// carries the object, so a consumer whose class never reports itself usable
+	// finds the cause here.
+	if len(statusNotes) > 0 {
+		entry.Reason = reasonStatusNotApplied
+		entry.Message = truncateMessage(strings.Join(statusNotes, " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
+	}
 	return entry
 }
 
-// upsert writes one declared object into the consumer project.
+// upsert writes one declared object into the consumer project, and its declared
+// status alongside it.
 //
 // The apply is server-side and forced, so the fields the declaration states are
 // the fields the object has: a consumer edit to any of them is reverted, and a
 // field the declaration stops stating is removed. What the platform adds — the
 // provisioning labels and the owner reference — it adds here, not in the
 // declaration, which is why a provider cannot author either.
+//
+// The returned note is non-empty when the object installed but its declared
+// status did not. The object is usable by everything that does not read its
+// status, so upsert reports that rather than failing.
 func (r *ProvisioningReconciler) upsert(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -315,7 +349,7 @@ func (r *ProvisioningReconciler) upsert(
 	serviceName string,
 	declName string,
 	obj provisioning.Object,
-) error {
+) (string, error) {
 	u := obj.Unstructured()
 
 	l := u.GetLabels()
@@ -333,11 +367,87 @@ func (r *ProvisioningReconciler) upsert(
 	// only teardown path that does not depend on the project purger, which does
 	// not delete cluster-scoped resources.
 	if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
-		return fmt.Errorf("set controller reference: %w", err)
+		return "", fmt.Errorf("set controller reference: %w", err)
 	}
 
-	return consumerClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
-		client.FieldOwner(provisioningFieldManager), client.ForceOwnership)
+	// This apply carries status so a kind with no status subresource, where
+	// status is an ordinary field, is written in one call. A kind that serves
+	// one drops status here, and upsertStatus writes it.
+	if err := consumerClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
+		client.FieldOwner(provisioningFieldManager), client.ForceOwnership); err != nil {
+		return "", err
+	}
+
+	return r.upsertStatus(ctx, consumerClient, serviceName, obj), nil
+}
+
+// upsertStatus applies the status a declaration states to the installed
+// object's status subresource, and describes what stopped it when it cannot.
+//
+// A declaration that states no status is left alone. Writing an empty status
+// would take ownership of a field the provider said nothing about.
+//
+// The controller tries the status endpoint instead of using discovery. Support
+// varies by kind and by consumer control plane, so a discovery cache would need
+// warming and invalidation to answer what one request answers. A kind with no
+// status endpoint is not a failure, because status is an ordinary field there
+// and the object write already carried it.
+//
+// This apply is not forced, unlike the object write. A conflict means another
+// controller in the consumer's plane manages that status field, and forcing
+// would start a write loop across every entitled project. The controller
+// reports the conflict instead.
+func (r *ProvisioningReconciler) upsertStatus(
+	ctx context.Context,
+	consumerClient client.Client,
+	serviceName string,
+	obj provisioning.Object,
+) string {
+	declared, stated := obj.Status()
+	if !stated {
+		return ""
+	}
+
+	// Only identity and status. Sending metadata through the status endpoint
+	// would claim the object's labels a second time under a different
+	// subresource, for no gain.
+	status := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": obj.GVK.GroupVersion().String(),
+		"kind":       obj.GVK.Kind,
+		"metadata":   map[string]any{"name": obj.Name},
+		"status":     declared,
+	}}
+
+	// Server-side apply makes the resync free. Re-applying an unchanged status
+	// produces no write, so resourceVersion does not move and downstream
+	// watchers see no event.
+	err := consumerClient.Status().Apply(ctx, client.ApplyConfigurationFromUnstructured(status),
+		client.FieldOwner(provisioningFieldManager))
+	switch {
+	case err == nil:
+		return ""
+	case apierrors.IsNotFound(err), apierrors.IsMethodNotSupported(err):
+		// The kind serves no status endpoint. Status is an ordinary field
+		// there, and the object write already carried the declared value.
+		return ""
+	case apierrors.IsConflict(err):
+		return fmt.Sprintf(
+			"%s declares a status for %s %q, but another controller in this project manages it, so the declared status was not applied.",
+			serviceName, obj.GVK.Kind, obj.Name)
+	default:
+		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %v.",
+			serviceName, obj.GVK.Kind, obj.Name, err)
+	}
+}
+
+// truncateMessage keeps a ledger message inside the schema's limit and marks
+// where it was cut.
+func truncateMessage(message string, limit int) string {
+	if len(message) <= limit {
+		return message
+	}
+	const ellipsis = "..."
+	return message[:limit-len(ellipsis)] + ellipsis
 }
 
 // prune deletes objects this declaration previously installed that it no longer

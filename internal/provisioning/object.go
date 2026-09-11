@@ -86,13 +86,20 @@ func Decode(raw runtime.RawExtension) (Object, error) {
 		return Object{}, err
 	}
 
-	if _, ok := content["status"]; ok {
-		return Object{}, invalid("status", "is set by the API that owns the object, not by a declaration")
+	if raw, set := content["status"]; set {
+		if _, ok := raw.(map[string]any); !ok {
+			return Object{}, invalid("status", "must be an object")
+		}
 	}
 
-	// Only the fields a declaration is entitled to state survive. Everything
-	// the platform owns — the owner reference, the provisioning labels, the
-	// object's place in a consumer plane — is applied at the write.
+	// A declaration states the whole object. Identity fields are rebuilt from
+	// the validated group, version, and kind, and decodeMeta narrows metadata.
+	// Everything else carries through, because the owning API decides whether
+	// the object is acceptable.
+	//
+	// The platform applies what it owns at the write: the owner reference, the
+	// provisioning labels, and the object's place in a consumer plane. A
+	// provider cannot author those.
 	installed := map[string]any{
 		"apiVersion": gvk.GroupVersion().String(),
 		"kind":       gvk.Kind,
@@ -100,7 +107,7 @@ func Decode(raw runtime.RawExtension) (Object, error) {
 	}
 	for k, v := range content {
 		switch k {
-		case "apiVersion", "kind", "metadata", "status":
+		case "apiVersion", "kind", "metadata":
 		default:
 			installed[k] = v
 		}
@@ -138,6 +145,24 @@ func decodeGVK(content map[string]any) (schema.GroupVersionKind, error) {
 	return gv.WithKind(kind), nil
 }
 
+// serverOwnedMeta is metadata the API server assigns per object in each control
+// plane, so no declaration states it.
+//
+// These fields are stripped rather than refused. A provider authors a
+// declaration by copying a working object out of a cluster, and that copy
+// carries values from the plane it came from. The write assigns all of them
+// again, so dropping them loses nothing.
+var serverOwnedMeta = map[string]struct{}{
+	"creationTimestamp":          {},
+	"deletionGracePeriodSeconds": {},
+	"deletionTimestamp":          {},
+	"generation":                 {},
+	"managedFields":              {},
+	"resourceVersion":            {},
+	"selfLink":                   {},
+	"uid":                        {},
+}
+
 // decodeMeta reads the metadata a declaration may state, and refuses the rest.
 //
 // A name is required because the platform no longer derives one. A namespace is
@@ -169,12 +194,14 @@ func decodeMeta(content map[string]any) (string, map[string]any, error) {
 		return "", nil, invalid("metadata.name", "%q is not an object name: %s", name, errs[0])
 	}
 
-	installed := map[string]any{"name": name}
-	for _, field := range []string{"labels", "annotations"} {
-		if v, set := meta[field]; set {
-			installed[field] = v
+	installed := make(map[string]any, len(meta))
+	for field, v := range meta {
+		if _, serverOwned := serverOwnedMeta[field]; serverOwned {
+			continue
 		}
+		installed[field] = v
 	}
+	installed["name"] = name
 	return name, installed, nil
 }
 
@@ -182,6 +209,21 @@ func decodeMeta(content map[string]any) (string, map[string]any, error) {
 // and owner reference to.
 func (o Object) Unstructured() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: runtime.DeepCopyJSON(o.content)}
+}
+
+// Status returns the status the declaration states, and whether it states one.
+//
+// A provider publishes status for kinds that report their own usability. A
+// consumer cannot read that status otherwise, because a write to the main
+// resource never carries status past the API server. The second return value
+// separates an absent status from an empty one, so a declaration that says
+// nothing about status does not claim one.
+func (o Object) Status() (map[string]any, bool) {
+	status, ok := o.content["status"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return runtime.DeepCopyJSON(status), true
 }
 
 // KindRef renders the object's kind for the entitlement ledger, so teardown can
