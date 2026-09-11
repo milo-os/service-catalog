@@ -4,11 +4,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -18,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -523,4 +526,259 @@ func names(items []unstructured.Unstructured) []string {
 		out = append(out, items[i].GetName())
 	}
 	return out
+}
+
+// provStatusConsumerClient serves a status subresource for IPClass as well as
+// for ServiceEntitlement, so a status write takes the same separate endpoint it
+// takes against a real API server.
+func provStatusConsumerClient(objs ...client.Object) client.Client {
+	ipClass := &unstructured.Unstructured{}
+	ipClass.SetGroupVersionKind(ipClassGVK)
+	return fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithObjects(objs...).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
+		Build()
+}
+
+// A reference class the provider publishes as usable. Without the declared
+// status, a consumer reading the class in their own project cannot tell a class
+// that works from one that never came up.
+func ipClassRefWithStatus(name, reason string) servicesv1alpha1.ProvisionedObject {
+	return provObject(fmt.Sprintf(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": %q},
+		"spec": {"source": {"project": %q, "name": %q}},
+		"status": {"conditions": [{
+			"type": "Ready",
+			"status": "True",
+			"reason": %q,
+			"message": "The class is available in this project.",
+			"lastTransitionTime": "2026-01-01T00:00:00Z"
+		}]}
+	}`, name, provSourceProject, name, reason))
+}
+
+func installedCondition(t *testing.T, c client.Client, field string) any {
+	t.Helper()
+	items := listClasses(t, c).Items
+	if len(items) != 1 {
+		t.Fatalf("expected one installed class, got %d", len(items))
+	}
+	conditions, found, err := unstructured.NestedSlice(items[0].Object, "status", "conditions")
+	if err != nil || !found || len(conditions) == 0 {
+		t.Fatalf("the installed class carries no status.conditions: %+v", items[0].Object["status"])
+	}
+	return conditions[0].(map[string]any)[field]
+}
+
+// The declared status has to reach the status subresource, because an object
+// write never carries status past a kind that serves one. Otherwise a consumer
+// only ever sees the CRD default.
+func TestProvisioningAppliesDeclaredStatusToTheStatusSubresource(t *testing.T) {
+	root := provClient(provConfig(ipClassRefWithStatus("tenant-endpoint-ipv6", "Available")))
+	consumer := provStatusConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if got := installedCondition(t, consumer, "reason"); got != "Available" {
+		t.Errorf("installed status.conditions[0].reason = %v, want the reason the provider declared", got)
+	}
+
+	// The status landed, so the entry is an ordinary Installed with no cause to
+	// report.
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != "" {
+		t.Errorf("ledger reports a problem where there is none: %+v", entry)
+	}
+}
+
+// Editing the status a declaration states is how a provider tells consumers a
+// class stopped being usable, so the edit has to converge like any other.
+func TestProvisioningConvergesOnDeclaredStatusChange(t *testing.T) {
+	root := provClient(provConfig(ipClassRefWithStatus("tenant-endpoint-ipv6", "Available")))
+	consumer := provStatusConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) {
+		sc.Spec.Provisioning.Resources[0].Objects = []servicesv1alpha1.ProvisionedObject{
+			ipClassRefWithStatus("tenant-endpoint-ipv6", "Withdrawn"),
+		}
+	})
+	provReconcile(t, r)
+
+	if got := installedCondition(t, consumer, "reason"); got != "Withdrawn" {
+		t.Errorf("installed status.conditions[0].reason = %v, want the provider's new reason", got)
+	}
+}
+
+// Every declaration authored before a status could be stated says nothing about
+// status. Writing one anyway would take ownership of a field the owning API
+// fills in, and overwrite what it put there.
+func TestProvisioningLeavesStatusAloneWhenNoneIsDeclared(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provStatusConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	// The owning API reports on the object it now holds.
+	installed := listClasses(t, consumer).Items[0]
+	installed.Object["status"] = map[string]any{"conditions": []any{map[string]any{
+		"type":               "Ready",
+		"status":             "True",
+		"reason":             "ObservedBySourceController",
+		"message":            "The class resolved against its source.",
+		"lastTransitionTime": "2026-01-01T00:00:00Z",
+	}}}
+	if err := consumer.Status().Update(context.Background(), &installed); err != nil {
+		t.Fatalf("update installed class status: %v", err)
+	}
+
+	provReconcile(t, r)
+
+	if got := installedCondition(t, consumer, "reason"); got != "ObservedBySourceController" {
+		t.Errorf("a declaration stating no status overwrote the owning API's: %v", got)
+	}
+}
+
+// A kind that serves no status subresource takes its status in the object write
+// itself, so nothing is missing and nothing is reported.
+func TestProvisioningInstallsStatusOnAKindWithNoStatusSubresource(t *testing.T) {
+	root := provClient(provConfig(ipClassRefWithStatus("tenant-endpoint-ipv6", "Available")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if got := installedCondition(t, consumer, "reason"); got != "Available" {
+		t.Errorf("installed status.conditions[0].reason = %v, want the declared reason", got)
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != "" {
+		t.Errorf("a kind with no status endpoint was reported as a problem: %+v", entry)
+	}
+}
+
+// The resync re-evaluates every entitled project every few minutes. A status
+// write that is not a no-op costs one write per project per interval and wakes
+// every watcher on the installed object. Server-side apply of an unchanged
+// value prevents that, so the request body has to be identical each time.
+func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
+	var applied []string
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClassObject()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
+				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				body, err := json.Marshal(obj)
+				if err != nil {
+					return err
+				}
+				applied = append(applied, string(body))
+				return c.Status().Apply(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRefWithStatus("tenant-endpoint-ipv6", "Available")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+	provReconcile(t, r)
+
+	if len(applied) != 2 {
+		t.Fatalf("expected one status apply per reconcile, got %d", len(applied))
+	}
+	if applied[0] != applied[1] {
+		t.Errorf("the status apply is not stable across resyncs:\nfirst:  %s\nsecond: %s", applied[0], applied[1])
+	}
+
+	// Nothing outside the declared status travels with it. Sending metadata
+	// through the status endpoint would claim the object's labels a second time
+	// under a different subresource, giving the apply something to churn.
+	var body map[string]any
+	if err := json.Unmarshal([]byte(applied[0]), &body); err != nil {
+		t.Fatalf("unmarshal applied status: %v", err)
+	}
+	meta, _ := body["metadata"].(map[string]any)
+	if len(meta) != 1 || meta["name"] != "tenant-endpoint-ipv6" {
+		t.Errorf("the status apply carries metadata beyond the object's name: %+v", meta)
+	}
+	if _, carried := body["spec"]; carried {
+		t.Errorf("the status apply carries the object's spec: %+v", body)
+	}
+}
+
+func ipClassObject() *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(ipClassGVK)
+	return u
+}
+
+// A conflict means a controller in the consumer's plane manages that status
+// field. Forcing the apply would make two managers write against each other in
+// every entitled project. The object is installed either way, so the ledger
+// carries the reason the expected status is missing.
+func TestProvisioningReportsAStatusAnotherControllerOwns(t *testing.T) {
+	ipClass := ipClassObject()
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
+				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+					"tenant-endpoint-ipv6",
+					fmt.Errorf("conflict with another field manager"))
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRefWithStatus("tenant-endpoint-ipv6", "Available")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if len(listClasses(t, consumer).Items) != 1 {
+		t.Fatal("the object was not installed")
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+		t.Errorf("a status that did not land made the resource undelivered: %+v", entry)
+	}
+	if entry.Reason != reasonStatusNotApplied {
+		t.Errorf("ledger reason = %q, want %q", entry.Reason, reasonStatusNotApplied)
+	}
+	if !strings.Contains(entry.Message, "another controller in this project manages it") {
+		t.Errorf("ledger message does not say what stopped the status: %q", entry.Message)
+	}
+	// Delivery succeeded, so the entitlement still reads Provisioned.
+	cond := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
+		servicesv1alpha1.ConditionTypeProvisioned)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("expected Provisioned=True, got %+v", cond)
+	}
+}
+
+// The ledger message has a schema limit, and one note per object can exceed it.
+// The API server refuses an over-long message, which loses the whole ledger
+// write.
+func TestLedgerMessageIsTruncatedToTheSchemaLimit(t *testing.T) {
+	message := truncateMessage(strings.Repeat("a", maxLedgerMessageBytes+100), maxLedgerMessageBytes)
+	if len(message) != maxLedgerMessageBytes {
+		t.Errorf("truncated message is %d bytes, want %d", len(message), maxLedgerMessageBytes)
+	}
+	if !strings.HasSuffix(message, "...") {
+		t.Errorf("a truncated message does not show it was cut: %q", message[len(message)-8:])
+	}
+	if got := truncateMessage("short", maxLedgerMessageBytes); got != "short" {
+		t.Errorf("a message inside the limit was rewritten: %q", got)
+	}
 }
