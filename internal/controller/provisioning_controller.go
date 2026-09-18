@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,11 @@ const (
 	// takes to reach consumer projects. Declaration edits do not wait for it,
 	// because SetupWithManager watches ServiceConfiguration.
 	provisioningResyncInterval = 5 * time.Minute
+
+	// provisioningHeartbeatInterval caps how stale LastProvisioningEvaluation
+	// may get when nothing else changed, so a dead fan-out stays detectable
+	// without patching on every five-minute resync.
+	provisioningHeartbeatInterval = time.Hour
 
 	// provisioningFieldManager identifies writes this reconciler makes, to
 	// installed objects and to the entitlement's provisioning status. It
@@ -653,8 +659,6 @@ func (r *ProvisioningReconciler) writeStatus(
 
 	sort.Slice(ledger, func(i, j int) bool { return ledger[i].Name < ledger[j].Name })
 	entitlement.Status.ProvisionedResources = ledger
-	now := metav1.Now()
-	entitlement.Status.LastProvisioningEvaluation = &now
 
 	status := metav1.ConditionTrue
 	reason, message := overrideReason, overrideMessage
@@ -695,6 +699,19 @@ func (r *ProvisioningReconciler) writeStatus(
 		Message:            message,
 		ObservedGeneration: entitlement.Generation,
 	})
+
+	// Nothing changed: skip the patch, or every resync bumps resourceVersion
+	// and re-triggers every other controller watching ServiceEntitlement.
+	changed := !apiequality.Semantic.DeepEqual(before.Status.ProvisionedResources, entitlement.Status.ProvisionedResources) ||
+		!apiequality.Semantic.DeepEqual(before.Status.Conditions, entitlement.Status.Conditions)
+	stale := before.Status.LastProvisioningEvaluation == nil ||
+		time.Since(before.Status.LastProvisioningEvaluation.Time) >= provisioningHeartbeatInterval
+	if !changed && !stale {
+		return nil
+	}
+
+	now := metav1.Now()
+	entitlement.Status.LastProvisioningEvaluation = &now
 
 	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before),
 		client.FieldOwner(provisioningFieldManager)); err != nil {
