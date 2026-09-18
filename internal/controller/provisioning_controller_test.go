@@ -472,6 +472,56 @@ func TestProvisioningRecordsLastEvaluation(t *testing.T) {
 	}
 }
 
+// Patching an unchanged verdict would move resourceVersion on every
+// five-minute pass, re-triggering every other controller watching
+// ServiceEntitlement.
+func TestProvisioningSkipsStatusPatchWhenNothingChanged(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	before := getEntitlement(t, consumer)
+	if before.Status.LastProvisioningEvaluation == nil {
+		t.Fatal("precondition failed: first pass did not record an evaluation")
+	}
+
+	provReconcile(t, r)
+
+	after := getEntitlement(t, consumer)
+	if after.ResourceVersion != before.ResourceVersion {
+		t.Errorf("resourceVersion moved (%s -> %s) though nothing changed", before.ResourceVersion, after.ResourceVersion)
+	}
+	if !after.Status.LastProvisioningEvaluation.Equal(before.Status.LastProvisioningEvaluation) {
+		t.Error("lastProvisioningEvaluation moved though nothing changed and the heartbeat interval had not elapsed")
+	}
+}
+
+// The heartbeat still has to move eventually, or a long-dead fan-out looks
+// identical to one that's idle with nothing to do.
+func TestProvisioningRefreshesHeartbeatAfterInterval(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	stale := getEntitlement(t, consumer)
+	staleTime := metav1.NewTime(time.Now().Add(-2 * provisioningHeartbeatInterval))
+	stale.Status.LastProvisioningEvaluation = &staleTime
+	if err := consumer.Status().Update(context.Background(), stale); err != nil {
+		t.Fatalf("age the heartbeat: %v", err)
+	}
+
+	provReconcile(t, r)
+
+	after := getEntitlement(t, consumer)
+	if !after.Status.LastProvisioningEvaluation.After(staleTime.Time) {
+		t.Error("lastProvisioningEvaluation did not advance once the heartbeat interval elapsed")
+	}
+}
+
 // Delivery and access are different facts. A provisioning failure must not
 // touch Ready, or it would read as a denial.
 func TestProvisioningLeavesReadyConditionAlone(t *testing.T) {

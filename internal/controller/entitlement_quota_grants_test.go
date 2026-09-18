@@ -182,6 +182,67 @@ func TestEnsureQuotaGrants_CreatesGrantsWhenActive(t *testing.T) {
 	}
 }
 
+// Patching a grant that already matches would move its resourceVersion on
+// every pass, including passes woken only by another controller's write to
+// the ServiceEntitlement.
+func TestEnsureQuotaGrants_SkipsPatchWhenGrantUnchanged(t *testing.T) {
+	limits := []servicesv1alpha1.QuotaLimitSpec{
+		{
+			Name:         "instances",
+			Metric:       "compute.miloapis.com/instances",
+			DefaultLimit: 10,
+			Unit:         "1/{project}",
+			ConsumerType: servicesv1alpha1.QuotaConsumerType{
+				APIGroup: "resourcemanager.miloapis.com",
+				Kind:     "Project",
+			},
+		},
+	}
+
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, limits)
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(svc, sc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{
+		rootClient: rootClient,
+		Manager:    mgr,
+		Scheme:     testScheme(),
+	}
+
+	req := entitlementRequest(testConsumerProject, testServiceSlug)
+	reconcileUntilStable(t, r, req, 5)
+
+	grantName := resourceGrantName(testServiceName, testConsumerProject, limits[0].Name)
+	var before quotav1alpha1.ResourceGrant
+	if err := consumerClient.Get(context.Background(),
+		types.NamespacedName{Name: grantName, Namespace: quotaGrantNamespace}, &before); err != nil {
+		t.Fatalf("get grant: %v", err)
+	}
+
+	// Nothing changed; this pass must leave the grant alone.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var after quotav1alpha1.ResourceGrant
+	if err := consumerClient.Get(context.Background(),
+		types.NamespacedName{Name: grantName, Namespace: quotaGrantNamespace}, &after); err != nil {
+		t.Fatalf("get grant: %v", err)
+	}
+	if after.ResourceVersion != before.ResourceVersion {
+		t.Errorf("ResourceGrant resourceVersion moved (%s -> %s) though nothing about the grant changed",
+			before.ResourceVersion, after.ResourceVersion)
+	}
+}
+
 // TestEnsureQuotaGrants_SkippedWhenNotActive verifies that no ResourceGrants
 // are created when the entitlement is in PendingApproval state (gated service).
 func TestEnsureQuotaGrants_SkippedWhenNotActive(t *testing.T) {
