@@ -15,8 +15,8 @@ import (
 
 // labelServiceName is the cleanup label every object this operator projects into
 // a consumer project carries, valued with the CANONICAL Service.spec.serviceName
-// (e.g. "compute.miloapis.com"). It mirrors the catalog's LocationBindingReconciler,
-// which stamps the same label (internal/controller/locationbinding_controller.go;
+// (e.g. "compute.miloapis.com"). It mirrors the catalog's location projection
+// reconciler, which stamps the same label (internal/controller/locationbinding_controller.go;
 // that package is not importable from pkg/, so the constant is duplicated here).
 //
 // Teardown deletes are scoped to this label for the operator's ServiceNames — the

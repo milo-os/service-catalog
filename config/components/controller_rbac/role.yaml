@@ -64,13 +64,8 @@ rules:
   resources:
   - locationbindings
   verbs:
-  - create
   - delete
-  - get
   - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - networking.datumapis.com
   resources:

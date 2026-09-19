@@ -27,7 +27,7 @@ const (
 	// ConditionTypeAvailable is the gate-3 condition the
 	// ServiceAvailabilityReconciler owns: True when the referenced Service
 	// is Published and the referenced Location exists and is Ready. The
-	// LocationBindingReconciler reads it as the third gate in the location
+	// The location projection reconciler reads it as the third gate in the location
 	// three-gate model.
 	ConditionTypeAvailable = "Available"
 

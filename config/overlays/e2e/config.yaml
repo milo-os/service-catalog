@@ -8,4 +8,4 @@ webhookServer: {}
 # forever on a provider Project that never goes Ready — zero coverage plus two
 # idle managers. Exercising it needs a multicluster harness;
 # config/overlays/e2e-milo is one, and is where that coverage would go.
-# LocationBinding projection therefore runs on the all-projects manager here.
+# Location projection therefore runs on the all-projects manager here.

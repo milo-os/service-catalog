@@ -222,7 +222,7 @@ func main() {
 			// Engaged project clusters must use our scheme; without it their cache
 			// falls back to the client-go global scheme, which lacks the
 			// services.miloapis.com types, and every ServiceEntitlement /
-			// ServiceConsumer / LocationBinding watch fails with "kind must be
+			// ServiceConsumer watch fails with "kind must be
 			// registered to the Scheme".
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) { o.Scheme = scheme },
@@ -260,7 +260,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Provisioning")
 		os.Exit(1)
 	}
-	// LocationBinding projection runs either on the all-projects manager
+	// Location projection runs either on the all-projects manager
 	// (today's default) or, when consumer-scoped projection is enabled, on a
 	// dedicated multicluster manager whose membership is driven by the consumer
 	// provider — only consumer projects with an active ServiceConsumer for one
@@ -316,8 +316,11 @@ func main() {
 			},
 			// The types the catalog projects into consumer projects; each is
 			// deleted (label-scoped) on deactivation. Location is the object
-			// consumers read going forward; LocationBinding is still written
-			// for the network-services operator until it moves off.
+			// consumers read. LocationBinding is no longer written, but stays
+			// on this list so a project that deactivates before the reconcile
+			// sweep reaches it still has its leftover bindings removed —
+			// teardown is the only cleanup path for a project this operator
+			// stops engaging.
 			// Note: networking.datumapis.com uses version v1alpha (not v1alpha1).
 			ManagedResources: []schema.GroupVersionKind{
 				{Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location"},
@@ -337,13 +340,13 @@ func main() {
 		// mcmanager.Options is controller-runtime's manager.Options verbatim and
 		// mcmanager.New passes it straight to manager.New, so this manager
 		// leader-elects exactly like the primary one — including routing the
-		// LocationBinding controller and the auto-wired consumerProvider.Start
+		// Location projection controller and the auto-wired consumerProvider.Start
 		// into the leader-election runnable group.
 		//
 		// This is the one lease that decides which replica projects into
 		// consumer projects. Unlike the all-projects manager (see
 		// newDiscoveryManager and #62), nothing here has to work on a
-		// non-leader: consumerMcMgr hosts only the LocationBinding reconciler,
+		// non-leader: consumerMcMgr hosts only the location projection reconciler,
 		// and no webhook resolves clusters through it. Its ID is distinct from
 		// the primary manager's so the two do not contend for one lease — they
 		// are separate managers in the same process and would otherwise elect
@@ -363,7 +366,7 @@ func main() {
 		}
 
 		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 			os.Exit(1)
 		}
 
@@ -416,7 +419,7 @@ func main() {
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
 	} else {
 		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 			os.Exit(1)
 		}
 	}
@@ -476,7 +479,7 @@ func main() {
 	// own fixed name already. The multicluster coordinator tracks engagement
 	// by name, not cluster identity, so engaging that same cluster under ""
 	// too would start a second, duplicate informer for every mcbuilder-based
-	// watch (ServiceEntitlement, LocationBinding) — each create/update then
+	// watch (ServiceEntitlement) — each create/update then
 	// fires twice, once per name, and the ""-tagged copy is rejected by
 	// reconcilers that require a non-empty cluster name.
 	if !enableSingleClusterForE2ETests {
