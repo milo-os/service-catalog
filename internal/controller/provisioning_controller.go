@@ -100,7 +100,7 @@ const (
 type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
-	// cannot see them. Mirrors LocationBindingReconciler.
+	// cannot see them. Mirrors the location projection reconciler.
 	rootClient client.Client
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme

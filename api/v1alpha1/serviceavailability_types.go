@@ -71,7 +71,7 @@ type LocationRef struct {
 // hardware is Ready" (a Location concern) from "this service is
 // operational here" (a service-operator concern). Each service operator
 // creates a ServiceAvailability when it completes deployment and health
-// checks at a Location; the LocationBindingReconciler reads it as the
+// checks at a Location; the location projection reconciler reads it as the
 // third gate when deciding which locations to project into entitled
 // projects.
 //
@@ -102,7 +102,7 @@ type ServiceAvailabilitySpec struct {
 type ServiceAvailabilityStatus struct {
 	// Conditions represent the latest available observations of the
 	// availability's state. The Available condition is the gate the
-	// LocationBindingReconciler reads.
+	// location projection reconciler reads.
 	//
 	// +kubebuilder:validation:Optional
 	// +listType=map

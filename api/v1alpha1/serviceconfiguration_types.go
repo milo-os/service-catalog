@@ -107,7 +107,7 @@ type ServiceConfigurationSpec struct {
 	UserInterface *UserInterfaceSpec `json:"userInterface,omitempty"`
 
 	// Locations declares which location classes this service version
-	// supports. The LocationBindingReconciler uses it together with
+	// supports. The location projection reconciler uses it together with
 	// Location readiness and ServiceAvailability to decide which locations
 	// to project into entitled projects. Class selectors are used rather
 	// than specific location names so new PoPs of a supported class become

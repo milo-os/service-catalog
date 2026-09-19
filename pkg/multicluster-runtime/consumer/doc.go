@@ -9,7 +9,7 @@
 // It is the consumer analogue of Milo's platform provider: Milo watches Project
 // and engages on Ready; this provider watches ServiceConsumer in the PROVIDER
 // project and engages a CONSUMER project on active membership. The service
-// catalog is the first adopter (it projects LocationBindings into consumer
+// catalog is the first adopter (it projects Locations into consumer
 // projects), but the library is operator-agnostic.
 //
 // # Two-manager topology
@@ -160,7 +160,7 @@
 //		ServiceNames:   []string{"compute.miloapis.com"}, // canonical names
 //		ClusterOptions: []cluster.Option{func(o *cluster.Options) { o.Scheme = scheme }},
 //		ManagedResources: []schema.GroupVersionKind{{
-//			Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding",
+//			Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location",
 //		}},
 //	})
 //
