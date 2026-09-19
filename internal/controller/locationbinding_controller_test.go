@@ -184,13 +184,26 @@ func reconcileBindings(t *testing.T, rootClient, consumerClient client.Client) (
 // given source.
 func reconcileBindingsFrom(t *testing.T, rootClient, consumerClient client.Client, locationGVK schema.GroupVersionKind) (ctrl.Result, error) {
 	t.Helper()
+	return reconcileBindingsProjecting(t, rootClient, consumerClient, locationGVK, true)
+}
+
+// reconcileBindingsProjecting runs one reconcile pass with the deprecated
+// LocationBinding projection explicitly on or off.
+func reconcileBindingsProjecting(
+	t *testing.T,
+	rootClient, consumerClient client.Client,
+	locationGVK schema.GroupVersionKind,
+	projectBindings bool,
+) (ctrl.Result, error) {
+	t.Helper()
 	mgr := newTestManager()
 	mgr.add(lbConsumerProject, consumerClient)
 	r := &LocationBindingReconciler{
-		rootClient:  rootClient,
-		Manager:     mgr,
-		Scheme:      bindingScheme(),
-		LocationGVK: locationGVK,
+		rootClient:              rootClient,
+		Manager:                 mgr,
+		Scheme:                  bindingScheme(),
+		LocationGVK:             locationGVK,
+		ProjectLocationBindings: projectBindings,
 	}
 	req := mcreconcile.Request{
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: lbEntitlement}},
@@ -1065,5 +1078,86 @@ func TestLocationBindingReconciler_PrunesStaleMirror(t *testing.T) {
 	}
 	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); ok {
 		t.Errorf("expected mirrored ServiceAvailability to be pruned once its entitlement is no longer Active")
+	}
+}
+
+// With the projection retired, a reconcile that would otherwise open every
+// gate writes no LocationBinding at all. The Location projection and the
+// mirrored ServiceAvailability are unaffected: retiring the deprecated kind
+// must not cost consumers the surface that replaces it.
+func TestLocationBindingReconciler_RetiredProjectionWritesNoBinding(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindingsProjecting(t, rootClient, consumerClient, legacyLocationGVK, false); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getBinding(t, consumerClient, lbLoc); ok {
+		t.Errorf("LocationBinding written though the projection is retired")
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); !ok {
+		t.Errorf("expected projected Location %q to still exist: retiring the binding must not remove what replaces it", lbLoc)
+	}
+	var mirrors servicesv1alpha1.ServiceAvailabilityList
+	if err := consumerClient.List(context.Background(), &mirrors); err != nil {
+		t.Fatalf("list mirrors: %v", err)
+	}
+	if len(mirrors.Items) != 1 {
+		t.Errorf("mirrored ServiceAvailability count = %d, want 1", len(mirrors.Items))
+	}
+}
+
+// The flip is a retirement, not a pause: a binding this operator wrote while
+// the projection was enabled is removed on the first pass after it is turned
+// off. Leaving it would strand an object that answers reads with a verdict
+// nothing updates any more.
+func TestLocationBindingReconciler_RetiredProjectionPrunesExistingBinding(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(newActiveEntitlement())
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile with projection on: %v", err)
+	}
+	if _, ok := getBinding(t, consumerClient, lbLoc); !ok {
+		t.Fatalf("expected LocationBinding %q to exist before the flip", lbLoc)
+	}
+
+	if _, err := reconcileBindingsProjecting(t, rootClient, consumerClient, legacyLocationGVK, false); err != nil {
+		t.Fatalf("reconcile with projection off: %v", err)
+	}
+	if _, ok := getBinding(t, consumerClient, lbLoc); ok {
+		t.Errorf("LocationBinding %q survived the flip, want it pruned", lbLoc)
+	}
+}
+
+// Turning the projection off must not disturb a LocationBinding this operator
+// never wrote. Pruning is scoped by the managed-by label, so a binding another
+// writer owns is left where it is.
+func TestLocationBindingReconciler_RetiredProjectionKeepsForeignBinding(t *testing.T) {
+	foreign := &unstructured.Unstructured{}
+	foreign.SetGroupVersionKind(locationBindingGVK)
+	foreign.SetName("hand-written")
+	consumerClient := newBindingConsumerClient(newActiveEntitlement(), foreign)
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+
+	if _, err := reconcileBindingsProjecting(t, rootClient, consumerClient, legacyLocationGVK, false); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if _, ok := getProjection(t, consumerClient, locationBindingGVK, "hand-written"); !ok {
+		t.Errorf("an unmanaged LocationBinding was pruned; the sweep must stay scoped to what this operator wrote")
 	}
 }

@@ -28,9 +28,10 @@ import (
 
 // locationBindingGVK is the projection this reconciler is moving off.
 // LocationBinding is owned by the network-services operator
-// (networking.datumapis.com) and is still read by that operator's
-// NetworkPresence controller, so it keeps being written alongside the Location
-// projection until those consumers move. See projectionGVKs.
+// (networking.datumapis.com), which deprecated the kind once its own readers
+// moved to the projected Location. Whether it is still written is decided per
+// environment by ProjectLocationBindings, because the readers that remain are
+// other deployments' business, not this one's. See projectionGVKs.
 var locationBindingGVK = schema.GroupVersionKind{
 	Group:   "networking.datumapis.com",
 	Version: "v1alpha",
@@ -126,10 +127,10 @@ const (
 
 // LocationBindingReconciler projects platform Locations into entitled projects
 // as consumer-facing, cluster-scoped objects, and mirrors the per-project
-// availability records backing them. It writes two Location projection kinds
-// while the platform moves onto the locations service: a locations.miloapis.com
-// Location, which is what consumers read going forward, and the LocationBinding
-// the network-services operator still reads.
+// availability records backing them. It always writes the
+// locations.miloapis.com Location, which is what consumers read going forward,
+// and writes the deprecated LocationBinding alongside it only while
+// ProjectLocationBindings is set.
 //
 // A reconcile is scoped to one project (req.ClusterName) and recomputes desired
 // state across every Active ServiceEntitlement there, not just the one that
@@ -178,6 +179,12 @@ type LocationBindingReconciler struct {
 	// LocationGVK is the configured location source. Only this group is read.
 	// It is unrelated to projectedLocationGVK, which is what gets written.
 	LocationGVK schema.GroupVersionKind
+
+	// ProjectLocationBindings keeps the deprecated LocationBinding projection
+	// alive. When false the reconciler stops writing bindings and prunes the
+	// ones it owns, leaving the Location projection and the mirrored
+	// ServiceAvailability as the only consumer surface.
+	ProjectLocationBindings bool
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -340,6 +347,14 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 		}
 	}
 
+	// Retiring the binding empties its desired set rather than skipping the
+	// kind outright: dropping it from the sweep would strand every binding
+	// already written, and a stranded binding is worse than an absent one.
+	// It keeps answering reads with whatever verdict it last held, long after
+	// the gates behind that verdict have moved.
+	if !r.ProjectLocationBindings {
+		desiredBindings = nil
+	}
 	for locName, v := range desiredBindings {
 		if err := r.projectBinding(ctx, consumerClient, locName, v.fields, v.available, v.reason, v.message); err != nil {
 			return ctrl.Result{}, err

@@ -184,6 +184,17 @@ func main() {
 	}
 	setupLog.Info("reading locations from", "locationSource", serverConfig.LocationSource)
 
+	// Same reasoning as locationSource: an unknown value here decides whether a
+	// deprecated kind keeps being served, so it fails at startup rather than on
+	// the first project reconcile.
+	projectLocationBindings, err := serverConfig.LocationBindingProjection.Enabled()
+	if err != nil {
+		setupLog.Error(err, "invalid location binding projection")
+		os.Exit(1)
+	}
+	setupLog.Info("projecting location bindings",
+		"locationBindingProjection", serverConfig.LocationBindingProjection)
+
 	if err = (&controller.ServiceAvailabilityReconciler{LocationGVK: locationGVK}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
 		os.Exit(1)
@@ -362,7 +373,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK, ProjectLocationBindings: projectLocationBindings}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
 			os.Exit(1)
 		}
@@ -415,7 +426,7 @@ func main() {
 		setupLog.Info("consumer-scoped projection enabled",
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
 	} else {
-		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK, ProjectLocationBindings: projectLocationBindings}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
 			os.Exit(1)
 		}

@@ -73,6 +73,61 @@ type ServicesOperator struct {
 	// projection runs on the all-projects manager. This mirrors the
 	// WebhookServer pointer-gate above: nil = feature off.
 	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+
+	// LocationBindingProjection selects whether the operator keeps writing the
+	// deprecated networking.datumapis.com LocationBinding into entitled
+	// projects alongside the locations.miloapis.com Location projection that
+	// replaces it. Both objects carry the same topology; only the binding
+	// carries an aggregate Available verdict, which no consumer needs once it
+	// reads the Location and the mirrored ServiceAvailability instead.
+	//
+	// This is the write-side counterpart to LocationSource, and is chosen the
+	// same way and for the same reason: which group locations are READ from
+	// says nothing about which kinds a control plane's consumers still READ,
+	// so inferring one from the other would retire a kind out from under a
+	// reader that still depends on it.
+	//
+	// Defaults to Enabled, so an existing deployment keeps writing the binding
+	// on upgrade. Setting Disabled stops writing it AND removes the bindings
+	// this operator owns from every project it projects into — it is a
+	// retirement, not a pause. Flip it per environment only once nothing there
+	// reads the kind.
+	//
+	// +optional
+	LocationBindingProjection LocationBindingProjection `json:"locationBindingProjection,omitempty"`
+}
+
+// LocationBindingProjection selects whether the deprecated LocationBinding is
+// still projected into entitled projects.
+type LocationBindingProjection string
+
+const (
+	// LocationBindingProjectionEnabled keeps writing LocationBinding alongside
+	// the Location projection. This is the default and what production serves.
+	LocationBindingProjectionEnabled LocationBindingProjection = "Enabled"
+
+	// LocationBindingProjectionDisabled stops writing LocationBinding and
+	// prunes the ones this operator already wrote. Consumers read the
+	// projected locations.miloapis.com Location and the mirrored
+	// ServiceAvailability instead.
+	LocationBindingProjectionDisabled LocationBindingProjection = "Disabled"
+)
+
+// Enabled reports whether LocationBinding should still be projected, rejecting
+// a value that names neither state so the manager fails at startup rather than
+// silently picking one — a typo here either strands a deprecated kind nothing
+// prunes, or retires it out from under a live reader.
+func (p LocationBindingProjection) Enabled() (bool, error) {
+	switch p {
+	case LocationBindingProjectionEnabled:
+		return true, nil
+	case LocationBindingProjectionDisabled:
+		return false, nil
+	default:
+		return false, fmt.Errorf(
+			"unknown locationBindingProjection %q, expected one of %q or %q",
+			p, LocationBindingProjectionEnabled, LocationBindingProjectionDisabled)
+	}
 }
 
 // LocationSource names the API group Locations are read from.
@@ -310,6 +365,11 @@ func SetDefaults_ServicesOperator(obj *ServicesOperator) {
 	// operator deliberately moves them.
 	if obj.LocationSource == "" {
 		obj.LocationSource = LocationSourceNetworkServices
+	}
+	// The deprecated binding keeps being written unless an operator has
+	// confirmed nothing in this environment still reads it.
+	if obj.LocationBindingProjection == "" {
+		obj.LocationBindingProjection = LocationBindingProjectionEnabled
 	}
 }
 

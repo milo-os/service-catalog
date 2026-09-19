@@ -163,3 +163,44 @@ func TestServicesOperator_LocationSourceUnknownRejected(t *testing.T) {
 		t.Fatalf("expected an unknown location source to be rejected")
 	}
 }
+
+// A config doc that says nothing about the binding projection keeps writing
+// it, so an existing deployment does not retire a kind on upgrade alone.
+func TestServicesOperator_LocationBindingProjectionDefaultsToEnabled(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML)
+	if cfg.LocationBindingProjection != LocationBindingProjectionEnabled {
+		t.Errorf("locationBindingProjection = %q, want %q",
+			cfg.LocationBindingProjection, LocationBindingProjectionEnabled)
+	}
+	enabled, err := cfg.LocationBindingProjection.Enabled()
+	if err != nil {
+		t.Fatalf("resolve default location binding projection: %v", err)
+	}
+	if !enabled {
+		t.Error("default location binding projection resolved to disabled")
+	}
+}
+
+func TestServicesOperator_LocationBindingProjectionDisabled(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML+"locationBindingProjection: Disabled\n")
+	if cfg.LocationBindingProjection != LocationBindingProjectionDisabled {
+		t.Fatalf("locationBindingProjection = %q, want %q",
+			cfg.LocationBindingProjection, LocationBindingProjectionDisabled)
+	}
+	enabled, err := cfg.LocationBindingProjection.Enabled()
+	if err != nil {
+		t.Fatalf("resolve location binding projection: %v", err)
+	}
+	if enabled {
+		t.Error("location binding projection resolved to enabled though the config disabled it")
+	}
+}
+
+// A value naming neither state is rejected, so the manager fails at startup
+// rather than guessing whether a deprecated kind should still be served.
+func TestServicesOperator_LocationBindingProjectionUnknownRejected(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML+"locationBindingProjection: disabled\n")
+	if _, err := cfg.LocationBindingProjection.Enabled(); err == nil {
+		t.Fatalf("expected an unknown location binding projection to be rejected")
+	}
+}
