@@ -13,3 +13,13 @@ spec:
   owner:
     producerProjectRef:
       name: compute-platform
+  # Opts this service into automatic CRM contact-group enrollment: once a
+  # consumer's ServiceEntitlement for compute.miloapis.com goes Active, their
+  # notification.miloapis.com Contact is added to the compute-testers
+  # ContactGroup (created automatically the first time it's needed).
+  contactEnrollment:
+    contactGroupRef:
+      name: compute-testers
+    displayName: Compute Testers
+    description: Consumers registered for compute.miloapis.com.
+    visibility: public
