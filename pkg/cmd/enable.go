@@ -12,21 +12,24 @@ func newEnableCommand(opts ServicesCommandOptions) *cobra.Command {
 	var ropts activation.RequestOptions
 
 	cmd := &cobra.Command{
-		Use:   "enable <name>",
+		Use:   "enable <service-name>",
 		Short: "Request access to a service for the current project",
 		Long: `Submit a request to enable a Datum Cloud service for the current project.
 
+Pass the service name shown in the SERVICE NAME column of
+"datumctl services list" — not the display name in the NAME column.
+
 Approval may be a manual step by the service provider — use --wait to block
 until the platform reaches an answer, or check back later with
-"datumctl services status <name>".`,
+"datumctl services status <service-name>".`,
 		Example: `  # Request access and return immediately
-  datumctl services enable compute
+  datumctl services enable compute.datumapis.com
 
   # Request access and wait for approval
-  datumctl services enable compute --wait
+  datumctl services enable compute.datumapis.com --wait
 
   # Resubmit after a denial or revocation
-  datumctl services enable compute --renew`,
+  datumctl services enable compute.datumapis.com --renew`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnable(cmd, opts, args[0], ropts)
