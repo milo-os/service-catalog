@@ -1,0 +1,31 @@
+# The primary service's ContactGroup was auto-created (no operator
+# pre-created it), with the defaults service-catalog applies: displayName
+# falling back to the Service's own, and public visibility.
+apiVersion: notification.miloapis.com/v1alpha1
+kind: ContactGroup
+metadata:
+  name: e2e-contact-testers
+  namespace: milo-system
+spec:
+  displayName: Contact Enrollment Primary
+  visibility: public
+---
+# The membership name is deterministic — contactenrollment.MembershipName
+# hashes (contact namespace/name, group namespace/name) — so this asserts by
+# the exact name that pair produces:
+#   cgm- + hex(sha256("milo-system/e2e-admin-contact|milo-system/e2e-contact-testers"))[:8]
+# rather than listing and matching, which would leave the deterministic-name
+# guarantee (two entitlements for the same requester/group collapse to one
+# membership) unverified.
+apiVersion: notification.miloapis.com/v1alpha1
+kind: ContactGroupMembership
+metadata:
+  name: cgm-0d9dc0960a6a0de3
+  namespace: milo-system
+spec:
+  contactRef:
+    name: e2e-admin-contact
+    namespace: milo-system
+  contactGroupRef:
+    name: e2e-contact-testers
+    namespace: milo-system

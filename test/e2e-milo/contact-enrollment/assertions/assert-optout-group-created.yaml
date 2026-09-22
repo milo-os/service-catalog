@@ -1,0 +1,10 @@
+# The opt-out service's ContactGroup is still auto-created — the opt-out
+# blocks membership, not group creation.
+apiVersion: notification.miloapis.com/v1alpha1
+kind: ContactGroup
+metadata:
+  name: e2e-contact-optout-group
+  namespace: milo-system
+spec:
+  displayName: Contact Enrollment Opt-Out
+  visibility: public

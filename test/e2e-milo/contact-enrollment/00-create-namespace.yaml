@@ -1,0 +1,9 @@
+# The namespace Contacts, ContactGroups, and ContactGroupMemberships live in
+# inside Milo's own storage — a namespace this Milo never bootstraps itself,
+# since no controller-manager runs here (see test/e2e-milo/README.md).
+# "milo-system" here is a namespace *inside Milo's API*, unrelated to the
+# hosting kind cluster's own milo-system namespace where Milo's pods run.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: milo-system

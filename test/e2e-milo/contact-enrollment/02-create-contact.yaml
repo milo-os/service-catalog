@@ -1,0 +1,21 @@
+# A Contact whose subject matches the caller identity every chainsaw step in
+# this suite applies as: the kubeconfig's single user "e2e-admin" (see
+# test/e2e-milo/.kubeconfig, written by hack/e2e-milo/up.sh), which is also
+# the static-token identity the operator's mutating webhook stamps onto
+# ServiceEntitlement.spec.requestedBy (its UID is "e2e-admin" — see
+# config/overlays/e2e-milo/milo/overlay/auth.yaml). This is what lets
+# ContactEnrollmentReconciler resolve a real Contact for the entitlements
+# created below.
+apiVersion: notification.miloapis.com/v1alpha1
+kind: Contact
+metadata:
+  name: e2e-admin-contact
+  namespace: milo-system
+spec:
+  subject:
+    apiGroup: iam.miloapis.com
+    kind: User
+    name: e2e-admin
+  givenName: E2E
+  familyName: Admin
+  email: e2e-admin@example.com
