@@ -1,0 +1,7 @@
+name: private-beta-consumer
+match:
+  - 'ui/app/routes/catalog.$name.tsx'
+  - 'ui/app/routes/catalog._index.tsx'
+  - 'ui/app/routes/entitlements._index.tsx'
+description: 'private beta consumer journey — browse catalog, request access to a gated service, view pending entitlement'
+spec: 'e2e/scenes/private-beta-consumer.spec.ts'

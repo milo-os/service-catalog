@@ -13,7 +13,8 @@ import { EmptyContent } from "@datum-cloud/datum-ui/empty-content";
 import { Input } from "@datum-cloud/datum-ui/input";
 import { Search, Server } from "lucide-react";
 import { fetchK8s } from "~/lib/k8s.server";
-import type { KubeList, Service, ServiceConfiguration } from "~/lib/types";
+import type { KubeList, Service, ServiceConfiguration, ServiceEntitlement } from "~/lib/types";
+import { enablementModeBadgeProps } from "~/lib/format";
 
 interface ConfigSummary {
   mrtCount: number;
@@ -23,12 +24,13 @@ interface ConfigSummary {
 interface LoaderData {
   services: Service[];
   configSummaries: Record<string, ConfigSummary>;
+  enabledServiceNames: string[];
   error?: string;
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
-    const [serviceList, configList] = await Promise.all([
+    const [serviceList, configList, entitlementResult] = await Promise.allSettled([
       fetchK8s<KubeList<Service>>(
         request,
         "/apis/services.miloapis.com/v1alpha1/services"
@@ -37,9 +39,16 @@ export async function loader({ request }: LoaderFunctionArgs) {
         request,
         "/apis/services.miloapis.com/v1alpha1/serviceconfigurations"
       ),
+      fetchK8s<KubeList<ServiceEntitlement>>(
+        request,
+        "/apis/services.miloapis.com/v1alpha1/serviceentitlements"
+      ),
     ]);
 
-    const services = (serviceList.items ?? [])
+    if (serviceList.status === "rejected") throw serviceList.reason;
+    if (configList.status === "rejected") throw configList.reason;
+
+    const services = (serviceList.value.items ?? [])
       .filter((s) => s.spec.phase === "Published")
       .sort((a, b) =>
         (a.spec.displayName ?? "").localeCompare(
@@ -50,7 +59,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       );
 
     const configSummaries: Record<string, ConfigSummary> = {};
-    for (const config of configList.items ?? []) {
+    for (const config of configList.value.items ?? []) {
       if (config.spec.phase !== "Published") continue;
       const serviceName = config.spec.serviceRef.name;
       configSummaries[serviceName] = {
@@ -59,11 +68,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
       };
     }
 
-    return json({ services, configSummaries } satisfies LoaderData);
+    const entitlementItems =
+      entitlementResult.status === "fulfilled"
+        ? (entitlementResult.value.items ?? [])
+        : [];
+    const enabledServiceNames = [
+      ...new Set(entitlementItems.map((e) => e.spec.serviceRef.name)),
+    ];
+
+    return json({ services, configSummaries, enabledServiceNames } satisfies LoaderData);
   } catch (e) {
     return json({
       services: [],
       configSummaries: {},
+      enabledServiceNames: [],
       error: e instanceof Error ? e.message : String(e),
     } satisfies LoaderData);
   }
@@ -83,9 +101,11 @@ function matchesQuery(service: Service, q: string): boolean {
 function ServiceCard({
   service,
   configSummary,
+  isEnabled,
 }: {
   service: Service;
   configSummary?: ConfigSummary;
+  isEnabled: boolean;
 }) {
   const ownerProject =
     service.spec?.owner?.producerProjectRef?.name ?? "Unknown";
@@ -104,10 +124,16 @@ function ServiceCard({
           .join(" · ")
       : null;
 
+  const enablementMode = service.spec.enablementPolicy?.mode;
+  const modeBadge =
+    enablementMode === "GatedByProvider"
+      ? enablementModeBadgeProps(enablementMode)
+      : null;
+
   return (
     <li>
       <Link
-        to={`/services/${encodeURIComponent(service.metadata.name)}`}
+        to={`/catalog/${encodeURIComponent(service.metadata.name)}`}
         className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Card className="h-full transition-shadow hover:shadow-md">
@@ -115,9 +141,21 @@ function ServiceCard({
             <div className="rounded-md bg-primary/10 p-2 text-primary">
               <Server className="h-5 w-5" />
             </div>
-            <Badge type="success" theme="light">
-              Published
-            </Badge>
+            <div className="flex items-center gap-1.5">
+              {modeBadge ? (
+                <Badge type={modeBadge.type} theme={modeBadge.theme}>
+                  {modeBadge.label}
+                </Badge>
+              ) : null}
+              {isEnabled ? (
+                <Badge type="success" theme="solid">
+                  Enabled
+                </Badge>
+              ) : null}
+              <Badge type="success" theme="light">
+                Published
+              </Badge>
+            </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 px-4 pb-4 pt-0">
             <h3 className="text-base font-semibold text-foreground">
@@ -141,7 +179,8 @@ function ServiceCard({
 }
 
 export default function CatalogIndex() {
-  const { services, configSummaries, error } = useLoaderData<typeof loader>() as LoaderData;
+  const { services, configSummaries, enabledServiceNames, error } = useLoaderData<typeof loader>() as LoaderData;
+  const enabledSet = useMemo(() => new Set(enabledServiceNames), [enabledServiceNames]);
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(
@@ -212,6 +251,7 @@ export default function CatalogIndex() {
                   key={s.metadata.name}
                   service={s}
                   configSummary={configSummaries[s.metadata.name]}
+                  isEnabled={enabledSet.has(s.metadata.name)}
                 />
               ))}
             </ul>
