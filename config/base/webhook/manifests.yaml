@@ -24,6 +24,25 @@ webhooks:
     resources:
     - services
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-services-miloapis-com-v1alpha1-serviceentitlement
+  failurePolicy: Fail
+  name: mserviceentitlement.kb.io
+  rules:
+  - apiGroups:
+    - services.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    resources:
+    - serviceentitlements
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

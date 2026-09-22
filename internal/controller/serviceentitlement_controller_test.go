@@ -946,6 +946,73 @@ func TestEnsureDependencies_LabelsDependencyForProvenance(t *testing.T) {
 	}
 }
 
+// TestEnsureDependencies_PropagatesRequestedBy verifies a dependency
+// entitlement created on a consumer's behalf carries the parent's requester
+// forward, so CRM contact-group enrollment (and anything else keying off
+// spec.requestedBy) treats it the same as a direct request.
+func TestEnsureDependencies_PropagatesRequestedBy(t *testing.T) {
+	parentSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
+	parentEnt.Spec.RequestedBy = &servicesv1alpha1.RequesterRef{
+		APIGroup: "iam.miloapis.com",
+		Kind:     "User",
+		Name:     "user-abc123",
+		Email:    "alice@example.com",
+	}
+
+	rootClient := newFakeClient(parentSvc, depSvc)
+	consumerClient := newAdmissionFakeClient(rootClient, parentEnt)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var depEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &depEnt); err != nil {
+		t.Fatalf("dependency entitlement not created: %v", err)
+	}
+	if depEnt.Spec.RequestedBy == nil {
+		t.Fatal("dependency entitlement requestedBy = nil, want the parent's requester")
+	}
+	if *depEnt.Spec.RequestedBy != *parentEnt.Spec.RequestedBy {
+		t.Errorf("dependency entitlement requestedBy = %+v, want %+v", *depEnt.Spec.RequestedBy, *parentEnt.Spec.RequestedBy)
+	}
+}
+
+// TestEnsureDependencies_NoRequestedByOnParent verifies a parent entitlement
+// with no requester (created by a non-human caller, or predating this field)
+// produces a dependency entitlement with no requester either, rather than
+// panicking on a nil pointer.
+func TestEnsureDependencies_NoRequestedByOnParent(t *testing.T) {
+	parentSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newFakeClient(parentSvc, depSvc)
+	consumerClient := newAdmissionFakeClient(rootClient, parentEnt)
+	providerClient := newFakeClient()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var depEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testDepServiceSlug}, &depEnt); err != nil {
+		t.Fatalf("dependency entitlement not created: %v", err)
+	}
+	if depEnt.Spec.RequestedBy != nil {
+		t.Errorf("dependency entitlement requestedBy = %+v, want nil", depEnt.Spec.RequestedBy)
+	}
+}
+
 // TestDependencyOriginSurvivesItsOwnReconcile is the regression for the race
 // that left enrolled dependencies marked Direct: the dependency entitlement's
 // own reconcile used to default origin on an empty value, clobbering the

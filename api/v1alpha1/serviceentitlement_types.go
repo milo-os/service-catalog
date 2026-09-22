@@ -264,6 +264,53 @@ type ServiceEntitlementSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=1024
 	RequestMessage string `json:"requestMessage,omitempty"`
+
+	// RequestedBy identifies who asked for this entitlement. It is stamped by
+	// the admission webhook from the create request's caller identity and is
+	// immutable afterward; clients cannot set or spoof it directly. Left unset
+	// when the creating caller is not a human (for example, a controller
+	// creating a dependency entitlement stamps this by copying the parent's
+	// value instead — see ServiceEntitlementReconciler.ensureDependencies).
+	//
+	// This exists so downstream systems that need to know who is behind an
+	// entitlement (for example, CRM contact-group enrollment) don't have to
+	// reconstruct that from audit logs.
+	//
+	// +kubebuilder:validation:Optional
+	RequestedBy *RequesterRef `json:"requestedBy,omitempty"`
+}
+
+// RequesterRef identifies the human who requested a ServiceEntitlement.
+type RequesterRef struct {
+	// APIGroup is the group of the referenced subject (e.g. "iam.miloapis.com").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	APIGroup string `json:"apiGroup"`
+
+	// Kind is the type of the referenced subject (e.g. "User").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// Name is the metadata.name of the referenced subject, taken verbatim
+	// from the admission request's UserInfo.UID — which for a Milo User is
+	// the User's metadata.name, the same join key Milo's own Contact
+	// ownership checks use.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Email is the requester's email address at the time of the request, from
+	// the admission request's UserInfo.Username. It is a fallback lookup key
+	// only, used to resolve a Contact when one isn't found by subject name;
+	// it is not re-synced if the requester's email later changes.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	Email string `json:"email,omitempty"`
 }
 
 // ServiceEntitlementStatus defines the observed state of a ServiceEntitlement.
