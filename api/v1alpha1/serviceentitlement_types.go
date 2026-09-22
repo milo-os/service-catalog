@@ -133,6 +133,51 @@ const (
 	// ReasonDependencyEnrollmentFailed is the DependenciesSatisfied=False
 	// reason when one or more dependencies could not be enabled.
 	ReasonDependencyEnrollmentFailed = "DependencyEnrollmentFailed"
+
+	// ConditionTypeContactEnrolled reports whether this Active entitlement's
+	// requester has been added to the linked service's CRM ContactGroup. It
+	// stays separate from ConditionTypeReady for the same reason
+	// ConditionTypeProvisioned and ConditionTypeDependenciesSatisfied do: a
+	// CRM write failing (Milo's contact API unreachable, no Contact yet) is
+	// not a denial of service access, and must never gate it. It is written
+	// only once the entitlement is Active — enrollment follows approval, it
+	// doesn't anticipate it.
+	ConditionTypeContactEnrolled = "ContactEnrolled"
+
+	// ReasonContactEnrollmentNotConfigured is the ContactEnrolled=True reason
+	// when the entitlement's service has no spec.contactEnrollment. Nothing
+	// was owed, so this is not a failure to report.
+	ReasonContactEnrollmentNotConfigured = "NotConfigured"
+
+	// ReasonContactRequesterUnknown is the ContactEnrolled=False reason when
+	// the entitlement has no spec.requestedBy to resolve a Contact from — an
+	// entitlement created before that field existed, or by a caller the
+	// admission webhook didn't recognize as human. Terminal: nothing about
+	// this entitlement will make a requester appear later.
+	ReasonContactRequesterUnknown = "RequesterUnknown"
+
+	// ReasonContactNotFound is the ContactEnrolled=False reason while no CRM
+	// Contact matches the requester yet. Not terminal: Milo's own
+	// UserContactController may not have created the Contact yet, and a
+	// later reconcile (triggered by watching Contact) resolves it once that
+	// happens.
+	ReasonContactNotFound = "ContactNotFound"
+
+	// ReasonContactEnrolled is the ContactEnrolled=True reason once the
+	// requester's Contact has been added to the linked ContactGroup.
+	ReasonContactEnrolled = "Enrolled"
+
+	// ReasonContactOptedOut is the ContactEnrolled=True reason when the
+	// requester previously opted out of the linked ContactGroup (a
+	// ContactGroupMembershipRemoval already exists). The opt-out is honored,
+	// not overridden, and this counts as the enrollment decision having been
+	// made correctly rather than as a failure.
+	ReasonContactOptedOut = "OptedOut"
+
+	// ReasonContactEnrollmentFailed is the ContactEnrolled=False reason when
+	// ensuring the ContactGroup exists or adding the membership failed for a
+	// reason that may be transient and is retried.
+	ReasonContactEnrollmentFailed = "EnrollmentFailed"
 )
 
 // ProvisionedResourceState is the delivery state of one declared resource.

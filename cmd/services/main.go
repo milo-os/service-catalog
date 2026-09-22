@@ -15,6 +15,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -25,6 +26,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	notificationv1alpha1 "go.miloapis.com/milo/pkg/apis/notification/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
@@ -59,6 +61,7 @@ func init() {
 	utilruntime.Must(billingv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(quotav1alpha1.AddToScheme(scheme))
 	utilruntime.Must(resourcemanagerv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(notificationv1alpha1.AddToScheme(scheme))
 
 	// +kubebuilder:scaffold:scheme
 }
@@ -152,6 +155,20 @@ func main() {
 		setupLog.Info("webhookServer not configured; admission webhook server disabled")
 	}
 
+	var managerCacheOptions cache.Options
+	if ce := serverConfig.ContactEnrollment; ce != nil {
+		// notification.miloapis.com Contact spans the whole platform, not
+		// just this operator's projects. Scope the cache to the one
+		// namespace CRM enrollment actually reads from, so watching Contact
+		// (see ContactEnrollmentReconciler) doesn't pull in every Contact on
+		// Milo just to notice the ones this operator's requesters have.
+		managerCacheOptions.ByObject = map[client.Object]cache.ByObject{
+			&notificationv1alpha1.Contact{}: {
+				Namespaces: map[string]cache.Config{ce.Namespace: {}},
+			},
+		}
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsServerOptions,
@@ -160,6 +177,7 @@ func main() {
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "services.miloapis.com",
 		LeaderElectionNamespace: leaderElectionNamespace,
+		Cache:                   managerCacheOptions,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -244,6 +262,17 @@ func main() {
 	if err = (&controller.ServiceEntitlementReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceEntitlement")
 		os.Exit(1)
+	}
+	if ce := serverConfig.ContactEnrollment; ce != nil {
+		if err = (&controller.ContactEnrollmentReconciler{
+			Scheme:           scheme,
+			ContactNamespace: ce.Namespace,
+		}).SetupWithManager(mcMgr, mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ContactEnrollment")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("contactEnrollment not configured; CRM contact-group enrollment disabled")
 	}
 	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
