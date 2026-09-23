@@ -1,0 +1,35 @@
+# ActivityPolicy for ServiceEntitlement resources.
+#
+# A ServiceEntitlement is how a project asks for a service. Creating one is the
+# access request, so it is the event the project's activity feed shows.
+#
+# The API server logs services.miloapis.com writes at the Metadata audit level,
+# so audit.requestObject is absent and only audit.objectRef is available. By
+# convention an entitlement is named after the service ("compute"), so the
+# objectRef name reads correctly. The rules that read requestObject take over
+# if the audit level is raised to RequestResponse.
+#
+# Entitlements the controller creates for a service's dependencies are written
+# by a system identity. The rules exclude those, so the feed shows only the
+# service a person asked for.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: services.miloapis.com-serviceentitlement
+spec:
+  resource:
+    apiGroup: services.miloapis.com
+    kind: ServiceEntitlement
+
+  auditRules:
+    - name: requested-with-message
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef) && has(audit.requestObject.spec.requestMessage) && audit.requestObject.spec.requestMessage != ''"
+      summary: "{{ actor }} requested access to {{ link(audit.requestObject.spec.serviceRef.name, audit.objectRef) }}: \"{{ audit.requestObject.spec.requestMessage }}\""
+
+    - name: requested
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef)"
+      summary: "{{ actor }} requested access to {{ link(audit.requestObject.spec.serviceRef.name, audit.objectRef) }}"
+
+    - name: requested-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400"
+      summary: "{{ actor }} requested access to {{ link(audit.objectRef.name, audit.objectRef) }}"

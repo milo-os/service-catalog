@@ -1,0 +1,7 @@
+# ActivityPolicies for service catalog resources. Infra applies this directory
+# to the Milo control plane, where the activity.miloapis.com API is served.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceentitlement-policy.yaml
