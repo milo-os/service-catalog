@@ -101,6 +101,58 @@ func TestValidateServiceEntitlementUpdate_UnchangedServiceRef(t *testing.T) {
 	}
 }
 
+func TestValidateServiceEntitlementUpdate_RequestedByImmutable(t *testing.T) {
+	old := entitlement("a", "compute")
+	old.Spec.RequestedBy = &servicesv1alpha1.RequesterRef{
+		APIGroup: "iam.miloapis.com", Kind: "User", Name: "user-1", Email: "a@example.com",
+	}
+
+	updated := old.DeepCopy()
+	updated.Spec.RequestedBy = &servicesv1alpha1.RequesterRef{
+		APIGroup: "iam.miloapis.com", Kind: "User", Name: "user-2", Email: "b@example.com",
+	}
+
+	errs := ValidateServiceEntitlementUpdate(context.Background(), nil, old, updated)
+	if len(errs) == 0 {
+		t.Fatal("expected error when changing spec.requestedBy")
+	}
+}
+
+func TestValidateServiceEntitlementUpdate_RequestedByCannotBeCleared(t *testing.T) {
+	old := entitlement("a", "compute")
+	old.Spec.RequestedBy = &servicesv1alpha1.RequesterRef{
+		APIGroup: "iam.miloapis.com", Kind: "User", Name: "user-1", Email: "a@example.com",
+	}
+
+	updated := old.DeepCopy()
+	updated.Spec.RequestedBy = nil
+
+	errs := ValidateServiceEntitlementUpdate(context.Background(), nil, old, updated)
+	if len(errs) == 0 {
+		t.Fatal("expected error when clearing spec.requestedBy")
+	}
+}
+
+func TestValidateServiceEntitlementUpdate_RequestedByUnchanged(t *testing.T) {
+	old := entitlement("a", "compute")
+	old.Spec.RequestedBy = &servicesv1alpha1.RequesterRef{
+		APIGroup: "iam.miloapis.com", Kind: "User", Name: "user-1", Email: "a@example.com",
+	}
+
+	errs := ValidateServiceEntitlementUpdate(context.Background(), nil, old, old.DeepCopy())
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+}
+
+func TestValidateServiceEntitlementUpdate_RequestedByStillUnset(t *testing.T) {
+	old := entitlement("a", "compute")
+	errs := ValidateServiceEntitlementUpdate(context.Background(), nil, old, old.DeepCopy())
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+}
+
 func TestValidateServiceEntitlementDelete_RejectsDependencyWithActiveParent(t *testing.T) {
 	parent := entitlement("parent", "parent")
 	parent.Status.Phase = servicesv1alpha1.EntitlementPhaseActive

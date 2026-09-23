@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-contact-enrollment-primary
+spec:
+  serviceRef:
+    name: e2e-contact-enrollment-primary
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-contact-enrollment-optout
+spec:
+  serviceRef:
+    name: e2e-contact-enrollment-optout

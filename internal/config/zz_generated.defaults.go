@@ -25,4 +25,7 @@ func SetObjectDefaults_ServicesOperator(in *ServicesOperator) {
 		SetDefaults_WebhookServerConfig(in.WebhookServer)
 		SetDefaults_TLSConfig(&in.WebhookServer.TLS)
 	}
+	if in.ContactEnrollment != nil {
+		SetDefaults_ContactEnrollmentConfig(in.ContactEnrollment)
+	}
 }

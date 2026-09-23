@@ -91,6 +91,44 @@ type ConsumerProjectRef struct {
 	Name string `json:"name"`
 }
 
+// ContactGroupVisibility mirrors Milo's notification.miloapis.com
+// ContactGroup visibility values. It is redeclared here rather than
+// imported so this API's generated CRD and clients don't take a
+// compile-time dependency on Milo's notification package for a two-value
+// enum.
+//
+//   - "public"  – members may leave via a ContactGroupMembershipRemoval.
+//   - "private" – membership is enforced; opt-out requests are rejected.
+//
+// +kubebuilder:validation:Enum=public;private
+type ContactGroupVisibility string
+
+const (
+	ContactGroupVisibilityPublic  ContactGroupVisibility = "public"
+	ContactGroupVisibilityPrivate ContactGroupVisibility = "private"
+)
+
+// ContactGroupRef references a notification.miloapis.com ContactGroup by
+// name and, optionally, namespace. Namespace is left optional here (unlike
+// Milo's own EnrollmentContactGroupRef, which requires it) because most
+// operators just want the group in the operator's configured contact
+// namespace; the controller defaults it there when unset.
+type ContactGroupRef struct {
+	// Name is the metadata.name of the ContactGroup.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the ContactGroup. When omitted, the
+	// controller uses its own configured contact namespace.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	Namespace string `json:"namespace,omitempty"`
+}
+
 // CatalogStatus is the shared observed-state shape for the three
 // governance catalog resources. It is embedded as a value into each
 // concrete Status so the JSON shape stays flat (no extra envelope) while

@@ -107,11 +107,57 @@ passive API it writes to, not a participant in the decision-making.
 - Should a customer who received a service automatically (as a side effect
   of registering for something else it depends on) be enrolled the same as
   one who registered directly? This proposal currently treats them the
-  same.
+  same, and the implementation does too — a dependency-origin entitlement
+  carries its parent's requester forward. Still open as a *product*
+  question (not an implementation one): revisit if this proves to be a
+  recurring gap.
 - Confirm with stakeholders that no automatic membership removal on
-  revocation is acceptable for this first iteration.
+  revocation is acceptable for this first iteration. Still open — this is a
+  support/success/sales call, not an engineering one, and the implementation
+  performs no teardown either way.
 - What defaults should an auto-created Contact Group start with (visibility,
-  external sync destinations), given no operator has made that call yet?
+  external sync destinations)? Resolved for the first iteration: public
+  visibility (so an opt-out is always honored — private would reject it
+  outright) and no provider sync destinations (Milo's ContactGroup.spec.providers
+  is add-only with immutable IDs, so guessing one would be unrecoverable). An
+  operator attaches the right provider afterward in staff-portal, same as any
+  other auto-created group.
+
+## Implementation
+
+Shipped in `service-catalog` across four phases; each phase's commit message
+has the detail, this is the map:
+
+- **`ServiceEntitlement.spec.requestedBy`** (`api/v1alpha1/serviceentitlement_types.go`)
+  — stamped by a create-only mutating webhook
+  (`internal/webhook/v1alpha1/serviceentitlement_webhook.go`) from the
+  admission caller's identity. `UserInfo.UID` is used as the join key because
+  for a Milo `User` it *is* the `User.metadata.name` — the same value Milo's
+  own `Contact.spec.subject.name` carries. Immutable after create. A
+  dependency entitlement inherits its parent's value
+  (`ensureDependencies` in `internal/controller/serviceentitlement_controller.go`).
+- **`Service.spec.contactEnrollment`** (`api/v1alpha1/service_types.go`) — the
+  operator-set link to a `ContactGroup`. Repointing an already-set
+  `contactGroupRef` is rejected by validation; adding or removing the whole
+  block is unrestricted.
+- **`internal/contactenrollment/`** — the client-facing logic: resolve a
+  `Contact` by subject name (falling back to email), get-or-create the
+  `ContactGroup`, and enroll with a deterministic membership name so the same
+  requester/group pair always collapses to one membership regardless of how
+  many entitlements produced it.
+- **`ContactEnrollmentReconciler`** (`internal/controller/contact_enrollment_controller.go`)
+  — a separate controller from `ServiceEntitlementReconciler` by design: CRM
+  enrollment is best-effort and must never block dependency enrollment or
+  quota grants for the same entitlement. Reports its own
+  `ContactEnrolled` condition, gated on `ServicesOperator.contactEnrollment`
+  being configured (nil = off, matching the `webhookServer` /
+  `consumerScopedProjection` pointer-gate convention already in
+  `internal/config`).
+- **Tests**: unit and fake-client controller tests throughout; a real
+  end-to-end suite at `test/e2e-milo/contact-enrollment/`, which is the only
+  coverage that exercises real admission-time `requestedBy` stamping and a
+  real `ContactGroup`/`ContactGroupMembership`/`ContactGroupMembershipRemoval`
+  round trip against Milo's own API — including the opt-out-is-honored path.
 
 ## Alternatives considered
 

@@ -1,0 +1,36 @@
+# Two Published Services, each opted into CRM contact-group enrollment
+# against its own ContactGroup. Kept as two separate services (rather than
+# one service and a second entitlement for the same one) so the opt-out
+# fixture below can target one group without the two entitlements racing
+# each other's membership lookups.
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-contact-enrollment-primary
+spec:
+  serviceName: contact-enrollment-primary.e2e.datumapis.com
+  phase: Published
+  displayName: Contact Enrollment Primary
+  description: E2E fixture for CRM contact-group enrollment — the happy path.
+  contactEnrollment:
+    contactGroupRef:
+      name: e2e-contact-testers
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-contact-enrollment-optout
+spec:
+  serviceName: contact-enrollment-optout.e2e.datumapis.com
+  phase: Published
+  displayName: Contact Enrollment Opt-Out
+  description: E2E fixture for CRM contact-group enrollment — a pre-existing opt-out must be honored.
+  contactEnrollment:
+    contactGroupRef:
+      name: e2e-contact-optout-group
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform

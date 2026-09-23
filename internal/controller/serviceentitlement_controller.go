@@ -430,6 +430,15 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 		},
 		Spec: servicesv1alpha1.ServiceEntitlementSpec{
 			ServiceRef: servicesv1alpha1.ServiceRef{Name: depSvc.Name},
+			// Carry the parent's requester forward rather than leaving this
+			// unset: a dependency entitlement created on someone's behalf was
+			// still requested by them, and downstream consumers that key off
+			// spec.requestedBy (contact-group enrollment) should treat it the
+			// same as a direct request. The admission webhook only stamps
+			// this from the caller's identity on create and never overwrites
+			// a value already present on the incoming object, so setting it
+			// here is what makes it stick.
+			RequestedBy: parent.Spec.RequestedBy,
 		},
 	}
 	if err := consumerClient.Create(ctx, depEntitlement); err != nil {

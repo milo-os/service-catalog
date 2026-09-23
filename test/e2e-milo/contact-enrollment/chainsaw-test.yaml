@@ -1,0 +1,123 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: contact-enrollment
+spec:
+  description: |
+    Real functional coverage of ContactEnrollmentReconciler against Milo's
+    actual notification.miloapis.com API — the one thing this feature talks
+    to that a fake client in internal/controller and internal/contactenrollment
+    cannot stand in for: real admission-time defaulting of
+    ServiceEntitlement.spec.requestedBy from the caller's identity, and a real
+    ContactGroup/ContactGroupMembership/ContactGroupMembershipRemoval CRUD
+    cycle against Milo's storage.
+
+    Two services, each opted into contact-group enrollment against its own
+    ContactGroup:
+      - primary: no opt-out on file. The requester's Contact should end up a
+        member of a ContactGroup service-catalog creates on its own.
+      - optout: a ContactGroupMembershipRemoval already exists for the
+        requester and this service's group, recorded before the entitlement
+        is even created. The requester must NOT be added, and the entitlement
+        must still report success (OptedOut, not a failure) — the opt-out is
+        the enrollment decision working correctly, not it failing.
+
+    Every entitlement here is created by the same caller (the kubeconfig's
+    single "e2e-admin" user — see hack/e2e-milo/up.sh), whose UID the
+    mutating webhook stamps onto spec.requestedBy. The Contact fixture below
+    is keyed to that same identity, which is what lets the reconciler resolve
+    a real Contact rather than reporting ContactNotFound.
+
+  steps:
+    - name: create-namespace
+      description: |
+        The namespace Contacts/ContactGroups/ContactGroupMemberships live in
+        inside Milo's own storage. This Milo runs no controller-manager (see
+        test/e2e-milo/README.md), so nothing bootstraps it automatically.
+      cluster: root
+      try:
+        - apply:
+            file: 00-create-namespace.yaml
+
+    - name: publish-services
+      description: Publish both services, each linked to its own ContactGroup.
+      cluster: root
+      try:
+        - apply:
+            file: 01-create-services.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-contact-enrollment-primary
+              spec:
+                phase: Published
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-contact-enrollment-optout
+              spec:
+                phase: Published
+
+    - name: create-contact-and-optout
+      description: |
+        The requester's Contact, and a pre-existing opt-out for the
+        opt-out service's ContactGroup. Both created before either
+        entitlement, so the assertions that follow mean the reconciler
+        found them — not that it raced them into existence.
+      cluster: root
+      try:
+        - apply:
+            file: 02-create-contact.yaml
+        - apply:
+            file: 03-create-optout-removal.yaml
+
+    - name: create-entitlements-and-verify-enrollment
+      description: |
+        Creating both ServiceEntitlements should drive
+        ContactEnrollmentReconciler to enroll the requester's Contact in the
+        primary group, and to honor the opt-out for the second — without
+        touching either entitlement's approval/quota path (both still go
+        Active).
+      cluster: consumer-a
+      try:
+        - apply:
+            file: 04-create-entitlements.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-primary-enrolled.yaml
+        - assert:
+            timeout: 90s
+            file: assertions/assert-optout-honored.yaml
+
+    - name: verify-contact-group-and-membership
+      description: |
+        The primary service's group was auto-created, and the requester's
+        Contact was actually added to it — the membership name is
+        deterministic (see the assertion file), so this also confirms the
+        "same requester and group collapse to one membership" guarantee
+        rather than merely that some membership exists.
+      cluster: root
+      try:
+        - assert:
+            timeout: 30s
+            file: assertions/assert-group-and-membership-created.yaml
+
+    - name: verify-optout-group-created-but-no-membership
+      description: |
+        The opt-out service's group is still auto-created — the opt-out
+        blocks membership, not group creation — but no membership exists for
+        it.
+      cluster: root
+      try:
+        - assert:
+            timeout: 30s
+            file: assertions/assert-optout-group-created.yaml
+        - error:
+            timeout: 30s
+            file: assertions/assert-no-optout-membership.yaml

@@ -1,0 +1,16 @@
+# Recorded *before* the opt-out service's entitlement exists, the same way a
+# real opt-out would predate a later registration. ContactRef names the
+# Contact object (not the subject/User), matching
+# notification.miloapis.com's own shape.
+apiVersion: notification.miloapis.com/v1alpha1
+kind: ContactGroupMembershipRemoval
+metadata:
+  name: e2e-admin-optout-removal
+  namespace: milo-system
+spec:
+  contactRef:
+    name: e2e-admin-contact
+    namespace: milo-system
+  contactGroupRef:
+    name: e2e-contact-optout-group
+    namespace: milo-system

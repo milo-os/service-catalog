@@ -11,3 +11,8 @@ kubeconfigPath: /etc/milo/kubeconfig
 # separate capability with its own gating, and enabling it would move
 # LocationBinding projection to another manager without covering what this
 # environment proves.
+# CRM contact-group enrollment is on, at the default namespace ("milo-system"),
+# so test/e2e-milo/contact-enrollment can exercise ContactEnrollmentReconciler
+# against Milo's real notification.miloapis.com API — the one thing this
+# feature actually talks to that a fake client can't stand in for.
+contactEnrollment: {}

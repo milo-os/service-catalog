@@ -73,6 +73,16 @@ type ServicesOperator struct {
 	// projection runs on the all-projects manager. This mirrors the
 	// WebhookServer pointer-gate above: nil = feature off.
 	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+
+	// ContactEnrollment, when set, registers the ContactEnrollmentReconciler:
+	// a ServiceEntitlement going Active on a service with
+	// spec.contactEnrollment configured gets its requester's CRM Contact
+	// added to the linked ContactGroup. When nil (the default) no such
+	// controller runs and no entitlement writes to Milo's contact API — the
+	// same pointer-gate idiom as WebhookServer and ConsumerScopedProjection.
+	//
+	// +optional
+	ContactEnrollment *ContactEnrollmentConfig `json:"contactEnrollment,omitempty"`
 }
 
 // LocationSource names the API group Locations are read from.
@@ -191,6 +201,27 @@ type ConsumerScopedProjectionConfig struct {
 	// ResyncInterval optionally overrides the consumer provider's periodic
 	// full-resync cadence. When unset the provider uses its own default (5m).
 	ResyncInterval *metav1.Duration `json:"resyncInterval,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// ContactEnrollmentConfig configures the CRM contact-group enrollment
+// integration. See
+// docs/enhancements/entitlement-contact-enrollment-plan.md for the design.
+type ContactEnrollmentConfig struct {
+	// Namespace is where notification.miloapis.com Contacts live, and where
+	// an auto-created ContactGroup is placed when a Service's
+	// contactEnrollment doesn't name one explicitly. Defaults to
+	// "milo-system".
+	//
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+func SetDefaults_ContactEnrollmentConfig(obj *ContactEnrollmentConfig) {
+	if obj.Namespace == "" {
+		obj.Namespace = "milo-system"
+	}
 }
 
 // +k8s:deepcopy-gen=true

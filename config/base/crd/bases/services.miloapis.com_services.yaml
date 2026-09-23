@@ -76,6 +76,64 @@ spec:
               declaration via conditions on status; it does not transition the
               phase itself.
             properties:
+              contactEnrollment:
+                description: |-
+                  ContactEnrollment opts this service into automatic CRM contact-group
+                  enrollment: when a consumer's ServiceEntitlement for this service goes
+                  Active, the requester's notification.miloapis.com Contact is added to
+                  the referenced ContactGroup (created automatically the first time it's
+                  needed). Left unset, a service is unaffected — no entitlement for it
+                  writes to Milo's contact API at all.
+                properties:
+                  contactGroupRef:
+                    description: |-
+                      ContactGroupRef identifies the ContactGroup consumers are enrolled in.
+                      Once set, the reference may not be repointed at a different group —
+                      doing so would silently orphan everyone already enrolled under the old
+                      one. Remove contactEnrollment and re-add it to switch groups
+                      deliberately.
+                    properties:
+                      name:
+                        description: Name is the metadata.name of the ContactGroup.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the namespace of the ContactGroup. When omitted, the
+                          controller uses its own configured contact namespace.
+                        maxLength: 253
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  description:
+                    description: |-
+                      Description is used only if the referenced ContactGroup doesn't exist
+                      yet and has to be created. Falls back to a generated description
+                      naming this service when unset.
+                    maxLength: 1024
+                    type: string
+                  displayName:
+                    description: |-
+                      DisplayName is used only if the referenced ContactGroup doesn't exist
+                      yet and has to be created. Falls back to spec.displayName when unset.
+                    maxLength: 128
+                    type: string
+                  visibility:
+                    default: public
+                    description: |-
+                      Visibility is used only if the referenced ContactGroup doesn't exist
+                      yet and has to be created. Defaults to "public" so an opted-out
+                      consumer's opt-out is always honored; set "private" only for a group
+                      that must enforce membership.
+                    enum:
+                    - public
+                    - private
+                    type: string
+                required:
+                - contactGroupRef
+                type: object
               dependencies:
                 description: |-
                   Dependencies lists services that must be enabled alongside this service.

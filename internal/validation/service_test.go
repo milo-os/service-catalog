@@ -84,6 +84,94 @@ func TestValidateServiceUpdate_ServiceNameImmutable(t *testing.T) {
 	}
 }
 
+func TestValidateServiceCreate_ContactEnrollment(t *testing.T) {
+	tests := []struct {
+		name    string
+		ce      *servicesv1alpha1.ContactEnrollment
+		wantErr bool
+	}{
+		{
+			name: "valid group name",
+			ce: &servicesv1alpha1.ContactEnrollment{
+				ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "compute-testers"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid group name and namespace",
+			ce: &servicesv1alpha1.ContactEnrollment{
+				ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "compute-testers", Namespace: "milo-system"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid group name with uppercase",
+			ce: &servicesv1alpha1.ContactEnrollment{
+				ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "Compute-Testers"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid namespace with uppercase",
+			ce: &servicesv1alpha1.ContactEnrollment{
+				ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "compute-testers", Namespace: "Milo-System"},
+			},
+			wantErr: true,
+		},
+		{
+			name:    "unset contactEnrollment",
+			ce:      nil,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newService("compute-registry", "compute.miloapis.com")
+			svc.Spec.ContactEnrollment = tt.ce
+			errs := ValidateServiceCreate(svc)
+			if (len(errs) > 0) != tt.wantErr {
+				t.Errorf("ValidateServiceCreate() errs = %v, wantErr %v", errs, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateServiceUpdate_ContactGroupRefNotRepointed(t *testing.T) {
+	oldSvc := newService("compute-registry", "compute.miloapis.com")
+	oldSvc.Spec.ContactEnrollment = &servicesv1alpha1.ContactEnrollment{
+		ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "compute-testers"},
+	}
+
+	repointed := oldSvc.DeepCopy()
+	repointed.Spec.ContactEnrollment.ContactGroupRef.Name = "other-group"
+	if errs := ValidateServiceUpdate(oldSvc, repointed); len(errs) == 0 {
+		t.Fatal("expected error repointing contactGroupRef to a different group")
+	}
+
+	unchanged := oldSvc.DeepCopy()
+	if errs := ValidateServiceUpdate(oldSvc, unchanged); len(errs) != 0 {
+		t.Fatalf("unexpected errors for unchanged contactGroupRef: %v", errs)
+	}
+}
+
+func TestValidateServiceUpdate_ContactEnrollmentCanBeAddedOrRemoved(t *testing.T) {
+	oldSvc := newService("compute-registry", "compute.miloapis.com")
+
+	added := oldSvc.DeepCopy()
+	added.Spec.ContactEnrollment = &servicesv1alpha1.ContactEnrollment{
+		ContactGroupRef: servicesv1alpha1.ContactGroupRef{Name: "compute-testers"},
+	}
+	if errs := ValidateServiceUpdate(oldSvc, added); len(errs) != 0 {
+		t.Fatalf("unexpected errors adding contactEnrollment: %v", errs)
+	}
+
+	removed := added.DeepCopy()
+	removed.Spec.ContactEnrollment = nil
+	if errs := ValidateServiceUpdate(added, removed); len(errs) != 0 {
+		t.Fatalf("unexpected errors removing contactEnrollment: %v", errs)
+	}
+}
+
 func TestValidateServiceDependencies_AcceptsAcyclic(t *testing.T) {
 	// a -> b -> c, no cycle.
 	b := newService("b", "b.miloapis.com")

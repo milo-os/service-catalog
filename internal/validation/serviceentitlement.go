@@ -43,7 +43,25 @@ func ValidateServiceEntitlementUpdate(
 			"cannot change which service this entitlement is for; remove it and create a new one instead",
 		))
 	}
+
+	if !requesterRefEqual(oldSE.Spec.RequestedBy, newSE.Spec.RequestedBy) {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "requestedBy"),
+			"requestedBy is set once at creation by the admission webhook and cannot be changed",
+		))
+	}
 	return allErrs
+}
+
+// requesterRefEqual reports whether two RequesterRef pointers hold the same
+// value, treating nil and a zero-value pointer as distinct only from a
+// non-nil, non-zero one — either nil is fine (the field was never stamped),
+// but a stamped value may never be changed or cleared.
+func requesterRefEqual(a, b *servicesv1alpha1.RequesterRef) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // ValidateServiceEntitlementDelete refuses to delete a dependency

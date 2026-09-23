@@ -27,21 +27,25 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	notificationv1alpha1 "go.miloapis.com/milo/pkg/apis/notification/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/internal/contactenrollment"
 )
 
-// testScheme returns a scheme with the services, billing, quota, and
-// resourcemanager API types registered. Resourcemanager is needed by
-// OrganizationDefaultsReconciler tests; billing types are needed by
-// BillingEntitlement quota-gating tests.
+// testScheme returns a scheme with the services, billing, quota,
+// resourcemanager, and notification API types registered. Resourcemanager is
+// needed by OrganizationDefaultsReconciler tests; billing types are needed by
+// BillingEntitlement quota-gating tests; notification types are needed by
+// ContactEnrollmentReconciler tests.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
 	_ = billingv1alpha1.AddToScheme(s)
 	_ = quotav1alpha1.AddToScheme(s)
 	_ = resourcemanagerv1alpha1.AddToScheme(s)
+	_ = notificationv1alpha1.AddToScheme(s)
 	return s
 }
 
@@ -157,6 +161,28 @@ func newFakeClient(objs ...client.Object) client.Client {
 				return nil
 			}
 			return []string{be.Spec.OfferRef.Name}
+		}).
+		WithIndex(&servicesv1alpha1.ServiceEntitlement{}, entitlementRequesterNameIndex, entitlementRequesterNameIndexer).
+		WithIndex(&notificationv1alpha1.Contact{}, contactenrollment.ContactSubjectNameIndex, func(obj client.Object) []string {
+			c := obj.(*notificationv1alpha1.Contact)
+			if c.Spec.SubjectRef == nil || c.Spec.SubjectRef.Name == "" {
+				return nil
+			}
+			return []string{c.Spec.SubjectRef.Name}
+		}).
+		WithIndex(&notificationv1alpha1.Contact{}, contactenrollment.ContactEmailIndex, func(obj client.Object) []string {
+			c := obj.(*notificationv1alpha1.Contact)
+			if c.Spec.Email == "" {
+				return nil
+			}
+			return []string{c.Spec.Email}
+		}).
+		WithIndex(&notificationv1alpha1.ContactGroupMembershipRemoval{}, contactenrollment.MembershipRemovalContactRefNameIndex, func(obj client.Object) []string {
+			rm := obj.(*notificationv1alpha1.ContactGroupMembershipRemoval)
+			if rm.Spec.ContactRef.Name == "" {
+				return nil
+			}
+			return []string{rm.Spec.ContactRef.Name}
 		}).
 		Build()
 	return &ssaClient{Client: base}

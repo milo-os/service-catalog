@@ -84,6 +84,56 @@ type ServiceSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	EnablementPolicy *EnablementPolicy `json:"enablementPolicy,omitempty"`
+
+	// ContactEnrollment opts this service into automatic CRM contact-group
+	// enrollment: when a consumer's ServiceEntitlement for this service goes
+	// Active, the requester's notification.miloapis.com Contact is added to
+	// the referenced ContactGroup (created automatically the first time it's
+	// needed). Left unset, a service is unaffected — no entitlement for it
+	// writes to Milo's contact API at all.
+	//
+	// +kubebuilder:validation:Optional
+	ContactEnrollment *ContactEnrollment `json:"contactEnrollment,omitempty"`
+}
+
+// ContactEnrollment links a Service to the ContactGroup its consumers should
+// be enrolled in once their entitlement is Active. It is operator-set-once
+// policy, the same shape as EnablementPolicy: most fields only matter the
+// first time the referenced group needs to be created, since service-catalog
+// creates but does not subsequently reconcile the group's settings.
+type ContactEnrollment struct {
+	// ContactGroupRef identifies the ContactGroup consumers are enrolled in.
+	// Once set, the reference may not be repointed at a different group —
+	// doing so would silently orphan everyone already enrolled under the old
+	// one. Remove contactEnrollment and re-add it to switch groups
+	// deliberately.
+	//
+	// +kubebuilder:validation:Required
+	ContactGroupRef ContactGroupRef `json:"contactGroupRef"`
+
+	// DisplayName is used only if the referenced ContactGroup doesn't exist
+	// yet and has to be created. Falls back to spec.displayName when unset.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Description is used only if the referenced ContactGroup doesn't exist
+	// yet and has to be created. Falls back to a generated description
+	// naming this service when unset.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	Description string `json:"description,omitempty"`
+
+	// Visibility is used only if the referenced ContactGroup doesn't exist
+	// yet and has to be created. Defaults to "public" so an opted-out
+	// consumer's opt-out is always honored; set "private" only for a group
+	// that must enforce membership.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=public
+	Visibility ContactGroupVisibility `json:"visibility,omitempty"`
 }
 
 // ServiceDependency declares a service that must be enabled alongside the

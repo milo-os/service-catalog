@@ -33,6 +33,7 @@ func ValidateServiceCreate(svc *servicesv1alpha1.Service) field.ErrorList {
 
 	allErrs = append(allErrs, validateServiceMetadataName(svc)...)
 	allErrs = append(allErrs, validateServiceName(svc.Spec.ServiceName)...)
+	allErrs = append(allErrs, validateContactEnrollment(svc.Spec.ContactEnrollment)...)
 
 	return allErrs
 }
@@ -45,6 +46,8 @@ func ValidateServiceUpdate(oldSvc, newSvc *servicesv1alpha1.Service) field.Error
 
 	allErrs = append(allErrs, validateServiceMetadataName(newSvc)...)
 	allErrs = append(allErrs, validateServiceName(newSvc.Spec.ServiceName)...)
+	allErrs = append(allErrs, validateContactEnrollment(newSvc.Spec.ContactEnrollment)...)
+	allErrs = append(allErrs, validateContactEnrollmentNotRepointed(oldSvc, newSvc)...)
 
 	if oldSvc.Spec.ServiceName != newSvc.Spec.ServiceName {
 		allErrs = append(allErrs, field.Forbidden(
@@ -57,6 +60,61 @@ func ValidateServiceUpdate(oldSvc, newSvc *servicesv1alpha1.Service) field.Error
 		oldSvc.Spec.Phase, newSvc.Spec.Phase,
 		field.NewPath("spec", "phase"),
 	)...)
+
+	return allErrs
+}
+
+// validateContactEnrollment enforces that a set contactGroupRef names a
+// syntactically valid Kubernetes object (name and, if set, namespace are
+// DNS-1123 labels) — the same shape metadata.name itself is constrained to,
+// since the reconciler uses this value verbatim as a ContactGroup's
+// metadata.name/namespace.
+func validateContactEnrollment(ce *servicesv1alpha1.ContactEnrollment) field.ErrorList {
+	var allErrs field.ErrorList
+	if ce == nil {
+		return allErrs
+	}
+
+	namePath := field.NewPath("spec", "contactEnrollment", "contactGroupRef", "name")
+	if name := ce.ContactGroupRef.Name; name != "" && !serviceSlugRegex.MatchString(name) {
+		allErrs = append(allErrs, field.Invalid(
+			namePath, name,
+			"may use only lowercase letters, numbers, and hyphens, and must start and end with a letter or number (for example, \"compute-testers\")",
+		))
+	}
+
+	nsPath := field.NewPath("spec", "contactEnrollment", "contactGroupRef", "namespace")
+	if ns := ce.ContactGroupRef.Namespace; ns != "" && !serviceSlugRegex.MatchString(ns) {
+		allErrs = append(allErrs, field.Invalid(
+			nsPath, ns,
+			"may use only lowercase letters, numbers, and hyphens, and must start and end with a letter or number",
+		))
+	}
+
+	return allErrs
+}
+
+// validateContactEnrollmentNotRepointed rejects changing which ContactGroup
+// an already-configured contactEnrollment points at. Repointing would
+// silently orphan every consumer already enrolled under the old group — a
+// service that genuinely needs to switch groups removes contactEnrollment
+// and adds it back, a deliberate two-step the operator has to notice.
+// Turning enrollment on or off entirely (nil <-> set) is unrestricted.
+func validateContactEnrollmentNotRepointed(oldSvc, newSvc *servicesv1alpha1.Service) field.ErrorList {
+	var allErrs field.ErrorList
+
+	if oldSvc.Spec.ContactEnrollment == nil || newSvc.Spec.ContactEnrollment == nil {
+		return allErrs
+	}
+
+	oldRef := oldSvc.Spec.ContactEnrollment.ContactGroupRef
+	newRef := newSvc.Spec.ContactEnrollment.ContactGroupRef
+	if oldRef != newRef {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "contactEnrollment", "contactGroupRef"),
+			"cannot repoint an already-configured contact group, which would orphan consumers already enrolled under it; remove contactEnrollment and add it back to switch groups",
+		))
+	}
 
 	return allErrs
 }

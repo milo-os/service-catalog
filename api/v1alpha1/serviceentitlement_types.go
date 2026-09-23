@@ -133,6 +133,51 @@ const (
 	// ReasonDependencyEnrollmentFailed is the DependenciesSatisfied=False
 	// reason when one or more dependencies could not be enabled.
 	ReasonDependencyEnrollmentFailed = "DependencyEnrollmentFailed"
+
+	// ConditionTypeContactEnrolled reports whether this Active entitlement's
+	// requester has been added to the linked service's CRM ContactGroup. It
+	// stays separate from ConditionTypeReady for the same reason
+	// ConditionTypeProvisioned and ConditionTypeDependenciesSatisfied do: a
+	// CRM write failing (Milo's contact API unreachable, no Contact yet) is
+	// not a denial of service access, and must never gate it. It is written
+	// only once the entitlement is Active — enrollment follows approval, it
+	// doesn't anticipate it.
+	ConditionTypeContactEnrolled = "ContactEnrolled"
+
+	// ReasonContactEnrollmentNotConfigured is the ContactEnrolled=True reason
+	// when the entitlement's service has no spec.contactEnrollment. Nothing
+	// was owed, so this is not a failure to report.
+	ReasonContactEnrollmentNotConfigured = "NotConfigured"
+
+	// ReasonContactRequesterUnknown is the ContactEnrolled=False reason when
+	// the entitlement has no spec.requestedBy to resolve a Contact from — an
+	// entitlement created before that field existed, or by a caller the
+	// admission webhook didn't recognize as human. Terminal: nothing about
+	// this entitlement will make a requester appear later.
+	ReasonContactRequesterUnknown = "RequesterUnknown"
+
+	// ReasonContactNotFound is the ContactEnrolled=False reason while no CRM
+	// Contact matches the requester yet. Not terminal: Milo's own
+	// UserContactController may not have created the Contact yet, and a
+	// later reconcile (triggered by watching Contact) resolves it once that
+	// happens.
+	ReasonContactNotFound = "ContactNotFound"
+
+	// ReasonContactEnrolled is the ContactEnrolled=True reason once the
+	// requester's Contact has been added to the linked ContactGroup.
+	ReasonContactEnrolled = "Enrolled"
+
+	// ReasonContactOptedOut is the ContactEnrolled=True reason when the
+	// requester previously opted out of the linked ContactGroup (a
+	// ContactGroupMembershipRemoval already exists). The opt-out is honored,
+	// not overridden, and this counts as the enrollment decision having been
+	// made correctly rather than as a failure.
+	ReasonContactOptedOut = "OptedOut"
+
+	// ReasonContactEnrollmentFailed is the ContactEnrolled=False reason when
+	// ensuring the ContactGroup exists or adding the membership failed for a
+	// reason that may be transient and is retried.
+	ReasonContactEnrollmentFailed = "EnrollmentFailed"
 )
 
 // ProvisionedResourceState is the delivery state of one declared resource.
@@ -264,6 +309,53 @@ type ServiceEntitlementSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=1024
 	RequestMessage string `json:"requestMessage,omitempty"`
+
+	// RequestedBy identifies who asked for this entitlement. It is stamped by
+	// the admission webhook from the create request's caller identity and is
+	// immutable afterward; clients cannot set or spoof it directly. Left unset
+	// when the creating caller is not a human (for example, a controller
+	// creating a dependency entitlement stamps this by copying the parent's
+	// value instead — see ServiceEntitlementReconciler.ensureDependencies).
+	//
+	// This exists so downstream systems that need to know who is behind an
+	// entitlement (for example, CRM contact-group enrollment) don't have to
+	// reconstruct that from audit logs.
+	//
+	// +kubebuilder:validation:Optional
+	RequestedBy *RequesterRef `json:"requestedBy,omitempty"`
+}
+
+// RequesterRef identifies the human who requested a ServiceEntitlement.
+type RequesterRef struct {
+	// APIGroup is the group of the referenced subject (e.g. "iam.miloapis.com").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	APIGroup string `json:"apiGroup"`
+
+	// Kind is the type of the referenced subject (e.g. "User").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// Name is the metadata.name of the referenced subject, taken verbatim
+	// from the admission request's UserInfo.UID — which for a Milo User is
+	// the User's metadata.name, the same join key Milo's own Contact
+	// ownership checks use.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Email is the requester's email address at the time of the request, from
+	// the admission request's UserInfo.Username. It is a fallback lookup key
+	// only, used to resolve a Contact when one isn't found by subject name;
+	// it is not re-synced if the requester's email later changes.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=253
+	Email string `json:"email,omitempty"`
 }
 
 // ServiceEntitlementStatus defines the observed state of a ServiceEntitlement.

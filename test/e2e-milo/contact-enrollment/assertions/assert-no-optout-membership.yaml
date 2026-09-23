@@ -1,0 +1,10 @@
+# Asserted with the `error:` operation (expects the resource NOT to exist):
+# the opt-out must actually block membership creation, not just get honored
+# in the condition's wording. Name computed the same way as
+# assert-group-and-membership-created.yaml, against the opt-out group:
+#   cgm- + hex(sha256("milo-system/e2e-admin-contact|milo-system/e2e-contact-optout-group"))[:8]
+apiVersion: notification.miloapis.com/v1alpha1
+kind: ContactGroupMembership
+metadata:
+  name: cgm-0961d3e5018268dc
+  namespace: milo-system
