@@ -1,0 +1,16 @@
+# Lets every signed-in user browse the published service catalog.
+#
+# The catalog is the front door to service enablement: the CLI and the
+# activation SDK read a Service to learn its display name, description and
+# enablement mode before they can offer to enable it. Without this binding a
+# consumer's first `enable` attempt fails on a cluster-scoped list of
+# Services instead of telling them what to do next.
+#
+# Kept out of the always-on iam component because who may browse the catalog
+# is a deployment's policy decision, and granting a group read access to a
+# cluster-scoped resource should be an explicit choice by the operator.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - authenticated-user-service-read.yaml

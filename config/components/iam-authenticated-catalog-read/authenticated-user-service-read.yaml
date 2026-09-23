@@ -1,0 +1,14 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: PolicyBinding
+metadata:
+  name: authenticated-user-service-read
+spec:
+  roleRef:
+    name: services.miloapis.com-viewer
+  subjects:
+    - kind: Group
+      name: "system:authenticated"
+  resourceSelector:
+    resourceKind:
+      apiGroup: "services.miloapis.com"
+      kind: Service
