@@ -158,6 +158,16 @@ func (r *ServiceEntitlementReconciler) ensureQuotaGrants(
 			},
 		}
 
+		// Only compare fields this reconciler owns, or a foreign-managed field
+		// would make this look permanently "changed".
+		var existing quotav1alpha1.ResourceGrant
+		if err := consumerClient.Get(ctx, types.NamespacedName{Name: grantName, Namespace: quotaGrantNamespace}, &existing); err == nil &&
+			apiequality.Semantic.DeepEqual(existing.Spec.ConsumerRef, grant.Spec.ConsumerRef) &&
+			apiequality.Semantic.DeepEqual(existing.Spec.Allowances, grant.Spec.Allowances) {
+			desired[grantName] = struct{}{}
+			continue
+		}
+
 		if err := consumerClient.Patch(ctx, grant, client.Apply, //nolint:staticcheck // SA1019: migrate to client.Apply() with ApplyConfiguration in a follow-up
 			client.FieldOwner(quotaGrantFieldManager),
 			client.ForceOwnership,

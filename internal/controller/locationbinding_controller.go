@@ -14,12 +14,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -859,26 +862,47 @@ func (r *LocationBindingReconciler) prune(
 	return nil
 }
 
+// locationBindingRequestName collapses every entitlement's events in a
+// project onto one workqueue key, so N changes trigger one reconcile.
+const locationBindingRequestName = "project"
+
+// TypedEnqueueRequestsFromMapFunc fills in the cluster name afterward.
+func mapServiceEntitlementToProjectRequest(_ context.Context, _ client.Object) []mcreconcile.Request {
+	return []mcreconcile.Request{{
+		Request: reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: locationBindingRequestName},
+		},
+	}}
+}
+
 // SetupWithManager registers the reconciler on the multicluster manager.
 //
 // The primary watch is ServiceEntitlement, scoped to engaged project clusters
-// (WithEngageWithProviderClusters), mirroring ServiceEntitlementReconciler.
+// (WithEngageWithProviderClusters), mirroring ServiceEntitlementReconciler —
+// via Watches rather than For, so events collapse onto one project-keyed
+// request (see locationBindingRequestName).
+//
 // The three gates also depend on ServiceAvailability, ServiceConfiguration, and
 // Location objects on the root cluster; multicluster-runtime has no clean way
 // to translate a root-cluster object event into a project-scoped reconcile
 // request, so those gates are picked up by the periodic resync configured via
 // RequeueAfter rather than by additional watches.
 //
-// Reconciles run concurrently across projects. Two passes over the same project
-// are still serialized by controller-runtime's per-key locking, so the
-// concurrency here only ever puts different projects in flight at once. See
+// Reconciles run concurrently across projects. Two passes over the same
+// project are serialized by controller-runtime's per-key locking, since every
+// entitlement in a project maps to the same key, so the concurrency here only
+// puts different projects in flight at once. See
 // locationBindingMaxConcurrentReconciles.
 func (r *LocationBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
 	r.rootClient = rootClient
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("location-binding").
-		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		Watches(
+			&servicesv1alpha1.ServiceEntitlement{},
+			mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
+			mcbuilder.WithEngageWithProviderClusters(true),
+		).
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: locationBindingMaxConcurrentReconciles,
 		}).
