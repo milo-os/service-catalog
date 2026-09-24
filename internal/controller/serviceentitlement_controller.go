@@ -96,6 +96,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingaccountbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=offers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -210,6 +211,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 
 	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Only a GatedByProvider service has a provider decision to report. A
+	// self-service entitlement going Active was never decided by anyone.
+	if gated {
+		if err := announceDecision(ctx, consumerClient, &entitlement, svc, consumer.Spec.Approval); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Only enroll dependencies and provision quota once the parent is Active.
