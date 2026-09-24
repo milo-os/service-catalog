@@ -324,10 +324,6 @@ func main() {
 				{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding"},
 			},
 		}
-		if csp.ResyncInterval != nil {
-			consumerOpts.ResyncInterval = csp.ResyncInterval.Duration
-		}
-
 		consumerProvider, err := consumer.New(providerMgr, consumerOpts)
 		if err != nil {
 			setupLog.Error(err, "unable to create consumer provider")

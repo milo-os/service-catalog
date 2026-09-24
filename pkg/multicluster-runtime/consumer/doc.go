@@ -35,8 +35,8 @@
 //   - A map built from watch replay is not restart-safe: a consumer removed or
 //     revoked while the operator was down produces no replay event on restart.
 //
-// Listing on every reconcile, plus a periodic full resync (see ResyncInterval),
-// makes the active set self-healing regardless of missed events. Each reconcile
+// Listing on every reconcile, together with the initial informer list, makes
+// the active set self-healing across restarts and missed events. Each reconcile
 // resolves every relevant ServiceConsumer to its canonical service name, buckets
 // by consumer project, counts active-and-not-deleting consumers per project, and
 // engages or disengages on the delta. The disengage candidate set is every

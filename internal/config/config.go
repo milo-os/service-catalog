@@ -187,10 +187,6 @@ type ConsumerScopedProjectionConfig struct {
 	// engaged and projected into; a provider project may host ServiceConsumers
 	// for other services, which are ignored. Required, non-empty.
 	ServiceNames []string `json:"serviceNames"`
-
-	// ResyncInterval optionally overrides the consumer provider's periodic
-	// full-resync cadence. When unset the provider uses its own default (5m).
-	ResyncInterval *metav1.Duration `json:"resyncInterval,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

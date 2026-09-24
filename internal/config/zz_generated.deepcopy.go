@@ -8,7 +8,6 @@ package config
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -19,11 +18,6 @@ func (in *ConsumerScopedProjectionConfig) DeepCopyInto(out *ConsumerScopedProjec
 		in, out := &in.ServiceNames, &out.ServiceNames
 		*out = make([]string, len(*in))
 		copy(*out, *in)
-	}
-	if in.ResyncInterval != nil {
-		in, out := &in.ResyncInterval, &out.ResyncInterval
-		*out = new(v1.Duration)
-		**out = **in
 	}
 }
 
