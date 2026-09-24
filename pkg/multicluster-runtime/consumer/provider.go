@@ -109,7 +109,6 @@ type Provider struct {
 	rootClient         client.Client
 	providerClient     client.Client
 	providerRestConfig *rest.Config
-	resyncInterval     time.Duration
 	newCluster         func(*rest.Config, ...cluster.Option) (cluster.Cluster, error)
 	newClient          func(*rest.Config, client.Options) (client.Client, error)
 
@@ -147,10 +146,6 @@ func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
 	if opts.newClient == nil {
 		opts.newClient = client.New
 	}
-	if opts.ResyncInterval == 0 {
-		opts.ResyncInterval = DefaultResyncInterval
-	}
-
 	serviceNames := make(map[string]struct{}, len(opts.ServiceNames))
 	for _, n := range opts.ServiceNames {
 		serviceNames[n] = struct{}{}
@@ -162,7 +157,6 @@ func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
 		rootClient:         opts.RootClient,
 		providerClient:     providerMgr.GetClient(),
 		providerRestConfig: providerMgr.GetConfig(),
-		resyncInterval:     opts.ResyncInterval,
 		newCluster:         opts.newCluster,
 		newClient:          opts.newClient,
 		serviceNames:       serviceNames,
@@ -352,9 +346,13 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 		}
 	}
 
-	// Periodic full resync covers consumers removed while the operator was down
-	// and provider-side gate changes the watch cannot observe.
-	return ctrl.Result{RequeueAfter: p.resyncInterval}, nil
+	// Do not return RequeueAfter here. The ServiceConsumer watch delivers the
+	// initial informer list and all subsequent create, update, and delete events.
+	// The provider teardown finalizer keeps deletion-visible objects present until
+	// this controller has completed cleanup, so a periodic full resync is not
+	// required for restart safety. A per-object timer would also schedule one
+	// full active-set scan every interval for every consumer.
+	return ctrl.Result{}, nil
 }
 
 // computeActiveSet lists the operator's Services in the provider project to
