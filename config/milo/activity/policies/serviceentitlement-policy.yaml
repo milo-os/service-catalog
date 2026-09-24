@@ -1,7 +1,8 @@
 # ActivityPolicy for ServiceEntitlement resources.
 #
 # A ServiceEntitlement is how a project asks for a service. Creating one is the
-# access request, so it is the event the project's activity feed shows.
+# access request, and for a GatedByProvider service the provider's approval or
+# rejection follows. The project's activity feed shows all three.
 #
 # The API server logs services.miloapis.com writes at the Metadata audit level,
 # so audit.requestObject is absent and only audit.objectRef is available. By
@@ -33,3 +34,34 @@ spec:
     - name: requested-fallback
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400"
       summary: "{{ actor }} requested access to {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+  # The provider decides a GatedByProvider request in its own project, so the
+  # consumer project sees no audit entry for it. The services controller emits
+  # these events into the consumer project when the entitlement's phase
+  # changes to reflect the decision. The approver's identity stays with the
+  # provider, so the summaries name the decision and not who made it.
+  #
+  # Annotations on these events:
+  #   services.miloapis.com/service-display-name: Compute
+  #   services.miloapis.com/service-name: compute.datumapis.com
+  #   services.miloapis.com/decision-message: the provider's message, if any
+  eventRules:
+    - name: approved
+      match: "event.reason == 'EntitlementApproved' && has(event.metadata.annotations) && 'services.miloapis.com/service-display-name' in event.metadata.annotations"
+      summary: "Access to {{ link(event.metadata.annotations['services.miloapis.com/service-display-name'], event.regarding) }} was approved"
+
+    - name: approved-fallback
+      match: "event.reason == 'EntitlementApproved'"
+      summary: "Access to {{ link(event.regarding.name, event.regarding) }} was approved"
+
+    - name: rejected-with-message
+      match: "event.reason == 'EntitlementRejected' && has(event.metadata.annotations) && 'services.miloapis.com/service-display-name' in event.metadata.annotations && 'services.miloapis.com/decision-message' in event.metadata.annotations"
+      summary: "Access to {{ link(event.metadata.annotations['services.miloapis.com/service-display-name'], event.regarding) }} was rejected: \"{{ event.metadata.annotations['services.miloapis.com/decision-message'] }}\""
+
+    - name: rejected
+      match: "event.reason == 'EntitlementRejected' && has(event.metadata.annotations) && 'services.miloapis.com/service-display-name' in event.metadata.annotations"
+      summary: "Access to {{ link(event.metadata.annotations['services.miloapis.com/service-display-name'], event.regarding) }} was rejected"
+
+    - name: rejected-fallback
+      match: "event.reason == 'EntitlementRejected'"
+      summary: "Access to {{ link(event.regarding.name, event.regarding) }} was rejected"
