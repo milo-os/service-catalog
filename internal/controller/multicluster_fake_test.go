@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/go-logr/logr"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,12 +33,14 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// testScheme returns a scheme with the services, billing, quota, and
-// resourcemanager API types registered. Resourcemanager is needed by
-// OrganizationDefaultsReconciler tests; billing types are needed by
-// BillingEntitlement quota-gating tests.
+// testScheme returns a scheme with the services, billing, quota,
+// resourcemanager, and events API types registered. Resourcemanager is needed
+// by OrganizationDefaultsReconciler tests; billing types are needed by
+// BillingEntitlement quota-gating tests; events are needed by the entitlement
+// decision event tests.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
+	_ = eventsv1.AddToScheme(s)
 	_ = servicesv1alpha1.AddToScheme(s)
 	_ = billingv1alpha1.AddToScheme(s)
 	_ = quotav1alpha1.AddToScheme(s)
