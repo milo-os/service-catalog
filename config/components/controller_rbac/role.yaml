@@ -40,6 +40,18 @@ rules:
   - update
   - watch
 - apiGroups:
+  - capabilities.assistant.miloapis.com
+  resources:
+  - capabilitybindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - events.k8s.io
   resources:
   - events
@@ -121,6 +133,22 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceagentconfigurations
+  - serviceagents
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceagentconfigurations/status
+  - serviceagents/status
+  verbs:
+  - get
 - apiGroups:
   - services.miloapis.com
   resources:

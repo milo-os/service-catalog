@@ -18,6 +18,14 @@ func (c *FakeServicesV1alpha1) Services() v1alpha1.ServiceInterface {
 	return newFakeServices(c)
 }
 
+func (c *FakeServicesV1alpha1) ServiceAgents() v1alpha1.ServiceAgentInterface {
+	return newFakeServiceAgents(c)
+}
+
+func (c *FakeServicesV1alpha1) ServiceAgentConfigurations() v1alpha1.ServiceAgentConfigurationInterface {
+	return newFakeServiceAgentConfigurations(c)
+}
+
 func (c *FakeServicesV1alpha1) ServiceAvailabilities() v1alpha1.ServiceAvailabilityInterface {
 	return newFakeServiceAvailabilities(c)
 }
