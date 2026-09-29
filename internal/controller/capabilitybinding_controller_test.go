@@ -580,3 +580,62 @@ func TestCapabilityBinding_RequiresClusterName(t *testing.T) {
 		t.Error("expected an error when no cluster name is given")
 	}
 }
+
+// An agent pointing at a catalog entry that does not exist can never reach a
+// customer. It must not project, and it must be reported rather than skipped in
+// silence — that silence is what once hid a one-word mistake behind an absence
+// across every project.
+func TestCapabilityBinding_AgentNamingUnknownServiceIsReportedOnce(t *testing.T) {
+	agent := cbAgentObject(servicesv1alpha1.PhasePublished)
+	agent.Spec.ServiceRef.Name = "not-in-the-catalog"
+
+	root := cbRootClient(
+		cbServiceObject(),
+		agent,
+		cbConfigObject(cbConfigV1, "v1", servicesv1alpha1.PhasePublished),
+	)
+	consumer := cbConsumerClient(cbEntitlementActive())
+	r := newCapabilityReconciler(root, consumer)
+
+	if _, err := r.Reconcile(context.Background(), cbRequest()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := getCapabilityBinding(t, consumer, cbAgent); ok {
+		t.Fatalf("expected no CapabilityBinding for an agent naming an unknown service")
+	}
+	if _, warned := r.warnedAgents.Load(cbAgent); !warned {
+		t.Errorf("expected the agent to be recorded as warned")
+	}
+
+	// Second pass: still no binding, and the agent stays recorded so the
+	// complaint is not repeated on every project.
+	if _, err := r.Reconcile(context.Background(), cbRequest()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if _, warned := r.warnedAgents.Load(cbAgent); !warned {
+		t.Errorf("expected the warned record to persist")
+	}
+}
+
+// Once the reference is corrected the agent projects normally and the warning
+// record is cleared, so a later regression is reported again.
+func TestCapabilityBinding_WarningClearsWhenServiceResolves(t *testing.T) {
+	root := cbRootClient(
+		cbServiceObject(),
+		cbAgentObject(servicesv1alpha1.PhasePublished),
+		cbConfigObject(cbConfigV1, "v1", servicesv1alpha1.PhasePublished),
+	)
+	consumer := cbConsumerClient(cbEntitlementActive())
+	r := newCapabilityReconciler(root, consumer)
+	r.warnedAgents.Store(cbAgent, struct{}{})
+
+	if _, err := r.Reconcile(context.Background(), cbRequest()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := getCapabilityBinding(t, consumer, cbAgent); !ok {
+		t.Fatalf("expected the binding to project once the service resolves")
+	}
+	if _, warned := r.warnedAgents.Load(cbAgent); warned {
+		t.Errorf("expected the warned record to be cleared")
+	}
+}

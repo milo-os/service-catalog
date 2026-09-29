@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -88,6 +89,11 @@ type CapabilityBindingReconciler struct {
 	rootClient client.Client
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme
+
+	// warnedAgents remembers which agents we have already complained about, so
+	// a misconfigured one is reported once rather than on every pass over every
+	// project.
+	warnedAgents sync.Map
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -139,6 +145,11 @@ func (r *CapabilityBindingReconciler) Reconcile(ctx context.Context, req mcrecon
 		return ctrl.Result{}, fmt.Errorf("failed to list ServiceAgents: %w", err)
 	}
 	sort.Slice(agentList.Items, func(i, j int) bool { return agentList.Items[i].Name < agentList.Items[j].Name })
+
+	// An agent naming a service that is not in the catalog can never reach a
+	// customer, and the loop below would simply skip it. That is impossible to
+	// tell apart from "nobody is entitled to it", so say so plainly — once.
+	r.warnUnresolvableAgents(ctx, agentList.Items)
 
 	desired := make(map[string]struct{})
 
@@ -377,4 +388,31 @@ func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, ro
 			MaxConcurrentReconciles: capabilityBindingMaxConcurrentReconciles,
 		}).
 		Complete(r)
+}
+
+// warnUnresolvableAgents reports a Published agent whose serviceRef names no
+// catalog entry. Such an agent is silently skipped when bindings are built, so
+// without this the only symptom is that it never appears in any project.
+func (r *CapabilityBindingReconciler) warnUnresolvableAgents(ctx context.Context, agents []servicesv1alpha1.ServiceAgent) {
+	logger := log.FromContext(ctx)
+	for i := range agents {
+		agent := &agents[i]
+		if agent.Spec.Phase != servicesv1alpha1.PhasePublished {
+			continue
+		}
+		var svc servicesv1alpha1.Service
+		err := r.rootClient.Get(ctx, types.NamespacedName{Name: agent.Spec.ServiceRef.Name}, &svc)
+		if err == nil {
+			r.warnedAgents.Delete(agent.Name)
+			continue
+		}
+		if !apierrors.IsNotFound(err) {
+			continue
+		}
+		if _, seen := r.warnedAgents.LoadOrStore(agent.Name, struct{}{}); seen {
+			continue
+		}
+		logger.Info("published agent names a service that is not in the catalog; it will reach no customer",
+			"agent", agent.Name, "serviceRef", agent.Spec.ServiceRef.Name)
+	}
 }
