@@ -15,6 +15,8 @@ import (
 type ServicesV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	ServicesGetter
+	ServiceAgentsGetter
+	ServiceAgentConfigurationsGetter
 	ServiceAvailabilitiesGetter
 	ServiceConfigurationsGetter
 	ServiceConsumersGetter
@@ -28,6 +30,14 @@ type ServicesV1alpha1Client struct {
 
 func (c *ServicesV1alpha1Client) Services() ServiceInterface {
 	return newServices(c)
+}
+
+func (c *ServicesV1alpha1Client) ServiceAgents() ServiceAgentInterface {
+	return newServiceAgents(c)
+}
+
+func (c *ServicesV1alpha1Client) ServiceAgentConfigurations() ServiceAgentConfigurationInterface {
+	return newServiceAgentConfigurations(c)
 }
 
 func (c *ServicesV1alpha1Client) ServiceAvailabilities() ServiceAvailabilityInterface {

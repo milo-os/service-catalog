@@ -322,6 +322,10 @@ func main() {
 			ManagedResources: []schema.GroupVersionKind{
 				{Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location"},
 				{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding"},
+				// What the project's AI assistant is allowed to do. Left behind
+				// on deactivation it would keep offering a service the customer
+				// no longer pays for.
+				{Group: "capabilities.assistant.miloapis.com", Version: "v1alpha1", Kind: "CapabilityBinding"},
 			},
 		}
 		consumerProvider, err := consumer.New(providerMgr, consumerOpts)
@@ -360,6 +364,10 @@ func main() {
 
 		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			os.Exit(1)
+		}
+		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 			os.Exit(1)
 		}
 
@@ -413,6 +421,10 @@ func main() {
 	} else {
 		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			os.Exit(1)
+		}
+		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 			os.Exit(1)
 		}
 	}

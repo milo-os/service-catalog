@@ -6,6 +6,10 @@ package v1alpha1
 
 type ServiceExpansion interface{}
 
+type ServiceAgentExpansion interface{}
+
+type ServiceAgentConfigurationExpansion interface{}
+
 type ServiceAvailabilityExpansion interface{}
 
 type ServiceConfigurationExpansion interface{}

@@ -7,6 +7,8 @@ resources:
 - bases/services.miloapis.com_serviceentitlements.yaml
 - bases/services.miloapis.com_serviceconsumers.yaml
 - bases/services.miloapis.com_serviceavailabilities.yaml
+- bases/services.miloapis.com_serviceagents.yaml
+- bases/services.miloapis.com_serviceagentconfigurations.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

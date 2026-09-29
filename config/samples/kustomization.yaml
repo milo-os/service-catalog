@@ -3,4 +3,6 @@ resources:
 - services_v1alpha1_service.yaml
 - services_v1alpha1_serviceconfiguration.yaml
 - services_v1alpha1_serviceavailability.yaml
+- services_v1alpha1_serviceagent.yaml
+- services_v1alpha1_serviceagentconfiguration.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
