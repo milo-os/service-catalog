@@ -808,6 +808,20 @@ spec:
                         required:
                         - baseURL
                         type: object
+                      contentSecurityPolicy:
+                        description: |-
+                          ContentSecurityPolicy lists additions to cloud-portal's
+                          Content-Security-Policy that this plugin needs, one
+                          "<directive> <source>..." entry each, e.g. "worker-src 'self'".
+                          Copied verbatim to the ConsumerPortalPlugin. Only sizes are validated
+                          here: cloud-portal applies the entries its allowlist permits and
+                          ignores and logs the rest.
+                        items:
+                          maxLength: 2048
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: atomic
                       suspend:
                         description: |-
                           Suspend is a platform-operator kill switch. A suspended plugin is
