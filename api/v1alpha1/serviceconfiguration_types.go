@@ -550,6 +550,19 @@ type ConsumerUserInterfaceSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Visibility PluginVisibility `json:"visibility"`
+
+	// ContentSecurityPolicy lists additions to cloud-portal's
+	// Content-Security-Policy that this plugin needs, one
+	// "<directive> <source>..." entry each, e.g. "worker-src 'self'".
+	// Copied verbatim to the ConsumerPortalPlugin. Only sizes are validated
+	// here: cloud-portal applies the entries its allowlist permits and
+	// ignores and logs the rest.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=atomic
+	ContentSecurityPolicy []string `json:"contentSecurityPolicy,omitempty"`
 }
 
 // ProviderUserInterfaceSpec declares a staff-portal plugin.

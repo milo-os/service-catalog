@@ -383,3 +383,85 @@ func TestUserInterfaceFanOut_Cleanup(t *testing.T) {
 		t.Errorf("expected ProviderPortalPlugin to be deleted by Cleanup, got err=%v", err)
 	}
 }
+
+func consumerCSPServiceConfiguration(csp []string) *servicesv1alpha1.ServiceConfiguration {
+	return &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "compute-config", UID: "uid-csp"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: "compute"},
+			Phase:      servicesv1alpha1.PhasePublished,
+			UserInterface: &servicesv1alpha1.UserInterfaceSpec{
+				Consumer: &servicesv1alpha1.ConsumerUserInterfaceSpec{
+					Assets:                basePluginAssets(),
+					Visibility:            servicesv1alpha1.PluginVisibility{Entitlement: "None"},
+					ContentSecurityPolicy: csp,
+				},
+			},
+		},
+	}
+}
+
+// TestUserInterfaceFanOut_ConsumerContentSecurityPolicy verifies the
+// consumer CSP additions are copied verbatim on create and update, and are
+// omitted from the applied object once removed so server-side apply clears
+// the field the fan-out previously owned.
+func TestUserInterfaceFanOut_ConsumerContentSecurityPolicy(t *testing.T) {
+	svc := newTestService("compute", "compute.datumapis.com", "Compute")
+	scheme := newUserInterfaceFanOutScheme()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+	capturing := &patchCapturingPortalClient{Client: base}
+	fanOut := &UserInterfaceFanOut{Client: capturing, Scheme: scheme}
+
+	steps := []struct {
+		name string
+		csp  []string
+	}{
+		{
+			name: "create",
+			csp: []string{
+				"script-src 'wasm-unsafe-eval'",
+				"worker-src 'self'",
+				"connect-src https://relay.example.com wss://relay.example.com",
+			},
+		},
+		{
+			name: "update",
+			csp:  []string{"connect-src wss://relay-2.example.com"},
+		},
+		{
+			name: "removal",
+			csp:  nil,
+		},
+	}
+
+	for i, step := range steps {
+		if err := fanOut.Reconcile(context.Background(), consumerCSPServiceConfiguration(step.csp)); err != nil {
+			t.Fatalf("%s: Reconcile: %v", step.name, err)
+		}
+		if len(capturing.consumerPlugins) != i+1 {
+			t.Fatalf("%s: expected %d ConsumerPortalPlugin patches, got %d", step.name, i+1, len(capturing.consumerPlugins))
+		}
+
+		got, found, err := unstructured.NestedStringSlice(capturing.consumerPlugins[i].Object, "spec", "contentSecurityPolicy")
+		if err != nil {
+			t.Fatalf("%s: read spec.contentSecurityPolicy: %v", step.name, err)
+		}
+		if step.csp == nil {
+			if found {
+				t.Errorf("%s: spec.contentSecurityPolicy = %q, want the field omitted", step.name, got)
+			}
+			continue
+		}
+		if !found {
+			t.Fatalf("%s: spec.contentSecurityPolicy missing, want %q", step.name, step.csp)
+		}
+		if len(got) != len(step.csp) {
+			t.Fatalf("%s: spec.contentSecurityPolicy = %q, want %q", step.name, got, step.csp)
+		}
+		for j := range got {
+			if got[j] != step.csp[j] {
+				t.Errorf("%s: spec.contentSecurityPolicy[%d] = %q, want %q", step.name, j, got[j], step.csp[j])
+			}
+		}
+	}
+}
