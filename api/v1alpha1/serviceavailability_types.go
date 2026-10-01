@@ -130,6 +130,8 @@ type ServiceAvailabilityStatus struct {
 // +kubebuilder:printcolumn:name="Location",type=string,JSONPath=`.spec.locationRef.name`
 // +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:selectablefield:JSONPath=`.spec.serviceRef.name`
+// +kubebuilder:selectablefield:JSONPath=`.spec.locationRef.name`
 // The platform copy lives in the platform context; the copy mirrored into a
 // project has to be served in the project context too, or a consumer's control
 // plane does not list the kind and the mirror is skipped without an error.
