@@ -24,15 +24,15 @@ spec:
 
   auditRules:
     - name: requested-with-message
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef) && has(audit.requestObject.spec.requestMessage) && audit.requestObject.spec.requestMessage != ''"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef) && has(audit.requestObject.spec.requestMessage) && audit.requestObject.spec.requestMessage != '' && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} requested access to {{ link(audit.requestObject.spec.serviceRef.name, audit.objectRef) }}: \"{{ audit.requestObject.spec.requestMessage }}\""
 
     - name: requested
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef)"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef) && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} requested access to {{ link(audit.requestObject.spec.serviceRef.name, audit.objectRef) }}"
 
     - name: requested-fallback
-      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && audit.responseStatus.code < 400"
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} requested access to {{ link(audit.objectRef.name, audit.objectRef) }}"
 
   # The provider decides a GatedByProvider request in its own project, so the
