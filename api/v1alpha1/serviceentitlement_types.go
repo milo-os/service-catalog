@@ -304,7 +304,7 @@ type ServiceEntitlementStatus struct {
 	// canonical name regardless of what was written to spec.serviceRef.name.
 	//
 	// +kubebuilder:validation:Optional
-	ServiceName string `json:"serviceName,omitempty"`
+	ServiceName string `json:"serviceName,omitempty"` // the Service print column reads this, so listings match `get services`
 
 	// ObservedGeneration is the most recent generation observed by the
 	// controller.
@@ -344,7 +344,7 @@ type ServiceEntitlementStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
-// +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.spec.serviceRef.name`
+// +kubebuilder:printcolumn:name="Service",type=string,JSONPath=`.status.serviceName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.origin`
 // +kubebuilder:printcolumn:name="Suspended",type=string,JSONPath=`.status.conditions[?(@.type=="Suspended")].status`
