@@ -22,7 +22,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@datum-cloud/datum-ui/breadcrumb";
-import { ArrowLeftIcon, BoxIcon, LayoutDashboardIcon, SettingsIcon, SlidersIcon, StoreIcon } from "lucide-react";
+import { ArrowLeftIcon, BoxIcon, KeyRoundIcon, LayoutDashboardIcon, SettingsIcon, ShieldCheckIcon, SlidersIcon, StoreIcon } from "lucide-react";
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -39,6 +39,22 @@ function buildCrumbs(pathname: string): Crumb[] {
 
   if (segments[0] === "catalog") {
     crumbs.push({ label: "Catalog", to: "/catalog" });
+    if (segments[1]) {
+      crumbs.push({ label: decodeURIComponent(segments[1]) });
+    }
+    return crumbs;
+  }
+
+  if (segments[0] === "entitlements") {
+    crumbs.push({ label: "My Entitlements" });
+    return crumbs;
+  }
+
+  if (segments[0] === "consumers") {
+    crumbs.push({ label: "Access Requests", to: "/consumers" });
+    if (segments[1]) {
+      crumbs.push({ label: decodeURIComponent(segments[1]) });
+    }
     return crumbs;
   }
 
@@ -168,6 +184,21 @@ export function AppLayout({ children }: AppLayoutProps) {
               </SidebarGroupContent>
             </SidebarGroup>
             <SidebarGroup>
+              <SidebarGroupLabel>My Access</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild isActive={location.pathname.startsWith("/entitlements")}>
+                      <Link to="/entitlements">
+                        <KeyRoundIcon className="size-4" />
+                        My Entitlements
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
               <SidebarGroupLabel>Manage</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
@@ -176,6 +207,14 @@ export function AppLayout({ children }: AppLayoutProps) {
                       <Link to="/services">
                         <BoxIcon className="size-4" />
                         Services
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild isActive={location.pathname.startsWith("/consumers")}>
+                      <Link to="/consumers">
+                        <ShieldCheckIcon className="size-4" />
+                        Access Requests
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

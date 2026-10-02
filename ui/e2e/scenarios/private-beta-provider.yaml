@@ -1,0 +1,6 @@
+name: private-beta-provider
+match:
+  - 'ui/app/routes/consumers._index.tsx'
+  - 'ui/app/routes/consumers.$name.tsx'
+description: 'private beta provider workflow — review access requests, approve a pending consumer'
+spec: 'e2e/scenes/private-beta-provider.spec.ts'

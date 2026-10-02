@@ -37,6 +37,11 @@
   --color-input: hsl(213 15% 75%);
   --color-ring: hsl(146 21% 32%);
 
+  --color-success-100: hsl(143, 85%, 96%);
+  --color-success-300: hsl(145, 92%, 87%);
+  --color-success-600: #16a34a;
+  --color-success-700: #15803d;
+
   --radius-lg: 0.5rem;
   --radius-md: calc(0.5rem - 2px);
   --radius-sm: calc(0.5rem - 4px);
