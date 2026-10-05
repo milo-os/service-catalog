@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -22,8 +21,6 @@ import (
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
-
-var serviceActivationRequestLog = logf.Log.WithName("serviceactivationrequest-webhook")
 
 // SetupServiceActivationRequestWebhookWithManager registers admission for the
 // provider-side activation command. Authorization is evaluated at admission
