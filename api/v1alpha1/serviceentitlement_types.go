@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // EntitlementPhase describes the lifecycle state of a ServiceEntitlement.
@@ -251,6 +252,49 @@ const (
 	EntitlementOriginDependency EntitlementOrigin = "Dependency"
 )
 
+// ServiceActivationRequestReference identifies the provider-side request that
+// initiated a ServiceEntitlement.
+type ServiceActivationRequestReference struct {
+	// Name is the activation request's metadata.name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// UID is the activation request's metadata.uid.
+	//
+	// +kubebuilder:validation:Required
+	UID types.UID `json:"uid"`
+}
+
+// ProviderActivation records the immutable provenance of a provider-initiated
+// ServiceEntitlement. Admission restricts this field to the services
+// controller so provider callers cannot forge consumer-visible attribution.
+type ProviderActivation struct {
+	// RequestRef identifies the provider-side activation request.
+	//
+	// +kubebuilder:validation:Required
+	RequestRef ServiceActivationRequestReference `json:"requestRef"`
+
+	// ProviderProjectRef identifies the project that owned the service and
+	// submitted the activation request.
+	//
+	// +kubebuilder:validation:Required
+	ProviderProjectRef ProducerProjectReference `json:"providerProjectRef"`
+
+	// Actor identifies the authenticated provider principal that submitted the
+	// activation request.
+	//
+	// +kubebuilder:validation:Required
+	Actor ActorReference `json:"actor"`
+
+	// RequestedAt is when the provider submitted the activation request.
+	//
+	// +kubebuilder:validation:Required
+	RequestedAt metav1.Time `json:"requestedAt"`
+}
+
 // ServiceEntitlementSpec defines the desired state of a ServiceEntitlement.
 type ServiceEntitlementSpec struct {
 	// ServiceRef identifies the Service the consumer project wants to enable.
@@ -264,6 +308,15 @@ type ServiceEntitlementSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=1024
 	RequestMessage string `json:"requestMessage,omitempty"`
+
+	// ProviderActivation records that this entitlement was initiated by a
+	// provider and identifies the originating request and actor. It is absent
+	// for consumer-created and dependency entitlements. The services controller
+	// owns this immutable field.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="providerActivation is immutable"
+	ProviderActivation *ProviderActivation `json:"providerActivation,omitempty"`
 }
 
 // ServiceEntitlementStatus defines the observed state of a ServiceEntitlement.

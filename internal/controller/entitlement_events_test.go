@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -257,6 +258,29 @@ func TestServiceEntitlementReconciler_SelfServiceEmitsNoDecisionEvent(t *testing
 	}
 	if _, ok := f.entitlement(t).Annotations[decisionAnnouncedAnnotation]; ok {
 		t.Errorf("self-service entitlement carries %s, want none", decisionAnnouncedAnnotation)
+	}
+}
+
+func TestServiceEntitlementReconciler_EmitsProviderActivationEventOnce(t *testing.T) {
+	entitlement := newEntitlement(testServiceSlug, testServiceSlug)
+	entitlement.Spec.ProviderActivation = &servicesv1alpha1.ProviderActivation{
+		RequestRef:         servicesv1alpha1.ServiceActivationRequestReference{Name: "onboard-acme", UID: types.UID("activation-uid")},
+		ProviderProjectRef: servicesv1alpha1.ProducerProjectReference{Name: testProviderProject},
+		Actor:              servicesv1alpha1.ActorReference{Username: "provider@example.com"},
+		RequestedAt:        metav1.Now(),
+	}
+	f := newDecisionFixture(t, "", newFakeClient(entitlement))
+	f.reconcile(t)
+
+	got := f.events(t)
+	if len(got) != 1 {
+		t.Fatalf("provider activation emitted %d events, want exactly 1", len(got))
+	}
+	if got[0].Reason != EventReasonProviderActivated {
+		t.Errorf("event reason = %q, want %q", got[0].Reason, EventReasonProviderActivated)
+	}
+	if actor := got[0].Annotations[eventAnnotationProviderActor]; actor != "provider@example.com" {
+		t.Errorf("provider actor = %q", actor)
 	}
 }
 

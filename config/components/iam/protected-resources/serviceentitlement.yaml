@@ -16,6 +16,12 @@ spec:
     - patch
     - delete
     - watch
+    # activate grants a provider actor permission to request activation in
+    # this consumer project. It does not grant direct entitlement writes.
+    - activate
+    # manage grants the services controller permission to set protected
+    # entitlement fields such as spec.providerActivation.
+    - manage
   subresources:
     - name: status
       permissions:

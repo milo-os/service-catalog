@@ -46,6 +46,14 @@ spec:
   #   services.miloapis.com/service-name: compute.datumapis.com
   #   services.miloapis.com/decision-message: the provider's message, if any
   eventRules:
+    - name: provider-activated
+      match: "event.reason == 'ProviderActivated' && has(event.metadata.annotations) && 'services.miloapis.com/service-display-name' in event.metadata.annotations && 'services.miloapis.com/provider-actor' in event.metadata.annotations"
+      summary: "{{ event.metadata.annotations['services.miloapis.com/provider-actor'] }} enabled {{ link(event.metadata.annotations['services.miloapis.com/service-display-name'], event.regarding) }}"
+
+    - name: provider-activated-fallback
+      match: "event.reason == 'ProviderActivated'"
+      summary: "A service provider enabled {{ link(event.regarding.name, event.regarding) }}"
+
     - name: approved
       match: "event.reason == 'EntitlementApproved' && has(event.metadata.annotations) && 'services.miloapis.com/service-display-name' in event.metadata.annotations"
       summary: "Access to {{ link(event.metadata.annotations['services.miloapis.com/service-display-name'], event.regarding) }} was approved"

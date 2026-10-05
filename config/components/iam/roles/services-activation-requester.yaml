@@ -1,0 +1,15 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-activation-requester
+  annotations:
+    kubernetes.io/display-name: Services Activation Requester
+    kubernetes.io/description: "Request activation of provider-owned services in authorized consumer projects"
+spec:
+  launchStage: Alpha
+  includedPermissions:
+    - services.miloapis.com/serviceactivationrequests.list
+    - services.miloapis.com/serviceactivationrequests.get
+    - services.miloapis.com/serviceactivationrequests.create
+    - services.miloapis.com/serviceactivationrequests.delete
+    - services.miloapis.com/serviceactivationrequests.watch

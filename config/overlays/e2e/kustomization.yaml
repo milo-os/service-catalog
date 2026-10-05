@@ -61,26 +61,35 @@ patches:
       kind: Deployment
       name: services-controller-manager
 
-  # The manager skips registering the ServiceConsumer webhook in-process when
+  # The manager skips registering the ServiceConsumer and
+  # ServiceActivationRequest webhooks in-process when
   # --enable-single-cluster-for-e2e-tests is set (see cmd/services/main.go —
   # that webhook's authorization needs per-project request context e2esingle
   # can't provide). But the ValidatingWebhookConfiguration object is static
   # config, unaffected by that flag: the apiserver would still call out to
-  # vserviceconsumer.kb.io, which the manager now 404s on, failing every
-  # ServiceConsumer write. Drop that one entry here.
+  # vserviceconsumer.kb.io (and both activation-request endpoints), which the
+  # manager now 404s on, failing writes. Drop those entries here.
   #
-  # FRAGILE: index 3 depends on generation order in
+  # FRAGILE: these indices depend on generation order in
   # config/base/webhook/manifests.yaml (controller-gen aggregates all
   # ValidatingWebhookConfiguration entries into one object, alphabetically by
-  # webhook name: vservice, vserviceavailability, vserviceconfiguration,
-  # vserviceconsumer, vserviceentitlement). Re-verify this index after
+  # webhook name). Remove higher indices first so earlier positions remain
+  # stable. Re-verify these indices after
   # `task manifests` if webhook types are added/renamed.
   - patch: |-
       - op: remove
-        path: /webhooks/3
+        path: /webhooks/4
+      - op: remove
+        path: /webhooks/1
     target:
       kind: ValidatingWebhookConfiguration
       name: validating-webhook-configuration
+  - patch: |-
+      - op: remove
+        path: /webhooks/1
+    target:
+      kind: MutatingWebhookConfiguration
+      name: mutating-webhook-configuration
 
 replacements:
   - source:
