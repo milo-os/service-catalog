@@ -120,6 +120,7 @@ func newFakeClient(objs ...client.Object) client.Client {
 		WithScheme(testScheme()).
 		WithObjects(objs...).
 		WithStatusSubresource(
+			&servicesv1alpha1.ServiceActivationRequest{},
 			&servicesv1alpha1.ServiceEntitlement{},
 			&servicesv1alpha1.ServiceConsumer{},
 			&servicesv1alpha1.Service{},

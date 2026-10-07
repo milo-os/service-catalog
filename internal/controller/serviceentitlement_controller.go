@@ -181,6 +181,17 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
 			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
 		}
+		// A provider-initiated activation is itself the provider's affirmative
+		// decision. For a gated service, record that approval without requiring
+		// the initiating provider to approve the same request a second time.
+		// Never overwrite a decision already present: it may have been written
+		// concurrently by the provider after the ServiceConsumer was created.
+		if gated && entitlement.Spec.ProviderActivation != nil && consumer.Spec.Approval == nil {
+			consumer.Spec.Approval = &servicesv1alpha1.ProviderApproval{
+				Decision: servicesv1alpha1.ApprovalDecisionApproved,
+				Message:  "Approved because the service provider initiated activation.",
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -210,6 +221,9 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := announceProviderActivation(ctx, consumerClient, &entitlement, svc); err != nil {
 		return ctrl.Result{}, err
 	}
 

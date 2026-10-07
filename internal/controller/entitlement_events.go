@@ -24,6 +24,7 @@ import (
 const (
 	EventReasonEntitlementApproved = "EntitlementApproved"
 	EventReasonEntitlementRejected = "EntitlementRejected"
+	EventReasonProviderActivated   = "ProviderActivated"
 )
 
 // Annotations carried on entitlement decision events so the ActivityPolicy can
@@ -32,6 +33,7 @@ const (
 	eventAnnotationServiceName        = "services.miloapis.com/service-name"
 	eventAnnotationServiceDisplayName = "services.miloapis.com/service-display-name"
 	eventAnnotationDecisionMessage    = "services.miloapis.com/decision-message"
+	eventAnnotationProviderActor      = "services.miloapis.com/provider-actor"
 )
 
 // entitlementEventNamespace is where decision events are written.
@@ -48,6 +50,36 @@ const entitlementEventReportingController = "services.miloapis.com/services-cont
 // phase the reconcile happened to read, finds a decision whichever of them
 // wrote it, and emits it once.
 const decisionAnnouncedAnnotation = "services.miloapis.com/announced-decision"
+
+// providerActivationAnnouncedAnnotation makes provider-led activation
+// activity idempotent. It is separate from decisionAnnouncedAnnotation because
+// a provider-led gated service is approved and active on its first reconcile,
+// without a PendingApproval baseline.
+const providerActivationAnnouncedAnnotation = "services.miloapis.com/announced-provider-activation"
+
+func announceProviderActivation(
+	ctx context.Context,
+	consumerClient client.Client,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	svc *servicesv1alpha1.Service,
+) error {
+	activation := entitlement.Spec.ProviderActivation
+	if activation == nil || entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive ||
+		entitlement.Annotations[providerActivationAnnouncedAnnotation] == string(activation.RequestRef.UID) {
+		return nil
+	}
+
+	before := entitlement.DeepCopy()
+	if entitlement.Annotations == nil {
+		entitlement.Annotations = map[string]string{}
+	}
+	entitlement.Annotations[providerActivationAnnouncedAnnotation] = string(activation.RequestRef.UID)
+	if err := consumerClient.Patch(ctx, entitlement, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("failed to record announced provider activation on ServiceEntitlement: %w", err)
+	}
+	emitDecisionEvent(ctx, consumerClient, entitlement, svc, nil, EventReasonProviderActivated)
+	return nil
+}
 
 // decisionEventReason reports which decision event, if any, moving from the
 // announced phase to the next one warrants. With no announced phase there is
@@ -126,7 +158,11 @@ func emitDecisionEvent(
 
 	note := fmt.Sprintf("The service provider approved access to %s.", displayName)
 	eventType := corev1.EventTypeNormal
-	if reason == EventReasonEntitlementRejected {
+	if reason == EventReasonProviderActivated && entitlement.Spec.ProviderActivation != nil {
+		actor := entitlement.Spec.ProviderActivation.Actor.Username
+		annotations[eventAnnotationProviderActor] = actor
+		note = fmt.Sprintf("%s enabled %s for this project.", actor, displayName)
+	} else if reason == EventReasonEntitlementRejected {
 		note = fmt.Sprintf("The service provider rejected access to %s.", displayName)
 		eventType = corev1.EventTypeWarning
 	}

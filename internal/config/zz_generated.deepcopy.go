@@ -7,7 +7,7 @@
 package config
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -113,7 +113,7 @@ func (in *TLSConfig) DeepCopyInto(out *TLSConfig) {
 	*out = *in
 	if in.SecretRef != nil {
 		in, out := &in.SecretRef, &out.SecretRef
-		*out = new(corev1.ObjectReference)
+		*out = new(v1.ObjectReference)
 		**out = **in
 	}
 }

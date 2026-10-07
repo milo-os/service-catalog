@@ -10,6 +10,7 @@ resources:
   - serviceconfiguration.yaml
   - serviceagent.yaml
   - serviceentitlement.yaml
+  - serviceactivationrequest.yaml
   - serviceconsumer.yaml
   - serviceavailability.yaml
   - serviceavailability-project.yaml
