@@ -22,6 +22,9 @@ spec:
     - jsonPath: .spec.phase
       name: Phase
       type: string
+    - jsonPath: .spec.visibility.entitlement
+      name: Entitlement
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -31,7 +34,9 @@ spec:
         description: |-
           ServiceAgent is a provider's agent registration for one Service. The
           projection controller turns a Published agent plus its latest Published
-          configuration into a CapabilityBinding in every entitled customer project.
+          configuration into a CapabilityBinding in every entitled customer project,
+          or in every project when spec.visibility.entitlement is None and the
+          platform owner has allowlisted the agent.
         properties:
           apiVersion:
             description: |-
@@ -99,6 +104,40 @@ spec:
                 x-kubernetes-validations:
                 - message: serviceRef is immutable
                   rule: self == oldSelf
+              visibility:
+                default: {}
+                description: |-
+                  Visibility asks which customer projects this agent reaches. Omitted, it
+                  means what it always has: only projects entitled to the service.
+                properties:
+                  entitlement:
+                    default: Required
+                    description: |-
+                      Entitlement controls project-level gating: "Required" means a project
+                      must have an Active ServiceEntitlement for this service before its
+                      assistant is given this agent; "None" asks for every project's
+                      assistant to be given it, existing and new, with no entitlement step
+                      (see milo-os/service-catalog#93). Defaults to "Required".
+
+                      "None" is a request, not a grant. Which services are platform-wide is
+                      the platform owner's decision, so it takes effect only when this
+                      agent's name is in the services operator's
+                      capabilities.entitlementFreeAgents allowlist, which providers cannot
+                      write. Until then the agent is gated on entitlement as if it said
+                      "Required", and its EntitlementWaived condition says why.
+
+                      Phase and configuration gates still apply: the agent must be
+                      Published, its Service must be Published, and it must have a Published
+                      ServiceAgentConfiguration.
+
+                      Where the operator runs with consumer-scoped projection, it writes only
+                      into the projects it has engaged as consumers of its own services, so
+                      "None" reaches every one of those, not every project on the platform.
+                    enum:
+                    - Required
+                    - None
+                    type: string
+                type: object
             required:
             - displayName
             - phase

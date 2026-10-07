@@ -8,6 +8,7 @@
 resources:
   - service.yaml
   - serviceconfiguration.yaml
+  - serviceagent.yaml
   - serviceentitlement.yaml
   - serviceconsumer.yaml
   - serviceavailability.yaml
