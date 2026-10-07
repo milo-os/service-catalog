@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/ptr"
@@ -73,6 +75,61 @@ type ServicesOperator struct {
 	// projection runs on the all-projects manager. This mirrors the
 	// WebhookServer pointer-gate above: nil = feature off.
 	ConsumerScopedProjection *ConsumerScopedProjectionConfig `json:"consumerScopedProjection,omitempty"`
+
+	// Capabilities configures how AI-assistant capabilities (ServiceAgents)
+	// are projected into customer projects.
+	//
+	// +optional
+	Capabilities CapabilitiesConfig `json:"capabilities,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// CapabilitiesConfig configures projection of ServiceAgents into customer
+// projects as CapabilityBindings.
+type CapabilitiesConfig struct {
+	// EntitlementFreeAgents lists the ServiceAgents, by metadata.name, whose
+	// request to reach every project is honoured. A provider asks for that by
+	// setting the agent's spec.visibility.entitlement to None, but the request
+	// takes effect only for agents named here; any other agent is gated on an
+	// Active ServiceEntitlement, as if it had asked for Required.
+	//
+	// This is how the platform owner, not the publishing service, decides
+	// which services are platform-wide (milo-os/service-catalog#93): this
+	// config belongs to the operator's deployment, which providers cannot
+	// write. Read once at startup; changing it takes a restart, which
+	// reconciles every project again. Empty by default, so no agent reaches a
+	// project without an entitlement unless listed.
+	//
+	// +optional
+	EntitlementFreeAgents []string `json:"entitlementFreeAgents,omitempty"`
+}
+
+// Validate rejects entries that could never name a ServiceAgent, and
+// duplicates, so a typo fails the manager at startup instead of silently
+// leaving an agent gated.
+func (c CapabilitiesConfig) Validate() error {
+	seen := make(map[string]struct{}, len(c.EntitlementFreeAgents))
+	for i, name := range c.EntitlementFreeAgents {
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			return fmt.Errorf("capabilities.entitlementFreeAgents[%d] %q is not a valid ServiceAgent name: %s",
+				i, name, strings.Join(errs, "; "))
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("capabilities.entitlementFreeAgents[%d] %q is listed more than once", i, name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+// EntitlementFreeAgentSet returns EntitlementFreeAgents as a set.
+func (c CapabilitiesConfig) EntitlementFreeAgentSet() map[string]struct{} {
+	out := make(map[string]struct{}, len(c.EntitlementFreeAgents))
+	for _, name := range c.EntitlementFreeAgents {
+		out[name] = struct{}{}
+	}
+	return out
 }
 
 // LocationSource names the API group Locations are read from.

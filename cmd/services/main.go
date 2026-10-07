@@ -184,6 +184,22 @@ func main() {
 	}
 	setupLog.Info("reading locations from", "locationSource", serverConfig.LocationSource)
 
+	// The platform owner's allowlist of agents that reach every project
+	// without an entitlement (#93). It lives here, in the operator's own
+	// config, because providers cannot write it: an agent asking for
+	// spec.visibility.entitlement None is honoured only if it is listed.
+	// Read once; changing it takes a restart.
+	if err := serverConfig.Capabilities.Validate(); err != nil {
+		setupLog.Error(err, "invalid capabilities config")
+		os.Exit(1)
+	}
+	entitlementFreeAgents := serverConfig.Capabilities.EntitlementFreeAgentSet()
+	setupLog.Info("agents allowed to reach every project", "entitlementFreeAgents", serverConfig.Capabilities.EntitlementFreeAgents)
+	if err = (&controller.ServiceAgentReconciler{EntitlementFreeAgents: entitlementFreeAgents}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceAgent")
+		os.Exit(1)
+	}
+
 	if err = (&controller.ServiceAvailabilityReconciler{LocationGVK: locationGVK}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
 		os.Exit(1)
@@ -370,7 +386,14 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
 			os.Exit(1)
 		}
-		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+		// Here the controller only sees consumer projects of this operator's
+		// own services, so an allowlisted agent asking for
+		// spec.visibility.entitlement None reaches those projects, not every
+		// project on the platform (#93).
+		if err = (&controller.CapabilityBindingReconciler{
+			Scheme:                scheme,
+			EntitlementFreeAgents: entitlementFreeAgents,
+		}).SetupWithManager(consumerMcMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 			os.Exit(1)
 		}
@@ -427,7 +450,10 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
 			os.Exit(1)
 		}
-		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+		if err = (&controller.CapabilityBindingReconciler{
+			Scheme:                scheme,
+			EntitlementFreeAgents: entitlementFreeAgents,
+		}).SetupWithManager(mcMgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 			os.Exit(1)
 		}
