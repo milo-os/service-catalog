@@ -245,6 +245,10 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceEntitlement")
 		os.Exit(1)
 	}
+	if err = (&controller.ServiceActivationRequestReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ServiceActivationRequest")
+		os.Exit(1)
+	}
 	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
 		os.Exit(1)
@@ -438,7 +442,7 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConfiguration")
 			os.Exit(1)
 		}
-		if err = serviceswebhooks.SetupServiceEntitlementWebhookWithManager(mgr); err != nil {
+		if err = serviceswebhooks.SetupServiceEntitlementWebhookWithManager(mgr, mcMgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceEntitlement")
 			os.Exit(1)
 		}
@@ -453,9 +457,12 @@ func main() {
 			// registering it here rather than weaken its authorization
 			// model; e2e exercises the reconciler/propagation path, not
 			// this webhook's authorization logic.
-			setupLog.Info("enable-single-cluster-for-e2e-tests is set: skipping ServiceConsumer webhook registration")
+			setupLog.Info("enable-single-cluster-for-e2e-tests is set: skipping project-aware authorization webhook registration")
 		} else if err = serviceswebhooks.SetupServiceConsumerWebhookWithManager(mgr, mcMgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceConsumer")
+			os.Exit(1)
+		} else if err = serviceswebhooks.SetupServiceActivationRequestWebhookWithManager(mgr, mcMgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "ServiceActivationRequest")
 			os.Exit(1)
 		}
 		if err = serviceswebhooks.SetupServiceAvailabilityWebhookWithManager(mgr); err != nil {

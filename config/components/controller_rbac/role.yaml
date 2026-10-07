@@ -136,12 +136,26 @@ rules:
 - apiGroups:
   - services.miloapis.com
   resources:
+  - serviceactivationrequests
   - serviceagentconfigurations
   - serviceagents
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceactivationrequests/status
+  - serviceavailabilities/status
+  - serviceconfigurations/status
+  - serviceconsumers/status
+  - serviceentitlements/status
+  - services/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - services.miloapis.com
   resources:
@@ -173,16 +187,4 @@ rules:
   - serviceentitlements/finalizers
   - services/finalizers
   verbs:
-  - update
-- apiGroups:
-  - services.miloapis.com
-  resources:
-  - serviceavailabilities/status
-  - serviceconfigurations/status
-  - serviceconsumers/status
-  - serviceentitlements/status
-  - services/status
-  verbs:
-  - get
-  - patch
   - update

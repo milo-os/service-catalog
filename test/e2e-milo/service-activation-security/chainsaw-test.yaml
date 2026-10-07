@@ -1,0 +1,131 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: service-activation-security
+spec:
+  description: |
+    Provider activation authorization is an admission-owned security decision.
+    A client cannot supply an arbitrary decision or actor, and the CRD's CEL
+    transition rules preserve the stamped request even if validating admission
+    is unavailable.
+
+  steps:
+    - name: publish-provider-service
+      cluster: root
+      try:
+        - apply:
+            file: 01-create-service.yaml
+
+    - name: reject-invalid-authorization-snapshot
+      description: |
+        Bypass only the mutating webhook, then prove validating admission
+        rejects a client-authored value outside the explicit true/false domain.
+      try:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get mutatingwebhookconfigurations -o json \
+                | jq -r '.items[] | select(any(.webhooks[]?; .name == "mserviceactivationrequest.kb.io")) | .metadata.name' \
+                | head -1)
+              [ -n "$wh" ] || { echo "activation mutating webhook not found"; exit 1; }
+              idx=$(kubectl get mutatingwebhookconfiguration "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("mserviceactivationrequest.kb.io")')
+              kubectl patch mutatingwebhookconfiguration "$wh" --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/webhooks/$idx/objectSelector\",\"value\":{\"matchLabels\":{\"services.miloapis.com/admission\":\"disabled-for-e2e\"}}}]"
+        - apply:
+            cluster: platform
+            file: 02-invalid-authorization.yaml
+            expect:
+              - check:
+                  ($error != null): true
+      finally:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get mutatingwebhookconfigurations -o json \
+                | jq -r '.items[] | select(any(.webhooks[]?; .name == "mserviceactivationrequest.kb.io")) | .metadata.name' \
+                | head -1)
+              idx=$(kubectl get mutatingwebhookconfiguration "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("mserviceactivationrequest.kb.io")')
+              kubectl patch mutatingwebhookconfiguration "$wh" --type=json \
+                -p "[{\"op\":\"remove\",\"path\":\"/webhooks/$idx/objectSelector\"}]" || true
+
+    - name: overwrite-forged-security-fields
+      description: |
+        Submit a forged actor and denied decision. Admission must replace both
+        with the authenticated caller and the consumer authorization result,
+        and that provenance must reach the consumer entitlement.
+      cluster: platform
+      try:
+        - apply:
+            file: 03-forged-request.yaml
+        - assert:
+            timeout: 120s
+            file: assertions/assert-admission-owned-request.yaml
+        - assert:
+            cluster: consumer-a
+            timeout: 120s
+            file: assertions/assert-entitlement-provenance.yaml
+
+    - name: enforce-cel-immutability-without-validating-webhook
+      description: |
+        Disable only validating admission and attempt to rewrite each security-
+        relevant reference. The CRD's CEL transition rules must independently
+        reject every change.
+      try:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o json \
+                | jq -r '.items[] | select(any(.webhooks[]?; .name == "vserviceactivationrequest.kb.io")) | .metadata.name' \
+                | head -1)
+              [ -n "$wh" ] || { echo "activation validating webhook not found"; exit 1; }
+              idx=$(kubectl get validatingwebhookconfiguration "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceactivationrequest.kb.io")')
+              kubectl patch validatingwebhookconfiguration "$wh" --type=json \
+                -p "[{\"op\":\"add\",\"path\":\"/webhooks/$idx/objectSelector\",\"value\":{\"matchLabels\":{\"services.miloapis.com/admission\":\"disabled-for-e2e\"}}}]"
+        - script:
+            cluster: platform
+            timeout: 60s
+            content: |
+              set -eu
+              reject_patch() {
+                field=$1
+                patch=$2
+                if output=$(kubectl patch serviceactivationrequest e2e-provider-activation \
+                  --type=merge -p "$patch" 2>&1); then
+                  echo "$field was mutable while validating admission was disabled"
+                  exit 1
+                fi
+                echo "$output" | grep -q 'immutable' || {
+                  echo "unexpected rejection for $field: $output"
+                  exit 1
+                }
+              }
+              reject_patch serviceRef '{"spec":{"serviceRef":{"name":"forged-service"}}}'
+              reject_patch consumerProjectRef '{"spec":{"consumerProjectRef":{"name":"e2e-provisioning-consumer-b"}}}'
+              reject_patch requestedBy '{"spec":{"requestedBy":{"username":"forged@example.com"}}}'
+      finally:
+        - script:
+            cluster: root
+            timeout: 60s
+            content: |
+              set -eu
+              wh=$(kubectl get validatingwebhookconfigurations -o json \
+                | jq -r '.items[] | select(any(.webhooks[]?; .name == "vserviceactivationrequest.kb.io")) | .metadata.name' \
+                | head -1)
+              idx=$(kubectl get validatingwebhookconfiguration "$wh" -o json \
+                | jq '.webhooks | map(.name) | index("vserviceactivationrequest.kb.io")')
+              kubectl patch validatingwebhookconfiguration "$wh" --type=json \
+                -p "[{\"op\":\"remove\",\"path\":\"/webhooks/$idx/objectSelector\"}]" || true
+        - script:
+            cluster: consumer-a
+            timeout: 60s
+            content: |
+              kubectl delete serviceentitlement e2e-provider-activation-record --ignore-not-found
