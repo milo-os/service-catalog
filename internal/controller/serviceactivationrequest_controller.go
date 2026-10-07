@@ -39,7 +39,7 @@ const (
 // entitlement, its later absence means the consumer disabled it and must not
 // cause a replacement entitlement to be created.
 type ServiceActivationRequestReconciler struct {
-	rootClient client.Client
+	rootClient client.Reader
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme
 }
@@ -192,11 +192,13 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 
 func (r *ServiceActivationRequestReconciler) resolveService(ctx context.Context, canonicalName string) (*servicesv1alpha1.Service, error) {
 	var services servicesv1alpha1.ServiceList
-	if err := r.rootClient.List(ctx, &services, client.MatchingFields{"spec.serviceName": canonicalName}); err != nil {
-		return nil, fmt.Errorf("failed to list Services by spec.serviceName %q: %w", canonicalName, err)
+	if err := r.rootClient.List(ctx, &services); err != nil {
+		return nil, fmt.Errorf("failed to list Services to resolve spec.serviceName %q: %w", canonicalName, err)
 	}
-	if len(services.Items) > 0 {
-		return &services.Items[0], nil
+	for i := range services.Items {
+		if services.Items[i].Spec.ServiceName == canonicalName {
+			return &services.Items[i], nil
+		}
 	}
 	return nil, apierrors.NewNotFound(servicesv1alpha1.GroupVersion.WithResource("services").GroupResource(), canonicalName)
 }
@@ -238,7 +240,10 @@ func setActivationCondition(activation *servicesv1alpha1.ServiceActivationReques
 // consumer project is reached through the multicluster manager during
 // reconciliation.
 func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
-	r.rootClient = rootMgr.GetClient()
+	// Activation requests are created immediately after a Service is published.
+	// Use the uncached reader so canonical-name resolution cannot race the root
+	// cache, then match only the immutable spec.serviceName.
+	r.rootClient = rootMgr.GetAPIReader()
 	r.Manager = mcMgr
 
 	return mcbuilder.ControllerManagedBy(mcMgr).
