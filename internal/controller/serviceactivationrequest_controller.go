@@ -130,7 +130,7 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 		entitlement = servicesv1alpha1.ServiceEntitlement{
 			ObjectMeta: metav1.ObjectMeta{Name: entitlementName},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
-				ServiceRef:     servicesv1alpha1.ServiceRef{Name: activation.Spec.ServiceRef.Name},
+				ServiceRef:     servicesv1alpha1.ServiceRef{Name: svc.Name},
 				RequestMessage: activation.Spec.RequestMessage,
 				ProviderActivation: &servicesv1alpha1.ProviderActivation{
 					RequestRef: servicesv1alpha1.ServiceActivationRequestReference{

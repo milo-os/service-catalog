@@ -4,7 +4,7 @@ metadata:
   name: e2e-provider-activation-record
 spec:
   serviceRef:
-    name: provider-activation.e2e.datumapis.com
+    name: e2e-provider-activation-record
   providerActivation:
     requestRef:
       name: e2e-provider-activation

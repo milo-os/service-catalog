@@ -87,6 +87,9 @@ func TestServiceActivationRequestReconcilerCreatesEntitlementWithProvenance(t *t
 	if entitlement.Spec.ProviderActivation == nil {
 		t.Fatal("providerActivation provenance was not set")
 	}
+	if got := entitlement.Spec.ServiceRef.Name; got != svc.Name {
+		t.Errorf("entitlement service ref = %q, want resolved Service resource name %q", got, svc.Name)
+	}
 	if got := entitlement.Spec.ProviderActivation.RequestRef.Name; got != activation.Name {
 		t.Errorf("request ref name = %q, want %q", got, activation.Name)
 	}
