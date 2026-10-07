@@ -128,4 +128,4 @@ spec:
             cluster: consumer-a
             timeout: 60s
             content: |
-              kubectl delete serviceentitlement e2e-provider-activation --ignore-not-found
+              kubectl delete serviceentitlement e2e-provider-activation-record --ignore-not-found

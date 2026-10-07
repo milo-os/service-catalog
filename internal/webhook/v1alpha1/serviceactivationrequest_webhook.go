@@ -68,12 +68,19 @@ func (w *serviceActivationRequestWebhook) Default(ctx context.Context, request *
 }
 
 func (w *serviceActivationRequestWebhook) authorize(ctx context.Context, user authenticationv1.UserInfo, request *servicesv1alpha1.ServiceActivationRequest) (bool, string, error) {
-	var svc servicesv1alpha1.Service
-	if err := w.reader.Get(ctx, types.NamespacedName{Name: request.Spec.ServiceRef.Name}, &svc); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, "ServiceNotFound", nil
+	var services servicesv1alpha1.ServiceList
+	if err := w.reader.List(ctx, &services); err != nil {
+		return false, "", fmt.Errorf("can't list Services to resolve spec.serviceName %q: %w", request.Spec.ServiceRef.Name, err)
+	}
+	var svc *servicesv1alpha1.Service
+	for i := range services.Items {
+		if services.Items[i].Spec.ServiceName == request.Spec.ServiceRef.Name {
+			svc = &services.Items[i]
+			break
 		}
-		return false, "", fmt.Errorf("can't resolve service %q: %w", request.Spec.ServiceRef.Name, err)
+	}
+	if svc == nil {
+		return false, "ServiceNotFound", nil
 	}
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished {
 		return false, "ServiceNotPublished", nil

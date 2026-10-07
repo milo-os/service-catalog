@@ -21,7 +21,7 @@ metadata:
   name: acme-prod-compute
 spec:
   serviceRef:
-    name: compute
+    name: compute.miloapis.com
   consumerProjectRef:
     name: acme-prod
   requestMessage: Enabling Compute during managed onboarding.

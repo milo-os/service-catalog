@@ -102,10 +102,14 @@ spec:
                   rule: self == oldSelf
               serviceRef:
                 description: |-
-                  ServiceRef identifies the Service to enable. The service must be owned by
-                  the provider project in which this request is created.
+                  ServiceRef identifies the Service to enable by its canonical
+                  spec.serviceName. The service must be owned by the provider project in
+                  which this request is created.
                 properties:
                   name:
+                    description: |-
+                      Name is the Service's canonical reverse-DNS identifier, for example
+                      compute.miloapis.com.
                     maxLength: 253
                     minLength: 1
                     type: string

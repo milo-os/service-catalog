@@ -130,7 +130,7 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 		entitlement = servicesv1alpha1.ServiceEntitlement{
 			ObjectMeta: metav1.ObjectMeta{Name: entitlementName},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
-				ServiceRef:     activation.Spec.ServiceRef,
+				ServiceRef:     servicesv1alpha1.ServiceRef{Name: activation.Spec.ServiceRef.Name},
 				RequestMessage: activation.Spec.RequestMessage,
 				ProviderActivation: &servicesv1alpha1.ProviderActivation{
 					RequestRef: servicesv1alpha1.ServiceActivationRequestReference{
@@ -190,19 +190,15 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceActivationRequestReconciler) resolveService(ctx context.Context, nameOrCanonical string) (*servicesv1alpha1.Service, error) {
+func (r *ServiceActivationRequestReconciler) resolveService(ctx context.Context, canonicalName string) (*servicesv1alpha1.Service, error) {
 	var services servicesv1alpha1.ServiceList
-	if err := r.rootClient.List(ctx, &services, client.MatchingFields{"spec.serviceName": nameOrCanonical}); err != nil {
-		return nil, fmt.Errorf("failed to list Services by spec.serviceName %q: %w", nameOrCanonical, err)
+	if err := r.rootClient.List(ctx, &services, client.MatchingFields{"spec.serviceName": canonicalName}); err != nil {
+		return nil, fmt.Errorf("failed to list Services by spec.serviceName %q: %w", canonicalName, err)
 	}
 	if len(services.Items) > 0 {
 		return &services.Items[0], nil
 	}
-	var svc servicesv1alpha1.Service
-	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: nameOrCanonical}, &svc); err != nil {
-		return nil, err
-	}
-	return &svc, nil
+	return nil, apierrors.NewNotFound(servicesv1alpha1.GroupVersion.WithResource("services").GroupResource(), canonicalName)
 }
 
 func (r *ServiceActivationRequestReconciler) setFailed(ctx context.Context, c client.Client, activation *servicesv1alpha1.ServiceActivationRequest, reason, message string) error {

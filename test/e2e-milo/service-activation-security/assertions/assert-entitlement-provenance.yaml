@@ -1,10 +1,10 @@
 apiVersion: services.miloapis.com/v1alpha1
 kind: ServiceEntitlement
 metadata:
-  name: e2e-provider-activation
+  name: e2e-provider-activation-record
 spec:
   serviceRef:
-    name: e2e-provider-activation
+    name: provider-activation.e2e.datumapis.com
   providerActivation:
     requestRef:
       name: e2e-provider-activation

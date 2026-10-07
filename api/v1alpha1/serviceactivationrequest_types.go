@@ -71,15 +71,28 @@ type ActorReference struct {
 	UID types.UID `json:"uid,omitempty"`
 }
 
+// CanonicalServiceReference identifies a Service by its immutable,
+// fully-qualified spec.serviceName.
+type CanonicalServiceReference struct {
+	// Name is the Service's canonical reverse-DNS identifier, for example
+	// compute.miloapis.com.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
 // ServiceActivationRequestSpec defines a provider's one-shot request to
 // enable one of its services in a consumer project.
 type ServiceActivationRequestSpec struct {
-	// ServiceRef identifies the Service to enable. The service must be owned by
-	// the provider project in which this request is created.
+	// ServiceRef identifies the Service to enable by its canonical
+	// spec.serviceName. The service must be owned by the provider project in
+	// which this request is created.
 	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="serviceRef is immutable"
-	ServiceRef ServiceRef `json:"serviceRef"`
+	ServiceRef CanonicalServiceReference `json:"serviceRef"`
 
 	// ConsumerProjectRef identifies the project in which the service should be
 	// enabled.

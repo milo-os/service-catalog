@@ -7,7 +7,7 @@ metadata:
     services.miloapis.com/activation-authorization-reason: ForgedByClient
 spec:
   serviceRef:
-    name: e2e-provider-activation
+    name: provider-activation.e2e.datumapis.com
   consumerProjectRef:
     name: e2e-provisioning-consumer-a
   requestMessage: Verify admission owns the authorization snapshot.

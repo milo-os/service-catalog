@@ -1,7 +1,9 @@
 apiVersion: services.miloapis.com/v1alpha1
 kind: Service
 metadata:
-  name: e2e-provider-activation
+  # Intentionally differs from spec.serviceName: activation requests resolve
+  # only the canonical, fully-qualified service name.
+  name: e2e-provider-activation-record
 spec:
   serviceName: provider-activation.e2e.datumapis.com
   phase: Published

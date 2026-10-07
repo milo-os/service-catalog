@@ -31,7 +31,7 @@ func newActivationRequest(name, _ string, consumerProject string, authorized boo
 			CreationTimestamp: metav1.NewTime(time.Unix(1700000000, 0)),
 		},
 		Spec: servicesv1alpha1.ServiceActivationRequestSpec{
-			ServiceRef:         servicesv1alpha1.ServiceRef{Name: testServiceSlug},
+			ServiceRef:         servicesv1alpha1.CanonicalServiceReference{Name: testServiceName},
 			ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: consumerProject},
 			RequestMessage:     "managed onboarding",
 			RequestedBy: servicesv1alpha1.ActorReference{
@@ -39,6 +39,18 @@ func newActivationRequest(name, _ string, consumerProject string, authorized boo
 				UID:      types.UID("actor-uid"),
 			},
 		},
+	}
+}
+
+func TestServiceActivationRequestReconcilerDoesNotResolveMetadataName(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
+	activation.Spec.ServiceRef.Name = svc.Name
+	r := &ServiceActivationRequestReconciler{rootClient: newFakeClient(svc)}
+
+	_, err := r.resolveService(context.Background(), activation.Spec.ServiceRef.Name)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("resolveService(metadata.name) error = %v, want NotFound", err)
 	}
 }
 
