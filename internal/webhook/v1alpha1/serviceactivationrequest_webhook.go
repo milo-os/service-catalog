@@ -119,8 +119,23 @@ func (w *serviceActivationRequestWebhook) ValidateCreate(_ context.Context, requ
 	if request.Spec.RequestedBy.Username == "" {
 		errs = append(errs, field.Required(field.NewPath("spec", "requestedBy", "username"), "must be populated from the authenticated caller"))
 	}
-	if request.Annotations[servicesv1alpha1.ServiceActivationAuthorizedAnnotation] == "" || request.Annotations[servicesv1alpha1.ServiceActivationAuthorizationReasonAnnotation] == "" {
-		errs = append(errs, field.Required(field.NewPath("metadata", "annotations"), "authorization must be evaluated before the request is stored"))
+	authorizedPath := field.NewPath("metadata", "annotations").Key(servicesv1alpha1.ServiceActivationAuthorizedAnnotation)
+	authorized := request.Annotations[servicesv1alpha1.ServiceActivationAuthorizedAnnotation]
+	switch authorized {
+	case servicesv1alpha1.ServiceActivationAuthorizedValueTrue, servicesv1alpha1.ServiceActivationAuthorizedValueFalse:
+	case "":
+		errs = append(errs, field.Required(authorizedPath, "authorization must be evaluated before the request is stored"))
+	default:
+		errs = append(errs, field.NotSupported(authorizedPath, authorized, []string{
+			servicesv1alpha1.ServiceActivationAuthorizedValueTrue,
+			servicesv1alpha1.ServiceActivationAuthorizedValueFalse,
+		}))
+	}
+	if request.Annotations[servicesv1alpha1.ServiceActivationAuthorizationReasonAnnotation] == "" {
+		errs = append(errs, field.Required(
+			field.NewPath("metadata", "annotations").Key(servicesv1alpha1.ServiceActivationAuthorizationReasonAnnotation),
+			"authorization reason must be recorded before the request is stored",
+		))
 	}
 	return activationValidationResult(request, errs)
 }

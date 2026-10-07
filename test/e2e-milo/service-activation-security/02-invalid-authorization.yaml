@@ -1,0 +1,14 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceActivationRequest
+metadata:
+  name: e2e-invalid-authorization
+  annotations:
+    services.miloapis.com/activation-authorized: forged
+    services.miloapis.com/activation-authorization-reason: ForgedByClient
+spec:
+  serviceRef:
+    name: e2e-provider-activation
+  consumerProjectRef:
+    name: e2e-provisioning-consumer-a
+  requestedBy:
+    username: forged@example.com
