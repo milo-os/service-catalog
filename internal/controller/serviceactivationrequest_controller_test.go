@@ -76,8 +76,8 @@ func TestServiceActivationRequestReconcilerCreatesEntitlementWithProvenance(t *t
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if res.RequeueAfter != activationRequestPollInterval {
-		t.Fatalf("RequeueAfter = %v, want %v", res.RequeueAfter, activationRequestPollInterval)
+	if res.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %v, want event-driven reconciliation", res.RequeueAfter)
 	}
 
 	var entitlement servicesv1alpha1.ServiceEntitlement
@@ -112,6 +112,62 @@ func TestServiceActivationRequestReconcilerCreatesEntitlementWithProvenance(t *t
 	}
 	if got.Status.EntitlementRef == nil || got.Status.EntitlementRef.Name != entitlement.Name {
 		t.Fatalf("entitlementRef = %#v, want name %q", got.Status.EntitlementRef, entitlement.Name)
+	}
+}
+
+func TestServiceActivationRequestReconcilerWaitsForConsumerEngagement(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
+	providerClient := newFakeClient(activation)
+	mgr := newTestManager()
+	mgr.add(testProviderProject, providerClient)
+	wakeups := newActivationRequestWakeups()
+	r := &ServiceActivationRequestReconciler{
+		rootClient: newFakeClient(svc),
+		Manager:    mgr,
+		Scheme:     testScheme(),
+		wakeups:    wakeups,
+	}
+	req := activationRequest(testProviderProject, activation.Name)
+
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %v, want engagement-driven reconciliation", res.RequeueAfter)
+	}
+
+	mgr.add(testConsumerProject, newFakeClient())
+	if err := wakeups.Engage(context.Background(), multicluster.ClusterName(testConsumerProject), nil); err != nil {
+		t.Fatalf("Engage: %v", err)
+	}
+	select {
+	case event := <-wakeups.events:
+		if event.Object != req {
+			t.Fatalf("wake-up request = %#v, want %#v", event.Object, req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("consumer engagement did not wake the activation request")
+	}
+}
+
+func TestMapServiceEntitlementToActivationRequest(t *testing.T) {
+	entitlement := newEntitlement(testServiceSlug, testServiceSlug)
+	entitlement.Spec.ProviderActivation = &servicesv1alpha1.ProviderActivation{
+		RequestRef:         servicesv1alpha1.ServiceActivationRequestReference{Name: "enable-compute"},
+		ProviderProjectRef: servicesv1alpha1.ProducerProjectReference{Name: testProviderProject},
+	}
+
+	got := mapServiceEntitlementToActivationRequest(context.Background(), entitlement)
+	want := activationRequest(testProviderProject, "enable-compute")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("mapped requests = %#v, want %#v", got, []mcreconcile.Request{want})
+	}
+
+	entitlement.Spec.ProviderActivation = nil
+	if got := mapServiceEntitlementToActivationRequest(context.Background(), entitlement); len(got) != 0 {
+		t.Fatalf("unlinked entitlement mapped to %#v, want no requests", got)
 	}
 }
 
