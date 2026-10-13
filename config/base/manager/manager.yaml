@@ -46,6 +46,7 @@ spec:
           - --leader-elect-lease-duration=$(LEADER_ELECT_LEASE_DURATION)
           - --leader-elect-renew-deadline=$(LEADER_ELECT_RENEW_DEADLINE)
           - --leader-elect-retry-period=$(LEADER_ELECT_RETRY_PERIOD)
+          - --cache-sync-timeout=$(CACHE_SYNC_TIMEOUT)
           - --health-probe-bind-address=:8081
           - --server-config=/config/config.yaml
         env:
@@ -55,6 +56,8 @@ spec:
             value: 10s
           - name: LEADER_ELECT_RETRY_PERIOD
             value: 2s
+          - name: CACHE_SYNC_TIMEOUT
+            value: 2m
         image: ghcr.io/milo-os/service-catalog:dev
         name: manager
         ports:

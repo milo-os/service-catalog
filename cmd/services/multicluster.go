@@ -5,6 +5,7 @@ package main
 import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -33,9 +34,10 @@ type mcProvider interface {
 // Engagement is per-pod cache and watch bookkeeping, the same category of
 // thing as the manager's own informer cache, which controller-runtime never
 // leader-gates.
-func newDiscoveryManager(cfg *rest.Config) (manager.Manager, error) {
+func newDiscoveryManager(cfg *rest.Config, controllerOpts ctrlconfig.Controller) (manager.Manager, error) {
 	return ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: scheme,
+		Scheme:     scheme,
+		Controller: controllerOpts,
 		Metrics: metricsserver.Options{
 			// Avoid port conflict with the primary manager's metrics server.
 			BindAddress: "0",
