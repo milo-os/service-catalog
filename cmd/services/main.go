@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -66,6 +67,9 @@ func init() {
 func main() {
 	var enableLeaderElection bool
 	var leaderElectionNamespace string
+	var leaseDuration time.Duration
+	var renewDeadline time.Duration
+	var retryPeriod time.Duration
 	var probeAddr string
 	var serverConfigFile string
 	var enableSingleClusterForE2ETests bool
@@ -75,6 +79,12 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&leaderElectionNamespace, "leader-elect-namespace", "", "The namespace to use for leader election.")
+	flag.DurationVar(&leaseDuration, "leader-elect-lease-duration", 15*time.Second,
+		"How long non-leader replicas wait before taking over an unrenewed lease.")
+	flag.DurationVar(&renewDeadline, "leader-elect-renew-deadline", 10*time.Second,
+		"How long the leader keeps retrying a lease renewal before giving up leadership. Must be less than the lease duration.")
+	flag.DurationVar(&retryPeriod, "leader-elect-retry-period", 2*time.Second,
+		"How long replicas wait between attempts to acquire or renew the lease.")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
 		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
@@ -160,6 +170,9 @@ func main() {
 		LeaderElection:          enableLeaderElection,
 		LeaderElectionID:        "services.miloapis.com",
 		LeaderElectionNamespace: leaderElectionNamespace,
+		LeaseDuration:           &leaseDuration,
+		RenewDeadline:           &renewDeadline,
+		RetryPeriod:             &retryPeriod,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -360,6 +373,9 @@ func main() {
 			LeaderElection:          enableLeaderElection,
 			LeaderElectionID:        "consumer-projection.services.miloapis.com",
 			LeaderElectionNamespace: leaderElectionNamespace,
+			LeaseDuration:           &leaseDuration,
+			RenewDeadline:           &renewDeadline,
+			RetryPeriod:             &retryPeriod,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to create consumer multicluster manager")
