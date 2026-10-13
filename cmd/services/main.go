@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -70,6 +71,7 @@ func main() {
 	var leaseDuration time.Duration
 	var renewDeadline time.Duration
 	var retryPeriod time.Duration
+	var cacheSyncTimeout time.Duration
 	var probeAddr string
 	var serverConfigFile string
 	var enableSingleClusterForE2ETests bool
@@ -85,6 +87,8 @@ func main() {
 		"How long the leader keeps retrying a lease renewal before giving up leadership. Must be less than the lease duration.")
 	flag.DurationVar(&retryPeriod, "leader-elect-retry-period", 2*time.Second,
 		"How long replicas wait between attempts to acquire or renew the lease.")
+	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 2*time.Minute,
+		"How long each controller waits for its caches to sync at startup before the manager exits.")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
 		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
@@ -99,6 +103,8 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	controllerOpts := ctrlconfig.Controller{CacheSyncTimeout: cacheSyncTimeout}
 
 	setupLog.Info("starting services",
 		"version", version,
@@ -164,6 +170,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                  scheme,
+		Controller:              controllerOpts,
 		Metrics:                 metricsServerOptions,
 		WebhookServer:           webhookServer,
 		HealthProbeBindAddress:  probeAddr,
@@ -217,7 +224,7 @@ func main() {
 	// project discovery and cluster engagement are not leader-gated; see
 	// newDiscoveryManager. It doubles as the multicluster manager's local
 	// manager.
-	discoveryMgr, err := newDiscoveryManager(cfg)
+	discoveryMgr, err := newDiscoveryManager(cfg, controllerOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to create project discovery manager")
 		os.Exit(1)
@@ -307,7 +314,8 @@ func main() {
 		// elected. See the Start goroutine below for why a second lease here
 		// would be actively harmful.
 		providerMgr, err := ctrl.NewManager(providerProjectCfg, ctrl.Options{
-			Scheme: scheme,
+			Scheme:     scheme,
+			Controller: controllerOpts,
 			Metrics: metricsserver.Options{
 				// Avoid port conflict with the primary manager's metrics server.
 				BindAddress: "0",
@@ -366,7 +374,8 @@ func main() {
 		// are separate managers in the same process and would otherwise elect
 		// each other out.
 		consumerMcMgr, err := mcmanager.New(cfg, consumerProvider, mcmanager.Options{
-			Scheme: scheme,
+			Scheme:     scheme,
+			Controller: controllerOpts,
 			Metrics: metricsserver.Options{
 				BindAddress: "0",
 			},
