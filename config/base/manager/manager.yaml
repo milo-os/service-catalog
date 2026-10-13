@@ -43,8 +43,18 @@ spec:
         args:
           - --leader-elect
           - --leader-elect-namespace=kube-system
+          - --leader-elect-lease-duration=$(LEADER_ELECT_LEASE_DURATION)
+          - --leader-elect-renew-deadline=$(LEADER_ELECT_RENEW_DEADLINE)
+          - --leader-elect-retry-period=$(LEADER_ELECT_RETRY_PERIOD)
           - --health-probe-bind-address=:8081
           - --server-config=/config/config.yaml
+        env:
+          - name: LEADER_ELECT_LEASE_DURATION
+            value: 15s
+          - name: LEADER_ELECT_RENEW_DEADLINE
+            value: 10s
+          - name: LEADER_ELECT_RETRY_PERIOD
+            value: 2s
         image: ghcr.io/milo-os/service-catalog:dev
         name: manager
         ports:
