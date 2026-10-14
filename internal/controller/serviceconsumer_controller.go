@@ -80,8 +80,9 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		return ctrl.Result{}, nil
 	}
 
-	// This reconciler only runs for a recorded decision, and only gated
-	// services have one to make.
+	// This reconciler only runs for a recorded decision, and a recorded
+	// decision wins over the enablement mode (see decideEnablement), so the
+	// mode passed here doesn't change the outcome.
 	switch consumer.Spec.Approval.Decision {
 	case servicesv1alpha1.ApprovalDecisionApproved, servicesv1alpha1.ApprovalDecisionDenied:
 	default:

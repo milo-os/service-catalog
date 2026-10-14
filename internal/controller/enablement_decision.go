@@ -36,10 +36,35 @@ type enablementDecision struct {
 }
 
 // decideEnablement returns the decision for a service with the given
-// enablement mode and the provider's approval, if any. A self-service
-// service ignores spec.approval: there is nothing for the provider to decide.
+// enablement mode and the provider's approval, if any.
+//
+// A recorded decision wins over the mode. A service can switch from
+// GatedByProvider to SelfService after the provider decided some requests;
+// those decisions stand, and only requests still pending are enabled
+// automatically. A denied consumer can delete its entitlement and enable the
+// service again. Letting the mode win instead made the two reconcilers
+// disagree about decided requests and overwrite each other in a loop, because
+// the consumer reconciler only sees the decision, not the mode.
 func decideEnablement(gated bool, approval *servicesv1alpha1.ProviderApproval) enablementDecision {
 	switch {
+	case approval != nil && approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
+		return enablementDecision{
+			entitlementPhase:   servicesv1alpha1.EntitlementPhaseRejected,
+			entitlementReason:  servicesv1alpha1.ReasonEntitlementRejected,
+			entitlementMessage: withProviderNote("The service provider denied this request.", approval.Message),
+			consumerPhase:      servicesv1alpha1.ConsumerPhaseDenied,
+			consumerReason:     reasonConsumerDenied,
+			consumerMessage:    "This request was denied; the consumer project does not have access to the service.",
+		}
+	case approval != nil:
+		return enablementDecision{
+			entitlementPhase:   servicesv1alpha1.EntitlementPhaseActive,
+			entitlementReason:  servicesv1alpha1.ReasonEntitlementApproved,
+			entitlementMessage: withProviderNote("The service provider approved this request. This service is enabled and ready to use.", approval.Message),
+			consumerPhase:      servicesv1alpha1.ConsumerPhaseActive,
+			consumerReason:     reasonConsumerApproved,
+			consumerMessage:    "This request was approved; the consumer project has access to the service.",
+		}
 	case !gated:
 		return enablementDecision{
 			entitlementPhase:   servicesv1alpha1.EntitlementPhaseActive,
@@ -49,7 +74,7 @@ func decideEnablement(gated bool, approval *servicesv1alpha1.ProviderApproval) e
 			consumerReason:     reasonConsumerEnabled,
 			consumerMessage:    "Enabled automatically.",
 		}
-	case approval == nil:
+	default:
 		return enablementDecision{
 			entitlementPhase:   servicesv1alpha1.EntitlementPhasePendingApproval,
 			entitlementReason:  servicesv1alpha1.ReasonEntitlementPendingApproval,
@@ -57,24 +82,6 @@ func decideEnablement(gated bool, approval *servicesv1alpha1.ProviderApproval) e
 			consumerPhase:      servicesv1alpha1.ConsumerPhasePendingApproval,
 			consumerReason:     reasonConsumerPendingApproval,
 			consumerMessage:    "Waiting for an approval decision.",
-		}
-	case approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
-		return enablementDecision{
-			entitlementPhase:   servicesv1alpha1.EntitlementPhaseRejected,
-			entitlementReason:  servicesv1alpha1.ReasonEntitlementRejected,
-			entitlementMessage: withProviderNote("The service provider denied this request.", approval.Message),
-			consumerPhase:      servicesv1alpha1.ConsumerPhaseDenied,
-			consumerReason:     reasonConsumerDenied,
-			consumerMessage:    "This request was denied; the consumer project does not have access to the service.",
-		}
-	default:
-		return enablementDecision{
-			entitlementPhase:   servicesv1alpha1.EntitlementPhaseActive,
-			entitlementReason:  servicesv1alpha1.ReasonEntitlementApproved,
-			entitlementMessage: withProviderNote("The service provider approved this request. This service is enabled and ready to use.", approval.Message),
-			consumerPhase:      servicesv1alpha1.ConsumerPhaseActive,
-			consumerReason:     reasonConsumerApproved,
-			consumerMessage:    "This request was approved; the consumer project has access to the service.",
 		}
 	}
 }

@@ -171,3 +171,72 @@ func TestEnablement_DenialCarriesProviderReason(t *testing.T) {
 		t.Errorf("entitlement message %q doesn't carry the provider's reason", ready.Message)
 	}
 }
+
+func (f *enablementFixture) switchToSelfService(t *testing.T) {
+	t.Helper()
+	var svc servicesv1alpha1.Service
+	if err := f.entitlementR.rootClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &svc); err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	svc.Spec.EnablementPolicy = &servicesv1alpha1.EnablementPolicy{Mode: servicesv1alpha1.EnablementModeSelfService}
+	if err := f.entitlementR.rootClient.Update(context.Background(), &svc); err != nil {
+		t.Fatalf("switch service to self-service: %v", err)
+	}
+}
+
+// settle runs the entitlement and consumer reconcilers in turn, as their
+// watches on each other's status writes do, and fails if the entitlement's
+// Ready condition is still changing once both have run.
+func (f *enablementFixture) settle(t *testing.T) *metav1.Condition {
+	t.Helper()
+	f.reconcileEntitlement(t)
+	before := f.entitlementReady(t)
+	sc := f.consumer(t)
+	if _, err := f.consumerR.Reconcile(context.Background(), entitlementRequest(testProviderProject, sc.Name)); err != nil {
+		t.Fatalf("reconcile consumer: %v", err)
+	}
+	f.reconcileEntitlement(t)
+	after := f.entitlementReady(t)
+	if before.Reason != after.Reason || before.Message != after.Message {
+		t.Fatalf("reconcilers disagree: Ready went %s %q -> %s %q", before.Reason, before.Message, after.Reason, after.Message)
+	}
+	return after
+}
+
+func TestEnablement_SwitchToSelfServiceEnablesPendingRequests(t *testing.T) {
+	f := newEnablementFixture(servicesv1alpha1.EnablementModeGatedByProvider, newEntitlement(testServiceSlug, testServiceSlug))
+	f.reconcileEntitlement(t)
+	f.switchToSelfService(t)
+
+	ready := f.settle(t)
+	if ready.Status != metav1.ConditionTrue || ready.Reason != servicesv1alpha1.ReasonEntitlementActive {
+		t.Errorf("entitlement Ready = %s/%s, want True/%s", ready.Status, ready.Reason, servicesv1alpha1.ReasonEntitlementActive)
+	}
+}
+
+func TestEnablement_SwitchToSelfServiceKeepsApproval(t *testing.T) {
+	f := newEnablementFixture(servicesv1alpha1.EnablementModeGatedByProvider, newEntitlement(testServiceSlug, testServiceSlug))
+	f.reconcileEntitlement(t)
+	f.decide(t, servicesv1alpha1.ProviderApproval{Decision: servicesv1alpha1.ApprovalDecisionApproved})
+	f.switchToSelfService(t)
+
+	ready := f.settle(t)
+	if ready.Status != metav1.ConditionTrue || ready.Reason != servicesv1alpha1.ReasonEntitlementApproved {
+		t.Errorf("entitlement Ready = %s/%s, want True/%s", ready.Status, ready.Reason, servicesv1alpha1.ReasonEntitlementApproved)
+	}
+}
+
+func TestEnablement_SwitchToSelfServiceKeepsDenial(t *testing.T) {
+	f := newEnablementFixture(servicesv1alpha1.EnablementModeGatedByProvider, newEntitlement(testServiceSlug, testServiceSlug))
+	f.reconcileEntitlement(t)
+	f.decide(t, servicesv1alpha1.ProviderApproval{Decision: servicesv1alpha1.ApprovalDecisionDenied})
+	f.switchToSelfService(t)
+
+	ready := f.settle(t)
+	if ready.Status != metav1.ConditionFalse || ready.Reason != servicesv1alpha1.ReasonEntitlementRejected {
+		t.Errorf("entitlement Ready = %s/%s, want False/%s", ready.Status, ready.Reason, servicesv1alpha1.ReasonEntitlementRejected)
+	}
+	if got := f.consumer(t).Status.Phase; got != servicesv1alpha1.ConsumerPhaseDenied {
+		t.Errorf("consumer phase = %q, want Denied", got)
+	}
+}
