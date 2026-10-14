@@ -69,6 +69,15 @@ type ServiceConsumerSpec struct {
 	// +kubebuilder:validation:Required
 	ConsumerProjectRef ConsumerProjectRef `json:"consumerProjectRef"`
 
+	// RequestMessage is the consumer's message to the provider, copied from
+	// the ServiceEntitlement's spec.requestMessage so a provider deciding on a
+	// GatedByProvider request can read the consumer's stated use case. Set by
+	// the services controller; providers can't change it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	RequestMessage string `json:"requestMessage,omitempty"`
+
 	// Approval is the provider's decision for GatedByProvider services.
 	// The services controller creates the object; the provider writes only
 	// this field.

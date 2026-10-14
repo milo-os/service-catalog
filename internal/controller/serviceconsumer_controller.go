@@ -22,11 +22,6 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-const (
-	reasonConsumerApproved = "ConsumerApproved"
-	reasonConsumerDenied   = "ConsumerDenied"
-)
-
 // ServiceConsumerReconciler runs in every engaged project cluster. Each
 // reconcile call carries the *provider* project name as req.ClusterName. The
 // reconciler reacts to provider approval decisions (spec.approval) and
@@ -85,28 +80,17 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		return ctrl.Result{}, nil
 	}
 
-	var (
-		desiredPhase     servicesv1alpha1.ConsumerPhase
-		entitlementPhase servicesv1alpha1.EntitlementPhase
-		reason           string
-		message          string
-	)
+	// This reconciler only runs for a recorded decision, and a recorded
+	// decision wins over the enablement mode (see decideEnablement), so the
+	// mode passed here doesn't change the outcome.
 	switch consumer.Spec.Approval.Decision {
-	case servicesv1alpha1.ApprovalDecisionApproved:
-		desiredPhase = servicesv1alpha1.ConsumerPhaseActive
-		entitlementPhase = servicesv1alpha1.EntitlementPhaseActive
-		reason = reasonConsumerApproved
-		message = "This request was approved; the consumer now has access to the service."
-	case servicesv1alpha1.ApprovalDecisionDenied:
-		desiredPhase = servicesv1alpha1.ConsumerPhaseDenied
-		entitlementPhase = servicesv1alpha1.EntitlementPhaseRejected
-		reason = reasonConsumerDenied
-		message = "This request was denied; the consumer does not have access to the service."
+	case servicesv1alpha1.ApprovalDecisionApproved, servicesv1alpha1.ApprovalDecisionDenied:
 	default:
 		return ctrl.Result{}, fmt.Errorf("unexpected ApprovalDecision %q", consumer.Spec.Approval.Decision)
 	}
+	decision := decideEnablement(true, consumer.Spec.Approval)
 
-	if err := r.updateConsumerStatus(ctx, providerClient, &consumer, desiredPhase, reason, message); err != nil {
+	if err := updateConsumerStatus(ctx, providerClient, &consumer, consumer.Status.ServiceName, decision); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -150,17 +134,17 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	entitlement := &entitlementList.Items[0]
 
 	original := entitlement.Status.DeepCopy()
-	entitlement.Status.Phase = entitlementPhase
+	entitlement.Status.Phase = decision.entitlementPhase
 	entitlement.Status.ObservedGeneration = entitlement.Generation
-	if entitlementPhase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
+	if decision.entitlementPhase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
 		now := metav1.Now()
 		entitlement.Status.EntitledAt = &now
 	}
 	apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
 		Type:               ConditionTypeReady,
-		Status:             readyStatusForEntitlementPhase(entitlementPhase),
-		Reason:             reason,
-		Message:            message,
+		Status:             readyStatusForEntitlementPhase(decision.entitlementPhase),
+		Reason:             decision.entitlementReason,
+		Message:            decision.entitlementMessage,
 		ObservedGeneration: entitlement.Generation,
 	})
 
@@ -180,22 +164,27 @@ func readyStatusForEntitlementPhase(phase servicesv1alpha1.EntitlementPhase) met
 	return metav1.ConditionFalse
 }
 
-func (r *ServiceConsumerReconciler) updateConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, phase servicesv1alpha1.ConsumerPhase, reason, message string) error {
+// updateConsumerStatus writes the canonical service name and the decision's
+// phase and Ready condition on a ServiceConsumer. The entitlement reconciler calls it for every consumer, so
+// self-service and pending consumers carry a Ready condition too, not only
+// decided ones.
+func updateConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, canonicalServiceName string, decision enablementDecision) error {
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
-	consumer.Status.Phase = phase
-	if phase == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
+	consumer.Status.ServiceName = canonicalServiceName
+	consumer.Status.Phase = decision.consumerPhase
+	if decision.consumerPhase == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
 		now := metav1.Now()
 		consumer.Status.EntitledAt = &now
 	}
 	cond := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
+		Reason:             decision.consumerReason,
+		Message:            decision.consumerMessage,
 		ObservedGeneration: consumer.Generation,
 	}
-	if phase == servicesv1alpha1.ConsumerPhaseActive {
+	if decision.consumerPhase == servicesv1alpha1.ConsumerPhaseActive {
 		cond.Status = metav1.ConditionTrue
 	}
 	apimeta.SetStatusCondition(&consumer.Status.Conditions, cond)
