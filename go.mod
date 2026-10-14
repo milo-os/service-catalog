@@ -10,8 +10,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.0
-	go.miloapis.com/billing v0.3.1
-	go.miloapis.com/milo v0.32.1
+	go.miloapis.com/billing v0.3.10
+	go.miloapis.com/milo v0.36.3-0.20261013234308-e25b0132272f
 	golang.org/x/term v0.42.0
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
@@ -105,7 +105,7 @@ require (
 	k8s.io/apiserver v0.35.0 // indirect
 	k8s.io/component-base v0.35.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
+	k8s.io/kube-openapi v0.0.0-20260304202019-5b3e3fdb0acf // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/kustomize/api v0.19.0 // indirect
