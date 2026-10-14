@@ -10,10 +10,13 @@ spec:
   includedPermissions:
     - services.miloapis.com/serviceentitlements.list
     - services.miloapis.com/serviceentitlements.get
+    - services.miloapis.com/serviceentitlements/status.get
     - services.miloapis.com/serviceentitlements.watch
     - services.miloapis.com/serviceconsumers.list
     - services.miloapis.com/serviceconsumers.get
+    - services.miloapis.com/serviceconsumers/status.get
     - services.miloapis.com/serviceconsumers.watch
     - services.miloapis.com/serviceavailabilities.list
     - services.miloapis.com/serviceavailabilities.get
+    - services.miloapis.com/serviceavailabilities/status.get
     - services.miloapis.com/serviceavailabilities.watch
