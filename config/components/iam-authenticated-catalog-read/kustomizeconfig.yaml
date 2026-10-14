@@ -1,0 +1,9 @@
+# Milo requires a PolicyBinding to name the namespace its Role lives in, and
+# the binding and the role always land in the same namespace. Teaching the
+# namespace transformer about the field keeps the two in step wherever the
+# component is applied.
+namespace:
+  - kind: PolicyBinding
+    group: iam.miloapis.com
+    path: spec/roleRef/namespace
+    create: true

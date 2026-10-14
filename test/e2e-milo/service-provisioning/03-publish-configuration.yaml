@@ -20,3 +20,14 @@ spec:
               source:
                 project: e2e-provisioning-platform
                 name: e2e-public-unicast
+            # The provider states the object's status too. No controller in
+            # the consumer's plane owns this kind, and an object write never
+            # carries status past the API server, so a consumer listing classes
+            # would otherwise see only the kind's default.
+            status:
+              conditions:
+                - type: Ready
+                  status: "True"
+                  reason: SourceResolved
+                  message: The platform class this references is available.
+                  lastTransitionTime: "2026-01-01T00:00:00Z"

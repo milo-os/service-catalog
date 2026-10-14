@@ -190,7 +190,6 @@ func newTestProvider(providerClient client.Client, serviceNames []string, opts .
 		rootClient:         providerClient,
 		providerClient:     providerClient,
 		providerRestConfig: &rest.Config{Host: "https://localhost"},
-		resyncInterval:     DefaultResyncInterval,
 		newCluster: func(*rest.Config, ...cluster.Option) (cluster.Cluster, error) {
 			return &fakeCluster{cache: &fakeCache{}}, nil
 		},
@@ -386,8 +385,8 @@ func TestReconcile_EngagesNewlyActiveProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.RequeueAfter != p.resyncInterval {
-		t.Errorf("RequeueAfter = %v, want resyncInterval %v", res.RequeueAfter, p.resyncInterval)
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want no periodic requeue", res.RequeueAfter)
 	}
 	if _, ok := p.clusters["proj-a"]; !ok {
 		t.Errorf("expected proj-a engaged, clusters=%v", p.clusters)

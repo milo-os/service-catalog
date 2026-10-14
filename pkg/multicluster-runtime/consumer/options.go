@@ -4,7 +4,6 @@ package consumer
 
 import (
 	"context"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -12,12 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 )
-
-// DefaultResyncInterval is the periodic full-resync cadence applied when
-// Options.ResyncInterval is unset. It aligns with the catalog's existing
-// location-binding resync, but the library owns the default so adopters need not
-// depend on a catalog constant.
-const DefaultResyncInterval = 5 * time.Minute
 
 // Options configures a Provider.
 type Options struct {
@@ -70,10 +63,6 @@ type Options struct {
 	// Resumes is the list of hooks called when a consumer project is resumed.
 	// Running them reinstates the normal operating state.
 	Resumes []Resume
-
-	// ResyncInterval is the periodic full-resync cadence. Defaults to
-	// DefaultResyncInterval when zero.
-	ResyncInterval time.Duration
 
 	// newCluster is an injection seam for tests; defaults to cluster.New.
 	newCluster func(*rest.Config, ...cluster.Option) (cluster.Cluster, error)

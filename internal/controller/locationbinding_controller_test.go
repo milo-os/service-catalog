@@ -907,6 +907,53 @@ func TestLocationBindingReconciler_TwoEntitlementsBothProject(t *testing.T) {
 	}
 }
 
+// A deleted entitlement's events collapse onto the same project-wide request
+// as everything else; Reconcile re-Lists entitlements itself rather than
+// trusting the request's name, so it still gets pruned on the next pass.
+func TestLocationBindingReconciler_DeletedEntitlementPrunesOnNextReconcile(t *testing.T) {
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+		newPublishedConfigFor(lbConfigName2, lbServiceName2, lbClass),
+		newAvailabilityFor(lbServiceName2, lbLoc2, true),
+		newClassyLocation(lbLoc2, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(
+		newActiveEntitlement(),
+		newActiveEntitlementNamed(lbEntitlement2, lbEntitlementUID2, lbServiceName2),
+	)
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc2); !ok {
+		t.Fatalf("setup: expected projected Location %q for the second entitlement's service", lbLoc2)
+	}
+
+	second := newActiveEntitlementNamed(lbEntitlement2, lbEntitlementUID2, lbServiceName2)
+	if err := consumerClient.Delete(context.Background(), second); err != nil {
+		t.Fatalf("delete second entitlement: %v", err)
+	}
+
+	if _, err := reconcileBindings(t, rootClient, consumerClient); err != nil {
+		t.Fatalf("reconcile after delete: %v", err)
+	}
+
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc); !ok {
+		t.Errorf("expected the first entitlement's projected Location %q to remain", lbLoc)
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); !ok {
+		t.Errorf("expected the first entitlement's mirrored ServiceAvailability to remain")
+	}
+	if _, ok := getProjectedLocation(t, consumerClient, lbLoc2); ok {
+		t.Errorf("expected the deleted entitlement's projected Location %q to be pruned", lbLoc2)
+	}
+	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName2+"--"+lbLoc2); ok {
+		t.Errorf("expected the deleted entitlement's mirrored ServiceAvailability to be pruned")
+	}
+}
+
 // TestLocationBindingReconciler_MigrationClearsStaleOwnerReference locks in
 // the migration hazard called out in the design: CreateOrUpdate does not
 // clear metadata its mutate function does not touch, so a controller owner
@@ -1065,5 +1112,27 @@ func TestLocationBindingReconciler_PrunesStaleMirror(t *testing.T) {
 	}
 	if _, ok := getAvailabilityMirror(t, consumerClient, lbServiceName+"--"+lbLoc); ok {
 		t.Errorf("expected mirrored ServiceAvailability to be pruned once its entitlement is no longer Active")
+	}
+}
+
+// Reconcile recomputes the whole project regardless of which entitlement
+// triggered it, so every entitlement must map onto the same request for the
+// workqueue to de-duplicate them.
+func TestMapServiceEntitlementToProjectRequest_CollapsesOntoOneKey(t *testing.T) {
+	entA := &servicesv1alpha1.ServiceEntitlement{ObjectMeta: metav1.ObjectMeta{Name: "entitlement-a"}}
+	entB := &servicesv1alpha1.ServiceEntitlement{ObjectMeta: metav1.ObjectMeta{Name: "entitlement-b"}}
+
+	reqsA := mapServiceEntitlementToProjectRequest(context.Background(), entA)
+	reqsB := mapServiceEntitlementToProjectRequest(context.Background(), entB)
+
+	if len(reqsA) != 1 || len(reqsB) != 1 {
+		t.Fatalf("expected exactly one request per event, got %d and %d", len(reqsA), len(reqsB))
+	}
+	if reqsA[0].Name != locationBindingRequestName {
+		t.Errorf("request name = %q, want the constant %q", reqsA[0].Name, locationBindingRequestName)
+	}
+	if reqsA[0] != reqsB[0] {
+		t.Errorf("two different entitlements produced different requests (%+v vs %+v); "+
+			"the workqueue cannot de-duplicate them onto one project-wide reconcile", reqsA[0], reqsB[0])
 	}
 }

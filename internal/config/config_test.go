@@ -4,7 +4,6 @@ package config
 
 import (
 	"testing"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -63,15 +62,13 @@ func TestServicesOperator_ConsumerScopedProjectionAbsent_GateOff(t *testing.T) {
 }
 
 // When the block IS present, it decodes to a populated config (gate on): the
-// provider project, the canonical service names, and an optional resync override
-// that parses as a metav1.Duration.
+// provider project and the canonical service names.
 func TestServicesOperator_ConsumerScopedProjectionPresent_GateOn(t *testing.T) {
 	yaml := baseConfigYAML + `consumerScopedProjection:
   providerProject: my-provider
   serviceNames:
   - compute.miloapis.com
   - storage.miloapis.com
-  resyncInterval: 10m
 `
 	cfg := decodeConfig(t, yaml)
 	csp := cfg.ConsumerScopedProjection
@@ -84,29 +81,6 @@ func TestServicesOperator_ConsumerScopedProjectionPresent_GateOn(t *testing.T) {
 	want := []string{"compute.miloapis.com", "storage.miloapis.com"}
 	if len(csp.ServiceNames) != len(want) || csp.ServiceNames[0] != want[0] || csp.ServiceNames[1] != want[1] {
 		t.Errorf("serviceNames = %v, want %v", csp.ServiceNames, want)
-	}
-	if csp.ResyncInterval == nil {
-		t.Fatalf("resyncInterval should parse to a non-nil metav1.Duration")
-	}
-	if csp.ResyncInterval.Duration != 10*time.Minute {
-		t.Errorf("resyncInterval = %v, want 10m", csp.ResyncInterval.Duration)
-	}
-}
-
-// resyncInterval is optional: when omitted the pointer stays nil so the provider
-// applies its own 5m default rather than zero.
-func TestServicesOperator_ConsumerScopedProjection_ResyncIntervalOmitted(t *testing.T) {
-	yaml := baseConfigYAML + `consumerScopedProjection:
-  providerProject: my-provider
-  serviceNames:
-  - compute.miloapis.com
-`
-	cfg := decodeConfig(t, yaml)
-	if cfg.ConsumerScopedProjection == nil {
-		t.Fatalf("consumerScopedProjection should be non-nil")
-	}
-	if cfg.ConsumerScopedProjection.ResyncInterval != nil {
-		t.Errorf("omitted resyncInterval must stay nil, got %v", cfg.ConsumerScopedProjection.ResyncInterval)
 	}
 }
 

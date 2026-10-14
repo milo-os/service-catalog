@@ -113,6 +113,8 @@ Provisioned  False  PartiallyProvisioned
 
 The consumer does not discover the problem later as an unrelated component reporting a symptom. That is not hypothetical — when location projection stopped in staging, the visible signal was compute reporting that no locations were registered, weeks after the fact.
 
+An installed object arrives with the status the provider declared for it, where the kind carries one. That is not cosmetic: a kind whose status says whether it is usable — a runtime class that reports whether the runtime is available, a class that reports whether its source resolved — tells a consumer nothing without it, because the write that installs an object never carries status past the API server. A consumer would read the kind's own default forever and conclude the resource is broken. A declaration that states no status leaves status to the API that owns the kind.
+
 Disabling the service removes what was installed.
 
 ### User Stories
@@ -161,7 +163,7 @@ Two consequences are load-bearing. Anything a provider can express in a `Service
 **What still bounds the write.** Three things, and they are about the destination and the shape, not the content:
 
 - **The pull direction.** A service installs only into projects that created an entitlement for it, and only once that entitlement is Active — after approval, for a `GatedByProvider` service. A provider declares; nothing happens until a consumer asks. A provider cannot enumerate or target projects.
-- **The shape of an object.** The API group must be a dotted domain, so the core group cannot be named and no `Secret`, `ConfigMap`, or `ServiceAccount` is reachable. The version must be a served API version. A name is required and a `generateName` is refused, because the platform writes idempotently. A namespace is refused, because provisioning does not create namespaces. Owner references and finalizers are refused, because the platform sets the owner reference that makes deleting the entitlement reclaim the object, and a finalizer would defeat teardown. `status` is refused. Objects are capped per declaration, declarations per configuration, and bytes per object.
+- **The shape of an object.** The API group must be a dotted domain, so the core group cannot be named and no `Secret`, `ConfigMap`, or `ServiceAccount` is reachable. The version must be a served API version. A name is required and a `generateName` is refused, because the platform writes idempotently. A namespace is refused, because provisioning does not create namespaces. Owner references and finalizers are refused, because the platform sets the owner reference that makes deleting the entitlement reclaim the object, and a finalizer would defeat teardown. Metadata the API server assigns per object and per plane — `resourceVersion`, `uid`, `generation`, `creationTimestamp`, `managedFields` — is stripped rather than refused, because a declaration is authored by copying a working object out of a cluster and that copy carries it. Objects are capped per declaration, declarations per configuration, and bytes per object.
 - **The owning API's own judgement.** Whether an object is acceptable is decided by the API that owns the kind, when it accepts or refuses the write. IPAM's rules on `spec.source` are IPAM's, not a table here. A platform table restating them would be a second, worse copy of a rule it does not own.
 
 That is enforced twice, and the repetition is not redundant. The `ServiceConfiguration` schema marks each entry as an embedded resource, so the API server refuses an object with no `apiVersion`, no `kind`, or malformed metadata with no webhook in the picture. Admission adds the content rules above, so a provider gets a synchronous error rather than discovering the refusal in a consumer's status later. And the controller re-checks every object before it writes, because a document admitted under an earlier schema, or while the webhook was absent, stays in etcd. A declaration carrying one forbidden object is refused whole, not in part.
@@ -228,6 +230,7 @@ Cost is one configuration read per entitlement per resync, plus an apply per dec
 - 2026-08-17 — projection delivery, its two enforcement points, and the `Provisioned` ledger, with chainsaw suites proving delivery, gating, pruning, refusal with the webhook disabled, and project isolation against separately routed control planes.
 - 2026-08-19 — the platform allowlist replaced by a provider-declared reference shape.
 - 2026-08-19 — projection replaced by embedded objects. The provider writes the object it wants installed; the platform bounds the destination and the shape, not the content. The source-ownership bound goes with the source project.
+- 2026-09-11 — a declaration states the whole object, status included. The declared status is applied to the installed object's status subresource, so a kind that reports its own usability is readable in a consumer's project.
 
 ## Drawbacks
 

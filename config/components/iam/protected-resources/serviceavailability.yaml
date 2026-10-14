@@ -16,4 +16,9 @@ spec:
     - patch
     - delete
     - watch
-    - updateStatus
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch

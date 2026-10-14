@@ -550,6 +550,19 @@ type ConsumerUserInterfaceSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	Visibility PluginVisibility `json:"visibility"`
+
+	// ContentSecurityPolicy lists additions to cloud-portal's
+	// Content-Security-Policy that this plugin needs, one
+	// "<directive> <source>..." entry each, e.g. "worker-src 'self'".
+	// Copied verbatim to the ConsumerPortalPlugin. Only sizes are validated
+	// here: cloud-portal applies the entries its allowlist permits and
+	// ignores and logs the rest.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=atomic
+	ContentSecurityPolicy []string `json:"contentSecurityPolicy,omitempty"`
 }
 
 // ProviderUserInterfaceSpec declares a staff-portal plugin.
@@ -611,6 +624,13 @@ type ProvisionedResourceSpec struct {
 	// resource, so a missing or malformed apiVersion, kind, or metadata is
 	// refused with no webhook in the picture. Whether the object is acceptable
 	// is the owning API's decision, made when it accepts or refuses the write.
+	//
+	// An object may state its status. For a kind that serves a status
+	// subresource, the declared status is applied there, because an ordinary
+	// write never carries status past the API server. Without it, a consumer
+	// reading a kind that reports its own usability sees only the kind's
+	// default. An object that states no status leaves status to the API that
+	// owns it.
 	//
 	// The cap bounds one declaration's fan-out into one project.
 	//

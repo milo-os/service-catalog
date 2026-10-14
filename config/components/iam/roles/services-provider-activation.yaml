@@ -1,0 +1,11 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: services.miloapis.com-provider-activation
+  annotations:
+    kubernetes.io/display-name: Services Provider Activation
+    kubernetes.io/description: "Allow a provider actor to activate services in a consumer project"
+spec:
+  launchStage: Alpha
+  includedPermissions:
+    - services.miloapis.com/serviceentitlements.activate

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -97,7 +98,7 @@ func TestDecodeRejectsObjectsThePlatformWillNotWrite(t *testing.T) {
 		{"namespaced", `{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","namespace":"kube-system"}}`, "metadata.namespace"},
 		{"owner reference", `{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","ownerReferences":[]}}`, "metadata.ownerReferences"},
 		{"finalizer", `{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","finalizers":["keep.me/forever"]}}`, "metadata.finalizers"},
-		{"status", `{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x"},"status":{}}`, "status"},
+		{"status is not an object", `{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x"},"status":"Ready"}`, "status"},
 		{"not an object", `["not","an","object"]`, "object"},
 		{"empty", ``, "object"},
 	} {
@@ -107,6 +108,117 @@ func TestDecodeRejectsObjectsThePlatformWillNotWrite(t *testing.T) {
 				t.Fatalf("expected %s to be rejected, got %v", tc.field, err)
 			}
 		})
+	}
+}
+
+// A consumer cannot read whether a kind is usable unless the declared status
+// survives decoding.
+func TestDecodeKeepsTheDeclaredStatus(t *testing.T) {
+	obj, err := Decode(raw(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": "tenant-endpoint-ipv6"},
+		"spec": {"source": {"project": "platform-networking", "name": "tenant-endpoint-ipv6"}},
+		"status": {"conditions": [{
+			"type": "Ready", "status": "True", "reason": "Available",
+			"message": "The class is usable.",
+			"lastTransitionTime": "2026-01-01T00:00:00Z"
+		}]}
+	}`))
+	if err != nil {
+		t.Fatalf("expected the object to decode, got %v", err)
+	}
+
+	status, stated := obj.Status()
+	if !stated {
+		t.Fatal("the declared status did not survive decoding")
+	}
+	conditions, ok := status["conditions"].([]any)
+	if !ok || len(conditions) != 1 {
+		t.Fatalf("status.conditions was rewritten: %+v", status)
+	}
+	if got := conditions[0].(map[string]any)["reason"]; got != "Available" {
+		t.Errorf("status.conditions[0].reason = %v, want the reason the provider wrote", got)
+	}
+
+	// The object write also carries status, so a kind with no status
+	// subresource is installed in one call.
+	if _, found, _ := unstructured.NestedMap(obj.Unstructured().Object, "status"); !found {
+		t.Error("the declared status is missing from the object to write")
+	}
+}
+
+// A declaration that says nothing about status must not claim one. Writing an
+// empty status would take ownership of a field the provider never mentioned.
+func TestDecodeReportsNoStatusWhenNoneIsDeclared(t *testing.T) {
+	obj, err := Decode(ipClass())
+	if err != nil {
+		t.Fatalf("expected the object to decode, got %v", err)
+	}
+	if status, stated := obj.Status(); stated {
+		t.Errorf("a declaration with no status reported one: %+v", status)
+	}
+}
+
+// Two consumer projects receiving one declaration must not share a status map
+// either of them can edit.
+func TestDecodedStatusIsIndependentPerCall(t *testing.T) {
+	obj, err := Decode(raw(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": "x"},
+		"status": {"phase": "Ready"}
+	}`))
+	if err != nil {
+		t.Fatalf("expected the object to decode, got %v", err)
+	}
+	first, _ := obj.Status()
+	first["phase"] = "edited"
+
+	second, _ := obj.Status()
+	if second["phase"] != "Ready" {
+		t.Errorf("editing one copy of the status reached the next: %+v", second)
+	}
+}
+
+// A provider authors a declaration by copying a working object out of a
+// cluster. The copy carries a version, an identity, and a history that mean
+// nothing in a consumer's plane.
+func TestDecodeStripsMetadataTheAPIServerOwns(t *testing.T) {
+	obj, err := Decode(raw(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {
+			"name": "tenant-endpoint-ipv6",
+			"labels": {"tier": "premium"},
+			"resourceVersion": "884213",
+			"uid": "6f1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+			"generation": 4,
+			"creationTimestamp": "2026-01-01T00:00:00Z",
+			"managedFields": [{"manager": "kubectl", "operation": "Update"}]
+		},
+		"spec": {"ipFamily": "IPv6"}
+	}`))
+	if err != nil {
+		t.Fatalf("a declaration copied out of a cluster was refused: %v", err)
+	}
+
+	meta, found, err := unstructuredMap(obj.Unstructured().Object, "metadata")
+	if err != nil || !found {
+		t.Fatalf("metadata is missing from the object to write: %v", obj.Unstructured().Object)
+	}
+	for _, field := range []string{
+		"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields",
+	} {
+		if _, set := meta[field]; set {
+			t.Errorf("metadata.%s reached the write", field)
+		}
+	}
+	if meta["name"] != "tenant-endpoint-ipv6" {
+		t.Errorf("metadata.name = %v, want the name the declaration carries", meta["name"])
+	}
+	if labels, _ := meta["labels"].(map[string]any); labels["tier"] != "premium" {
+		t.Errorf("declared labels were dropped: %+v", meta["labels"])
 	}
 }
 

@@ -117,7 +117,7 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 		labelManagedBy:    labelManagedByValue,
 		labelOwnerService: serviceName,
 	})
-	if err := unstructured.SetNestedMap(obj.Object, map[string]interface{}{
+	pluginSpec := map[string]interface{}{
 		"slug":        slug,
 		"displayName": displayName,
 		"deprecated":  deprecated,
@@ -127,7 +127,15 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 			"entitlement": spec.Visibility.Entitlement,
 			"featureFlag": spec.Visibility.FeatureFlag,
 		},
-	}, "spec"); err != nil {
+	}
+	if len(spec.ContentSecurityPolicy) > 0 {
+		csp := make([]interface{}, len(spec.ContentSecurityPolicy))
+		for i, entry := range spec.ContentSecurityPolicy {
+			csp[i] = entry
+		}
+		pluginSpec["contentSecurityPolicy"] = csp
+	}
+	if err := unstructured.SetNestedMap(obj.Object, pluginSpec, "spec"); err != nil {
 		return "", fmt.Errorf("build ConsumerPortalPlugin %q spec: %w", slug, err)
 	}
 

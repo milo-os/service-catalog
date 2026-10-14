@@ -57,6 +57,78 @@ spec:
           spec:
             description: ServiceEntitlementSpec defines the desired state of a ServiceEntitlement.
             properties:
+              providerActivation:
+                description: |-
+                  ProviderActivation records that this entitlement was initiated by a
+                  provider and identifies the originating request and actor. It is absent
+                  for consumer-created and dependency entitlements. The services controller
+                  owns this immutable field.
+                properties:
+                  actor:
+                    description: |-
+                      Actor identifies the authenticated provider principal that submitted the
+                      activation request.
+                    properties:
+                      uid:
+                        description: |-
+                          UID is the stable identifier supplied by the authenticator, when one is
+                          available.
+                        type: string
+                      username:
+                        description: Username is the authenticated principal's username.
+                        maxLength: 1024
+                        minLength: 1
+                        type: string
+                    required:
+                    - username
+                    type: object
+                  providerProjectRef:
+                    description: |-
+                      ProviderProjectRef identifies the project that owned the service and
+                      submitted the activation request.
+                    properties:
+                      name:
+                        description: |-
+                          Name is the metadata.name of the producer-project resource that
+                          owns the service. The webhook will validate that a producer
+                          project with this name exists; the API type here only enforces
+                          the syntactic bounds.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  requestRef:
+                    description: RequestRef identifies the provider-side activation
+                      request.
+                    properties:
+                      name:
+                        description: Name is the activation request's metadata.name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: UID is the activation request's metadata.uid.
+                        type: string
+                    required:
+                    - name
+                    - uid
+                    type: object
+                  requestedAt:
+                    description: RequestedAt is when the provider submitted the activation
+                      request.
+                    format: date-time
+                    type: string
+                required:
+                - actor
+                - providerProjectRef
+                - requestRef
+                - requestedAt
+                type: object
+                x-kubernetes-validations:
+                - message: providerActivation is immutable
+                  rule: self == oldSelf
               requestMessage:
                 description: |-
                   RequestMessage is an optional human-readable message sent to the

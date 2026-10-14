@@ -1,0 +1,22 @@
+# ActivityPolicy for provider-initiated service activation.
+#
+# Requests live in the provider project, so their audit trail stays with the
+# provider that initiated onboarding. The resulting ServiceEntitlement carries
+# the same actor and request reference for the consumer project.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: services.miloapis.com-serviceactivationrequest
+spec:
+  resource:
+    apiGroup: services.miloapis.com
+    kind: ServiceActivationRequest
+
+  auditRules:
+    - name: provider-activation-requested
+      match: "audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && has(audit.requestObject.spec) && has(audit.requestObject.spec.serviceRef) && has(audit.requestObject.spec.consumerProjectRef) && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
+      summary: "{{ actor }} requested activation of {{ audit.requestObject.spec.serviceRef.name }} in project {{ audit.requestObject.spec.consumerProjectRef.name }}"
+
+    - name: provider-activation-requested-fallback
+      match: "audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
+      summary: "{{ actor }} requested a provider-led service activation"

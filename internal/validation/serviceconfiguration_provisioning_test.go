@@ -73,6 +73,25 @@ func TestProvisioningValidationAcceptsAnEmbeddedObject(t *testing.T) {
 	}
 }
 
+// A declaration states the whole object, status included. Admission has to
+// accept it, or the provisioner never sees it.
+func TestProvisioningValidationAcceptsADeclaredStatus(t *testing.T) {
+	obj := provTestObject(`{
+		"apiVersion": "ipam.miloapis.com/v1alpha1",
+		"kind": "IPClass",
+		"metadata": {"name": "tenant-endpoint-ipv6"},
+		"spec": {"source": {"project": "platform-networking", "name": "tenant-endpoint-ipv6"}},
+		"status": {"conditions": [{
+			"type": "Ready", "status": "True", "reason": "SourceResolved",
+			"message": "The platform class this references is available.",
+			"lastTransitionTime": "2026-01-01T00:00:00Z"
+		}]}
+	}`)
+	if errs := validateProvisioning(provTestConfig(obj)); len(errs) != 0 {
+		t.Fatalf("expected a declared status to be accepted, got %v", errs)
+	}
+}
+
 // Admission is the first of two enforcement points: a provider gets a
 // synchronous error rather than a status field later. What it checks is that
 // the platform can write the object at all — whether the object is acceptable
@@ -107,6 +126,11 @@ func TestProvisioningValidationRejectsObjectsThePlatformWillNotWrite(t *testing.
 			name:  "owner reference the platform must set",
 			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x","ownerReferences":[]}}`),
 			field: "spec.provisioning.resources[0].objects[0].metadata.ownerReferences",
+		},
+		{
+			name:  "status that is not an object",
+			obj:   provTestObject(`{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClass","metadata":{"name":"x"},"status":"Ready"}`),
+			field: "spec.provisioning.resources[0].objects[0].status",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

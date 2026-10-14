@@ -92,6 +92,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingaccountbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=offers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -177,6 +178,17 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
 		}
 		consumer.Spec.RequestMessage = entitlement.Spec.RequestMessage
+		// A provider-initiated activation is itself the provider's affirmative
+		// decision. For a gated service, record that approval without requiring
+		// the initiating provider to approve the same request a second time.
+		// Never overwrite a decision already present: it may have been written
+		// concurrently by the provider after the ServiceConsumer was created.
+		if gated && entitlement.Spec.ProviderActivation != nil && consumer.Spec.Approval == nil {
+			consumer.Spec.Approval = &servicesv1alpha1.ProviderApproval{
+				Decision: servicesv1alpha1.ApprovalDecisionApproved,
+				Message:  "Approved because the service provider initiated activation.",
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -195,6 +207,17 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 
 	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, decision.entitlementReason, decision.entitlementMessage, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
+	}
+	if err := announceProviderActivation(ctx, consumerClient, &entitlement, svc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Only a GatedByProvider service has a provider decision to report. A
+	// self-service entitlement going Active was never decided by anyone.
+	if gated {
+		if err := announceDecision(ctx, consumerClient, &entitlement, svc, consumer.Spec.Approval); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Only enroll dependencies and provision quota once the parent is Active.

@@ -25,3 +25,10 @@ spec:
   # makes the installed object acceptable to the API that owns the kind.
   (ipFamily == null): true
   (defaultPrefixLength == null): true
+# IPClass serves a status subresource, so the declared status reached it
+# through a second write. This assertion distinguishes the status the platform
+# applied from the kind's own default.
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"
+      reason: SourceResolved

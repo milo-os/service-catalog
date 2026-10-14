@@ -1,0 +1,71 @@
+# The reviewed content behind compute-diagnostics-agent. The projection
+# controller copies this into every entitled project as a CapabilityBinding.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  labels:
+    app.kubernetes.io/name: services
+    app.kubernetes.io/managed-by: kustomize
+  name: compute-diagnostics-agent-v1
+spec:
+  serviceAgentRef:
+    name: compute-diagnostics-agent
+  phase: Published
+  # Bump this whenever the content below changes, so we can tell which version
+  # a customer actually saw.
+  version: v1
+  # Where compute's team reads reports of things the assistant could not do.
+  # Remove it and those reports have nowhere to go.
+  reportingProject: datum-cloud
+
+  knowledge:
+    sources:
+      - type: LLMDocs
+        title: Compute resource model and condition semantics
+        url: http://compute-mcp.compute-system.svc.cluster.local:8080/llms-full.txt
+    concepts:
+      - gvk:
+          group: compute.datumapis.com
+          kind: Workload
+        summary: "A customer's declared compute intent: an instance template plus one or more placements."
+      - gvk:
+          group: compute.datumapis.com
+          kind: Instance
+        summary: A single running unit within a deployment, carrying the most specific conditions.
+
+  tools:
+    mcpServers:
+      # Tools reach the assistant as "compute__<tool>", so they cannot clash
+      # with another service's.
+      - name: compute
+        # Production must point at the AI gateway instead: a call sent straight
+        # here is not billed, carries no customer identity, and is refused.
+        endpoint: http://compute-mcp.compute-system.svc.cluster.local:8080/mcp
+        toolSelector:
+          # Anything not named here is never offered, even if the server
+          # serves it.
+          include:
+            - compute_workloads_list
+            - compute_workloads_get
+            - compute_instances_list
+            - compute_workload_diagnose
+            - compute_reason_explain
+        # None of these change a customer's resources.
+        mutating: []
+
+  skills:
+    - name: workload-not-available
+      description: Triage a compute Workload that is not available, from symptom to root cause and owner
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/workload-not-available.md
+    - name: quota-triage
+      description: Distinguish QuotaExceeded, QuotaNoBudget and quota backend faults, and act on each
+      source: http://compute-mcp.compute-system.svc.cluster.local:8080/runbooks/quota-triage.md
+
+  authority:
+    # Reads run as the person asking, so this grants no access they do not
+    # already have.
+    reads:
+      - gvk:
+          group: compute.datumapis.com
+          kind: "*"
+    maxTaskDurationSeconds: 60
