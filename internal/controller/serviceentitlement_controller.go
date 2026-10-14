@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,10 +38,7 @@ import (
 const serviceEntitlementFinalizer = "services.miloapis.com/service-entitlement"
 
 const (
-	reasonEntitlementActive          = servicesv1alpha1.ReasonEntitlementActive
-	reasonEntitlementPendingApproval = servicesv1alpha1.ReasonEntitlementPendingApproval
-	reasonEntitlementRejected        = servicesv1alpha1.ReasonEntitlementRejected
-	reasonServiceNotPublished        = servicesv1alpha1.ReasonServiceNotPublished
+	reasonServiceNotPublished = servicesv1alpha1.ReasonServiceNotPublished
 )
 
 // pendingApprovalRequeueInterval bounds the latency between a provider
@@ -180,6 +176,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
 			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
 		}
+		consumer.Spec.RequestMessage = entitlement.Spec.RequestMessage
 		return nil
 	})
 	if err != nil {
@@ -187,28 +184,16 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName, projectSuspended); err != nil {
+	// If the provider already approved or denied the request, reflect that
+	// decision on both objects.
+	decision := decideEnablement(gated, consumer.Spec.Approval)
+	desiredPhase := decision.entitlementPhase
+
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, decision, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Set entitlement status. If the consumer was already approved/denied by
-	// the provider (re-reconcile triggered by the consumer controller), reflect
-	// that decision back onto the entitlement.
-	desiredPhase := servicesv1alpha1.EntitlementPhaseActive
-	reason := reasonEntitlementActive
-	message := "This service is enabled and ready to use."
-	switch {
-	case gated && consumer.Spec.Approval == nil:
-		desiredPhase = servicesv1alpha1.EntitlementPhasePendingApproval
-		reason = reasonEntitlementPendingApproval
-		message = "Waiting for the service provider to approve this request."
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
-		desiredPhase = servicesv1alpha1.EntitlementPhaseRejected
-		reason = reasonEntitlementRejected
-		message = "The service provider denied this request."
-	}
-
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, decision.entitlementReason, decision.entitlementMessage, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -231,8 +216,8 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string, projectSuspended projectSuspension) error {
-	// Patched separately from the Update below (see
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, decision enablementDecision, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// Patched separately from the Update in updateConsumerStatus (see
 	// patchConsumerSuspendedCondition): ProjectSuspensionPropagationReconciler
 	// writes the same condition independently, on its own Get/patch cycle, so
 	// folding it into this function's own before/after diff would race it.
@@ -240,33 +225,7 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 		return fmt.Errorf("failed to apply Suspended condition on ServiceConsumer: %w", err)
 	}
 
-	original := consumer.Status.DeepCopy()
-	consumer.Status.ObservedGeneration = consumer.Generation
-	consumer.Status.ServiceName = canonicalServiceName
-
-	desired := servicesv1alpha1.ConsumerPhaseActive
-	switch {
-	case gated && consumer.Spec.Approval == nil:
-		desired = servicesv1alpha1.ConsumerPhasePendingApproval
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
-		desired = servicesv1alpha1.ConsumerPhaseDenied
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionApproved:
-		desired = servicesv1alpha1.ConsumerPhaseActive
-	}
-
-	consumer.Status.Phase = desired
-	if desired == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
-		now := metav1.Now()
-		consumer.Status.EntitledAt = &now
-	}
-
-	if apiequality.Semantic.DeepEqual(original, &consumer.Status) {
-		return nil
-	}
-	if err := providerClient.Status().Update(ctx, consumer); err != nil {
-		return fmt.Errorf("failed to update ServiceConsumer status: %w", err)
-	}
-	return nil
+	return updateConsumerStatus(ctx, providerClient, consumer, canonicalServiceName, decision)
 }
 
 func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string, projectSuspended projectSuspension) error {

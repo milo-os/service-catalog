@@ -34,8 +34,16 @@ const (
 	ConditionTypeReady = "Ready"
 
 	// ReasonEntitlementActive is the Ready reason when the entitlement is active
-	// and usable.
+	// and usable without a provider decision: the service is self-service, so
+	// enabling it granted access immediately.
 	ReasonEntitlementActive = "EntitlementActive"
+
+	// ReasonEntitlementApproved is the Ready reason when the entitlement is
+	// active because the provider approved a GatedByProvider request. It is
+	// distinct from ReasonEntitlementActive so a consumer can tell that a
+	// provider reviewed the request rather than access being granted
+	// automatically.
+	ReasonEntitlementApproved = "EntitlementApproved"
 
 	// ReasonEntitlementPendingApproval is the Ready reason while the request
 	// awaits a provider approval decision.
