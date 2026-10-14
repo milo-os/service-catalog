@@ -28,10 +28,34 @@ var (
 		Name: "consumer_provider_teardown_failures_total",
 		Help: "Total consumer-project teardown failures (alert-only; teardown is retried with backoff).",
 	}, []string{"consumer_project"})
+
+	// desiredClusters is the size of the active set from the latest recompute:
+	// the consumer projects that should be engaged. engagedClusters staying below
+	// it means engagement is not keeping up or is stuck.
+	desiredClusters = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "consumer_provider_desired_clusters",
+		Help: "Number of consumer projects with an active ServiceConsumer, which the provider should have engaged.",
+	})
+
+	// engageFailuresTotal counts failed engagements by the stage that failed.
+	// Engagement is retried, so this is alert-only.
+	engageFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "consumer_provider_engage_failures_total",
+		Help: "Total failed consumer-project engagements, by failing stage (alert-only; engagement is retried).",
+	}, []string{"stage"})
+)
+
+// Engagement stages reported by engageFailuresTotal.
+const (
+	stageRestConfig    = "rest_config"
+	stageCreateCluster = "create_cluster"
+	stageIndex         = "index"
+	stageCacheSync     = "cache_sync"
+	stageEngage        = "engage"
 )
 
 func init() {
-	metrics.Registry.MustRegister(engagedClusters, teardownFailuresTotal)
+	metrics.Registry.MustRegister(engagedClusters, teardownFailuresTotal, desiredClusters, engageFailuresTotal)
 }
 
 // setEngagedClusters publishes the current engaged-cluster count.
@@ -42,4 +66,14 @@ func setEngagedClusters(n int) {
 // recordTeardownFailure increments the teardown-failure counter for a project.
 func (p *Provider) recordTeardownFailure(consumerProject string) {
 	teardownFailuresTotal.WithLabelValues(consumerProject).Inc()
+}
+
+// setDesiredClusters publishes the size of the latest active set.
+func setDesiredClusters(n int) {
+	desiredClusters.Set(float64(n))
+}
+
+// recordEngageFailure increments the engage-failure counter for a stage.
+func recordEngageFailure(stage string) {
+	engageFailuresTotal.WithLabelValues(stage).Inc()
 }

@@ -138,7 +138,7 @@
 //
 // # Metrics
 //
-// The provider registers two metrics on controller-runtime's metrics registry
+// The provider registers four metrics on controller-runtime's metrics registry
 // (served on the manager's existing /metrics endpoint, no adopter wiring):
 //
 //   - consumer_provider_engaged_clusters (gauge): the current number of engaged
@@ -148,6 +148,13 @@
 //     failing projects get a series). A persistently-incrementing series
 //     indicates a consumer project whose teardown keeps failing while the
 //     cluster stays engaged for retry.
+//   - consumer_provider_desired_clusters (gauge): the number of consumer
+//     projects with an active ServiceConsumer, which should be engaged.
+//     engaged_clusters staying below it means engagement is stuck or falling
+//     behind.
+//   - consumer_provider_engage_failures_total{stage} (counter): failed
+//     engagements by failing stage (rest_config, create_cluster, index,
+//     cache_sync, engage); alert-only, since engagement is retried.
 //
 // # Usage
 //
