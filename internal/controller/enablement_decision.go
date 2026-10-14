@@ -44,7 +44,7 @@ func decideEnablement(gated bool, approval *servicesv1alpha1.ProviderApproval) e
 		return enablementDecision{
 			entitlementPhase:   servicesv1alpha1.EntitlementPhaseActive,
 			entitlementReason:  servicesv1alpha1.ReasonEntitlementActive,
-			entitlementMessage: "This service is enabled and ready to use. It doesn't require provider approval, so it was enabled automatically.",
+			entitlementMessage: "This service was enabled automatically and is ready to use.",
 			consumerPhase:      servicesv1alpha1.ConsumerPhaseActive,
 			consumerReason:     reasonConsumerEnabled,
 			consumerMessage:    "Enabled automatically; this service doesn't require approval.",
