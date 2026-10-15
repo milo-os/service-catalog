@@ -643,8 +643,9 @@ func validateServiceConfigurationNamePrefixes(
 // validateServiceConfigurationPublishedImmutability rejects changes to
 // core identity fields on meters, monitored resource types, and charges
 // that were already present in the Published ServiceConfiguration. New
-// entries are allowed. spec.defaultOffer and spec.migrateFromOffer are
-// intentionally mutable on Published so staff can switch the platform
+// entries are allowed. Removing published metrics and charges is allowed
+// (e.g. dropping unused meters). spec.defaultOffer and spec.migrateFromOffer
+// are intentionally mutable on Published so staff can switch the platform
 // default Offer and opt into migrating accounts still on the previous
 // default without republishing the billing ServiceConfiguration.
 func validateServiceConfigurationPublishedImmutability(
@@ -693,9 +694,11 @@ func validateServiceConfigurationPublishedImmutability(
 	}
 	metricsPath := field.NewPath("spec", "metrics")
 	for name, old := range oldMetrics {
+		// Removing an unused published metric is allowed. Downstream
+		// references in charges and quota are checked separately by
+		// validateCharges and validateQuotaRefs, and BillingFanOut.pruneMeters
+		// cleans up stale MeterDefinitions.
 		if _, exists := newMetricSet[name]; !exists {
-			allErrs = append(allErrs, field.Forbidden(metricsPath,
-				fmt.Sprintf("the metric %q can't be removed once the configuration is published", name)))
 			continue
 		}
 		for i, m := range newSC.Spec.Metrics {
@@ -781,7 +784,6 @@ func validateServiceConfigurationPublishedImmutability(
 			}
 		}
 	}
-
 	if oldSC.Spec.Billing != nil {
 		oldDests := make(map[string]servicesv1alpha1.BillingConsumerDestination)
 		for _, d := range oldSC.Spec.Billing.ConsumerDestinations {
@@ -794,20 +796,14 @@ func validateServiceConfigurationPublishedImmutability(
 			}
 		}
 		billingPath := field.NewPath("spec", "billing", "consumerDestinations")
-		for mrt, old := range oldDests {
-			newDest, exists := newDests[mrt]
-			if !exists {
+		for mrt := range oldDests {
+			if _, exists := newDests[mrt]; !exists {
 				allErrs = append(allErrs, field.Forbidden(billingPath,
 					fmt.Sprintf("the billing destination %q can't be removed once the configuration is published", mrt)))
 				continue
 			}
-			newMetricSet := stringSet(newDest.Metrics)
-			for _, m := range old.Metrics {
-				if _, ok := newMetricSet[m]; !ok {
-					allErrs = append(allErrs, field.Forbidden(billingPath,
-						fmt.Sprintf("the metric %q can't be removed from billing destination %q once the configuration is published", m, mrt)))
-				}
-			}
+			// Removing individual metrics from a billing destination is allowed
+			// when dropping unused meters.
 		}
 	}
 
