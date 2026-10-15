@@ -121,14 +121,6 @@ func validateMetricUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.E
 	return allErrs
 }
 
-func stringSet(items []string) map[string]struct{} {
-	s := make(map[string]struct{}, len(items))
-	for _, v := range items {
-		s[v] = struct{}{}
-	}
-	return s
-}
-
 func collectMetricNames(sc *servicesv1alpha1.ServiceConfiguration) map[string]struct{} {
 	names := make(map[string]struct{}, len(sc.Spec.Metrics))
 	for _, m := range sc.Spec.Metrics {
