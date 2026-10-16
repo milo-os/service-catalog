@@ -10,12 +10,15 @@ import (
 
 func newStatusCommand(opts ServicesCommandOptions) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status <name>",
+		Use:   "status <service-name>",
 		Short: "Show the current entitlement state for a service",
 		Long: `Show whether a Datum Cloud service is enabled, pending approval, denied, or
-not yet requested for the current project.`,
+not yet requested for the current project.
+
+Pass the service name shown in the SERVICE NAME column of
+"datumctl services list" — not the display name in the NAME column.`,
 		Example: `  # Check on a service's access state
-  datumctl services status compute`,
+  datumctl services status compute.datumapis.com`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd, opts, args[0])
