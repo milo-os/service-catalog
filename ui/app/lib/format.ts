@@ -1,4 +1,4 @@
-import type { Phase } from "./types";
+import type { Phase, EntitlementPhase, ConsumerPhase } from "./types";
 
 type BadgeType =
   | "primary"
@@ -193,4 +193,43 @@ const UNIT_LABELS: Record<string, string> = {
 export function formatUnit(unit: string | undefined, displayName?: string): string {
   if (!unit) return "—";
   return displayName || UNIT_LABELS[unit.toLowerCase()] || unit;
+}
+
+export function entitlementPhaseBadgeProps(
+  phase: string
+): { type: BadgeType; theme: BadgeTheme; label: string } {
+  switch (phase as EntitlementPhase) {
+    case "Active":
+      return { type: "success", theme: "light", label: "Active" };
+    case "PendingApproval":
+      return { type: "warning", theme: "light", label: "Pending Approval" };
+    case "Rejected":
+      return { type: "danger", theme: "light", label: "Rejected" };
+    default:
+      return { type: "muted", theme: "solid", label: phase };
+  }
+}
+
+export function consumerPhaseBadgeProps(
+  phase: string
+): { type: BadgeType; theme: BadgeTheme; label: string } {
+  switch (phase as ConsumerPhase) {
+    case "Active":
+      return { type: "success", theme: "light", label: "Active" };
+    case "PendingApproval":
+      return { type: "warning", theme: "light", label: "Pending Approval" };
+    case "Denied":
+      return { type: "danger", theme: "light", label: "Denied" };
+    default:
+      return { type: "muted", theme: "solid", label: phase };
+  }
+}
+
+export function enablementModeBadgeProps(
+  mode: string | undefined
+): { type: BadgeType; theme: BadgeTheme; label: string } {
+  if (mode === "GatedByProvider") {
+    return { type: "info", theme: "light", label: "Private Beta" };
+  }
+  return { type: "secondary", theme: "light", label: "Self-Service" };
 }
