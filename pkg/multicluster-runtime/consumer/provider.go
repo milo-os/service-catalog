@@ -287,6 +287,7 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	setDesiredClusters(len(active))
 
 	// Gate deletion on teardown: stamp the provider-teardown finalizer on every
 	// consumer that may hold projected resources (Active or Denied, not yet being
@@ -494,22 +495,34 @@ func (p *Provider) releaseTeardownFinalizers(ctx context.Context, consumers []se
 // provider rest.Config to its control plane), starts its cache, waits for a
 // bounded sync, and engages it with the multicluster manager. Mirrors Milo's
 // engage path.
+//
+// p.lock is not held across Engage. Engaging registers every controller's
+// watches on the cluster and blocks on a controller that is still starting; if
+// that controller's startup waits on an event handler that calls Get, holding
+// p.lock here deadlocks the two (milo-os/milo#840). The cluster is registered
+// before Engage so a reconcile triggered during Engage can resolve it, and
+// removed again if Engage fails. Reconciles never run concurrently
+// (MaxConcurrentReconciles is 1), so no other engage or disengage interleaves.
 func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 	cfg, err := p.consumerRestConfig(consumerProject)
 	if err != nil {
+		recordEngageFailure(stageRestConfig)
 		return err
 	}
 
 	cl, err := p.newCluster(cfg, p.opts.ClusterOptions...)
 	if err != nil {
+		recordEngageFailure(stageCreateCluster)
 		return fmt.Errorf("failed to create cluster: %w", err)
 	}
 
 	p.lock.Lock()
+	aware := p.aware
 	indexers := append([]index(nil), p.indexers...)
 	p.lock.Unlock()
 	for _, idx := range indexers {
 		if err := cl.GetCache().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
+			recordEngageFailure(stageIndex)
 			return fmt.Errorf("failed to index field %q: %w", idx.field, err)
 		}
 	}
@@ -525,20 +538,57 @@ func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 	defer syncCancel()
 	if !cl.GetCache().WaitForCacheSync(syncCtx) {
 		cancel()
+		recordEngageFailure(stageCacheSync)
 		return fmt.Errorf("cache sync failed or timed out for consumer project %q", consumerProject)
 	}
 
+	if err := p.registerCluster(ctx, consumerProject, cl, cancel, len(indexers)); err != nil {
+		cancel()
+		recordEngageFailure(stageIndex)
+		return err
+	}
+
+	if err := aware.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
+		cancel()
+		p.unregisterClusterIfCurrent(consumerProject, cl)
+		recordEngageFailure(stageEngage)
+		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
+	}
+
+	p.lock.Lock()
+	engaged := len(p.clusters)
+	p.lock.Unlock()
+	setEngagedClusters(engaged)
+	p.log.Info("engaged consumer project", "consumerProject", consumerProject, "endpoint", cfg.Host)
+	return nil
+}
+
+// registerCluster records cl as consumerProject's cluster so Get can return it,
+// first applying any indexers registered after engage took its snapshot.
+func (p *Provider) registerCluster(ctx context.Context, consumerProject string, cl cluster.Cluster, cancel context.CancelFunc, appliedIndexers int) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	if err := p.aware.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
-		cancel()
-		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
+
+	for _, idx := range p.indexers[appliedIndexers:] {
+		if err := cl.GetCache().IndexField(ctx, idx.object, idx.field, idx.extractValue); err != nil {
+			return fmt.Errorf("failed to index field %q: %w", idx.field, err)
+		}
 	}
 	p.clusters[consumerProject] = cl
 	p.cancelFns[consumerProject] = cancel
-	setEngagedClusters(len(p.clusters))
-	p.log.Info("engaged consumer project", "consumerProject", consumerProject, "endpoint", cfg.Host)
 	return nil
+}
+
+// unregisterClusterIfCurrent drops consumerProject only if cl is still its
+// registered cluster, so a failed Engage never removes a newer registration.
+func (p *Provider) unregisterClusterIfCurrent(consumerProject string, cl cluster.Cluster) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	if current, ok := p.clusters[consumerProject]; ok && current == cl {
+		delete(p.clusters, consumerProject)
+		delete(p.cancelFns, consumerProject)
+	}
 }
 
 // disengage drops a consumer project using cancel-before-teardown:
