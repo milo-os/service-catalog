@@ -73,6 +73,27 @@ ServiceConfiguration      owned by → Producer Project
                                       Producer Project → ServiceConsumer
 ```
 
+## Assistant Agents
+
+A service can also publish what a customer's AI assistant knows about it and may do with it. **ServiceAgent** registers that help for one Service, and each **ServiceAgentConfiguration** is a reviewed version of its content: knowledge sources, MCP tools, skills, and authority. When the agent is Published and has a Published configuration, the catalog writes a `CapabilityBinding` into each project that should have it, and that project's assistant picks it up. When any of those conditions stops holding, the binding is removed.
+
+Which projects get it is set by `spec.visibility.entitlement`, the same setting a portal plugin uses (milo-os/service-catalog#93):
+
+- **`Required`** (the default) — only projects with an Active ServiceEntitlement for the service. This is the path for catalog services.
+- **`None`** — a request to reach every project, existing and new, with no entitlement step. This is for platform capabilities every customer's assistant should have, such as Activity's.
+
+`None` is a request, not a grant. The platform owner, not the publishing service, decides which agents are platform-wide, by listing them in the services operator's own config, which providers cannot write:
+
+```yaml
+capabilities:
+  entitlementFreeAgents:
+  - activity-assistant
+```
+
+An agent that asks for `None` but is not listed is gated on entitlement as if it said `Required`. Its `EntitlementWaived` condition is `False` with reason `NotAllowlisted`, and `True` with reason `Allowlisted` once it is listed. Setting an agent back to `Required`, or removing it from the list, takes it away from every project without an Active entitlement. On the `None` path the agent's Service must also be Published.
+
+New projects receive platform-wide agents as soon as the operator connects to their control plane. Changes to a platform-wide agent and to its configurations reach every project right away. The allowlist is read when the operator starts, so changing it takes a restart, after which every project is reconciled again. Where the operator runs with consumer-scoped projection, it only connects to projects that consume its own services, so a platform-wide agent reaches those projects and no others.
+
 ## What the Service Catalog Is Not
 
 These boundaries matter when reasoning about where the catalog ends and other services begin:

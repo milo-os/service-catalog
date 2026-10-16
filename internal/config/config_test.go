@@ -137,3 +137,47 @@ func TestServicesOperator_LocationSourceUnknownRejected(t *testing.T) {
 		t.Fatalf("expected an unknown location source to be rejected")
 	}
 }
+
+// Nothing is allowlisted unless the platform owner lists it, so a config doc
+// that says nothing about capabilities honours no agent's request for None.
+func TestServicesOperator_EntitlementFreeAgentsDefaultEmpty(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML)
+	if len(cfg.Capabilities.EntitlementFreeAgents) != 0 {
+		t.Errorf("entitlementFreeAgents = %v, want empty", cfg.Capabilities.EntitlementFreeAgents)
+	}
+	if err := cfg.Capabilities.Validate(); err != nil {
+		t.Errorf("empty allowlist should be valid: %v", err)
+	}
+}
+
+func TestServicesOperator_EntitlementFreeAgents(t *testing.T) {
+	cfg := decodeConfig(t, baseConfigYAML+`capabilities:
+  entitlementFreeAgents:
+  - activity-assistant
+`)
+	if err := cfg.Capabilities.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if _, ok := cfg.Capabilities.EntitlementFreeAgentSet()["activity-assistant"]; !ok {
+		t.Errorf("activity-assistant should be allowlisted, got %v", cfg.Capabilities.EntitlementFreeAgents)
+	}
+}
+
+func TestServicesOperator_EntitlementFreeAgentsRejectsBadEntries(t *testing.T) {
+	for name, list := range map[string]string{
+		"invalid name": "  - Activity_Assistant\n",
+		"empty name":   "  - \"\"\n",
+		"duplicate":    "  - activity-assistant\n  - activity-assistant\n",
+	} {
+		cfg := decodeConfig(t, baseConfigYAML+"capabilities:\n  entitlementFreeAgents:\n"+list)
+		if err := cfg.Capabilities.Validate(); err == nil {
+			t.Errorf("%s: expected the allowlist to be rejected", name)
+		}
+	}
+}
+
+func TestServicesOperator_StrictDecodeRejectsTypoInCapabilities(t *testing.T) {
+	if err := tryDecodeConfig(baseConfigYAML + "capabilities:\n  entitlementFreeAgent:\n  - activity-assistant\n"); err == nil {
+		t.Error("expected strict decoding to reject an unknown capabilities field")
+	}
+}
