@@ -219,8 +219,11 @@ service-level only, so "skip on Draft" keys off
 1. **Per-item immutability** — for MVP is service-level phase
    sufficient, or do we need per-meter phase to allow one meter to be
    `Deprecated` while the service as a whole stays `Published`?
-   Answered earlier as "not for now" → service-level only. Calling it
-   out here so it's not re-litigated.
+   Answered earlier as "not for now" → service-level only. Revisited
+   when compute had to retire unused meters: `spec.metrics[].phase` now
+   retires one metric (Published → Deprecated → Retired) while the
+   configuration stays Published, and its MeterDefinition takes the later
+   of the two phases. Metrics are still never removed.
 2. **Status surface on `ServiceConfiguration`** — one top-level `Ready`
    + one `BillingFanOutHealthy` condition (compact) vs. per-meter /
    per-resource-type conditions (busy). Lean: compact. Per-item status
