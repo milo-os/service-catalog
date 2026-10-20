@@ -13,3 +13,8 @@ spec:
   phase: Published
   displayName: Compute diagnostics
   description: Explains why a workload, deployment, or instance is not running.
+  # Leave spec.visibility out: the API defaults it to Required, which reaches
+  # only projects entitled to the service. Set visibility.entitlement: None
+  # only once the platform owner has added this agent to the services
+  # operator's capabilities.entitlementFreeAgents; until then None changes
+  # nothing, and the agent's EntitlementWaived condition says so.

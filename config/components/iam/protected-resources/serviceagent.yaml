@@ -1,0 +1,24 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-serviceagent
+spec:
+  serviceRef:
+    name: "services.miloapis.com"
+  kind: ServiceAgent
+  plural: serviceagents
+  singular: serviceagent
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch

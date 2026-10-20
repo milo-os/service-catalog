@@ -160,9 +160,21 @@ rules:
   - services.miloapis.com
   resources:
   - serviceagentconfigurations/status
-  - serviceagents/status
   verbs:
   - get
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceagents/status
+  - serviceavailabilities/status
+  - serviceconfigurations/status
+  - serviceconsumers/status
+  - serviceentitlements/status
+  - services/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - services.miloapis.com
   resources:
