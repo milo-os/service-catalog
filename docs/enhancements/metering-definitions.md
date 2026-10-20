@@ -61,7 +61,7 @@ spec:
 
 **Measurement describes the signal.** `aggregation` says how values roll up over a billing period (Sum, Max, Count, and a handful more). `unit` uses the UCUM unit vocabulary (`s` for seconds, `By` for bytes, `GBy.h` for GB-hours — no invented strings). `dimensions` declares the attributes pricing or the portal can group by.
 
-**Billing framing crosses into commerce.** `consumedUnit` is what's measured; `pricingUnit` is what pricing quotes against; the engine handles conversion. `chargeCategory` (`Usage`, `Purchase`, `Adjustment`) comes from the FOCUS open-finance spec, so exports to external tooling work without translation. No rates live here — that's pricing's job.
+**Billing framing crosses into commerce.** `consumedUnit` is what's measured; `pricingUnit` is what pricing quotes against. A charge priced in a larger unit than its meter emits (bytes priced per GiB) states the conversion on the charge (`usage.unitConversion`, with a description of why), and the pricing engine converts the usage before applying the rates. `chargeCategory` (`Usage`, `Purchase`, `Adjustment`) comes from the FOCUS open-finance spec, so exports to external tooling work without translation. No rates live here — that's pricing's job.
 
 ### Being referenced
 
@@ -85,6 +85,8 @@ Meters change. A new dimension gets added. A description is refined. A unit turn
 - **Published.** The steady state. `meterName`, `unit`, and `aggregation` are locked. Display name, description, and new dimensions still evolve.
 - **Deprecated.** Still priceable and billable for existing consumers; hidden from new rate cards. Signals intended retirement without breaking anyone today.
 - **Retired.** No longer billable. Preserved for audit.
+
+A provider retires one meter by setting its metric's `phase` in the ServiceConfiguration (`Deprecated`, then `Retired`), rather than removing it: invoices, usage queries and exports join on `meterName`, so a removed meter would orphan that history.
 
 Breaking changes ship as a new meter with a new name — `…/cpu-seconds/v2` replaces `…/cpu-seconds/v1`. Never a silent mutation. The platform won't let a meter be deleted while anything downstream still references it, so nothing vanishes from under pricing or invoicing.
 

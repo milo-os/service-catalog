@@ -138,3 +138,58 @@ func TestChargeFanOut_ApplyUsageAndFixed(t *testing.T) {
 		t.Errorf("pricingUnit = %v, want vcpu", usage.Spec.PricingUnit)
 	}
 }
+
+// TestChargeFanOut_UnitConversion: a charge priced in a larger unit than its
+// metric is emitted in carries its conversion onto the ServicePricing.
+func TestChargeFanOut_UnitConversion(t *testing.T) {
+	const metricName = "compute.datumapis.com/instance/memory-seconds"
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "compute", UID: "sc-uid"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase:   servicesv1alpha1.PhasePublished,
+			Metrics: []servicesv1alpha1.MetricSpec{{Name: metricName, Kind: servicesv1alpha1.MetricKindCumulative, Unit: "By.s"}},
+			Charges: []servicesv1alpha1.ServiceChargeSpec{
+				{
+					Name:       "compute.datumapis.com/instance/memory-gib-seconds",
+					ChargeType: servicesv1alpha1.ServiceChargeTypeUsage,
+					Usage: &servicesv1alpha1.UsageChargeOptions{
+						MetricRef:   metricName,
+						PricingUnit: "gib-second",
+						Rates:       []servicesv1alpha1.PricingRateEntry{{Flat: "0.0000045"}},
+						UnitConversion: &servicesv1alpha1.UnitConversion{
+							MeterUnitsPerPricingUnit: "1073741824",
+							Description:              "Memory is metered in byte-seconds and priced per GiB-second",
+						},
+					},
+				},
+				{
+					Name:       "compute.datumapis.com/instance/memory-seconds",
+					ChargeType: servicesv1alpha1.ServiceChargeTypeUsage,
+					Usage: &servicesv1alpha1.UsageChargeOptions{
+						MetricRef: metricName, PricingUnit: "byte-second",
+						Rates: []servicesv1alpha1.PricingRateEntry{{Flat: "1"}},
+					},
+				},
+			},
+		},
+	}
+	capturing := &servicePricingCapturingClient{Client: fake.NewClientBuilder().WithScheme(newChargeFanOutScheme()).Build()}
+	if _, err := (&ChargeFanOut{Client: capturing}).applyServicePricings(context.Background(), sc, "compute.datumapis.com"); err != nil {
+		t.Fatalf("applyServicePricings: %v", err)
+	}
+	byName := map[string]*billingapply.ServicePricingApplyConfiguration{}
+	for _, sp := range capturing.pricings {
+		byName[*sp.Name] = sp
+	}
+	converted := byName["compute-datumapis-com--instance-memory-gib-seconds"]
+	if converted == nil || converted.Spec.UnitConversion == nil {
+		t.Fatalf("converted ServicePricing = %+v, want a unitConversion", converted)
+	}
+	uc := converted.Spec.UnitConversion
+	if *uc.MeterUnitsPerPricingUnit != "1073741824" || *uc.Description != "Memory is metered in byte-seconds and priced per GiB-second" {
+		t.Errorf("unitConversion = %s / %s", *uc.MeterUnitsPerPricingUnit, *uc.Description)
+	}
+	if plain := byName["compute-datumapis-com--instance-memory-seconds"]; plain == nil || plain.Spec.UnitConversion != nil {
+		t.Errorf("charge without a conversion got one: %+v", plain)
+	}
+}

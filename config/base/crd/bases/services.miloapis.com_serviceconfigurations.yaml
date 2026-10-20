@@ -303,6 +303,35 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        unitConversion:
+                          description: |-
+                            UnitConversion converts the metric's usage into pricingUnit before
+                            the rates apply, for a metric emitted in a different unit than it is
+                            priced in (e.g. bytes priced per GiB). Omitted when the metric is
+                            already emitted in pricingUnit. Rates and tier bounds are always in
+                            pricingUnit.
+                          properties:
+                            description:
+                              description: |-
+                                Description explains the conversion to the people who maintain the
+                                pricing (e.g. "Memory is metered in byte-seconds and priced per
+                                GiB-second; 1 GiB = 2^30 bytes").
+                              maxLength: 512
+                              minLength: 1
+                              type: string
+                            meterUnitsPerPricingUnit:
+                              description: |-
+                                MeterUnitsPerPricingUnit is how many of the metric's units make one
+                                pricingUnit, as a positive decimal string (e.g. "1073741824" for a
+                                metric in bytes priced per GiB, "1000" for millicore-seconds priced
+                                per vCPU-second).
+                              maxLength: 64
+                              pattern: ^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)$
+                              type: string
+                          required:
+                          - description
+                          - meterUnitsPerPricingUnit
+                          type: object
                       required:
                       - metricRef
                       - pricingUnit
@@ -418,6 +447,27 @@ spec:
                         e.g. "compute.datumapis.com/instance/cpu-seconds". Immutable once Published.
                       maxLength: 253
                       minLength: 1
+                      type: string
+                    phase:
+                      allOf:
+                      - enum:
+                        - Draft
+                        - Published
+                        - Deprecated
+                        - Retired
+                      - enum:
+                        - Published
+                        - Deprecated
+                        - Retired
+                      description: |-
+                        Phase retires this metric while the rest of the configuration stays
+                        as it is. Unset, the metric follows spec.phase. Deprecated still
+                        accepts usage and keeps its history; Retired stops accepting usage
+                        (late events are quarantined) and keeps its history. A metric is
+                        retired instead of removed, because invoices, usage queries and
+                        exports join on its name. Moves forward one step at a time
+                        (Published, Deprecated, Retired); its MeterDefinition takes the later
+                        of this and spec.phase.
                       type: string
                     unit:
                       description: |-
