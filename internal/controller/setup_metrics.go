@@ -89,10 +89,10 @@ func (c *setupInflightCollector) replaceProject(project string, entitlements []s
 	entries := make([]setupInflightEntry, 0, len(entitlements))
 	for i := range entitlements {
 		entitlement, setup := &entitlements[i], entitlements[i].Status.Setup
-		if setup == nil || setup.RequestedAt.IsZero() || setup.Outcome != "" {
+		if setup == nil || setup.RequestedAt.IsZero() || setup.FirstCompletedAt != nil {
 			continue
 		}
-		entries = append(entries, setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: string(setup.Operation), blocker: setup.BlockingReason, requestedAt: setup.RequestedAt.Time})
+		entries = append(entries, setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: "initial", blocker: firstIncompleteSetupStage(setup.Stages), requestedAt: setup.RequestedAt.Time})
 	}
 	c.mu.Lock()
 	c.projects[project] = entries
@@ -119,7 +119,7 @@ func observeSetupSuccess(entitlement *servicesv1alpha1.ServiceEntitlement, compl
 	if setup == nil || setup.RequestedAt.IsZero() {
 		return
 	}
-	class, operation := setupServiceClass(entitlement.Spec.ServiceRef.Name), string(setup.Operation)
+	class, operation := setupServiceClass(entitlement.Spec.ServiceRef.Name), "initial"
 	duration := completedAt.Sub(setup.RequestedAt.Time).Seconds()
 	if duration < 0 {
 		return
@@ -130,11 +130,11 @@ func observeSetupSuccess(entitlement *servicesv1alpha1.ServiceEntitlement, compl
 			setupDuration.WithLabelValues(class, operation, "platform").Observe(d)
 		}
 	}
-	setupAttempts.WithLabelValues(class, operation, string(servicesv1alpha1.ServiceSetupOutcomeSucceeded)).Inc()
+	setupAttempts.WithLabelValues(class, operation, "succeeded").Inc()
 }
 
 func setupMetricSeriesBudget() int {
-	const serviceClasses, operations, clocks, outcomes = 5, 3, 2, 4
+	const serviceClasses, operations, clocks, outcomes = 5, 1, 2, 1
 	const setupBuckets, projectionPhases, projectionBuckets, blockingStages = 14, 7, 14, 5
 	return serviceClasses*operations*clocks*setupBuckets + serviceClasses*operations*outcomes + projectionPhases*projectionBuckets + serviceClasses*operations*blockingStages*3 + 2
 }

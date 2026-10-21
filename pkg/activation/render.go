@@ -76,7 +76,12 @@ func setupBlockingReason(e *servicesv1alpha1.ServiceEntitlement) string {
 	if e == nil || e.Status.Setup == nil {
 		return ""
 	}
-	return e.Status.Setup.BlockingReason
+	for _, stage := range []string{"Authorization", "Dependencies", "Provisioning", "Projection", "ProviderAcknowledgement"} {
+		if condition := apimeta.FindStatusCondition(e.Status.Setup.Stages, stage); condition == nil || condition.Status != metav1.ConditionTrue {
+			return stage
+		}
+	}
+	return ""
 }
 
 func compactDuration(duration time.Duration) string {

@@ -369,40 +369,14 @@ spec:
                       authorization finishes.
                     format: date-time
                     type: string
-                  blockingReason:
-                    description: BlockingReason is a bounded machine-readable reason
-                      for the current gate.
-                    type: string
                   configurationRevision:
                     description: ConfigurationRevision is the UID and generation evaluated
                       by setup.
-                    type: string
-                  dependencyRevision:
-                    description: |-
-                      DependencyRevision identifies the dependency observation used by the
-                      aggregate writer.
                     type: string
                   firstCompletedAt:
                     description: FirstCompletedAt is immutable after the first successful
                       convergence.
                     format: date-time
-                    type: string
-                  operation:
-                    description: |-
-                      ServiceSetupOperation identifies the customer operation represented by an
-                      attempt. Reconciliation retries never create a new operation.
-                    enum:
-                    - Initial
-                    - Resume
-                    - Reconfigure
-                    type: string
-                  outcome:
-                    description: Outcome is set for a terminal attempt.
-                    enum:
-                    - Succeeded
-                    - Rejected
-                    - Canceled
-                    - Failed
                     type: string
                   requestedAt:
                     description: |-
@@ -410,15 +384,6 @@ spec:
                       activation carries the originating request timestamp here.
                     format: date-time
                     type: string
-                  sequence:
-                    description: |-
-                      Sequence increases only when a distinct customer operation starts. The
-                      attempt identity is the owning entitlement's metadata.uid plus Sequence;
-                      storing a second derived identifier here could let the two representations
-                      drift apart.
-                    format: int64
-                    minimum: 1
-                    type: integer
                   stages:
                     description: Stages are the separately observable setup gates.
                     items:
@@ -481,9 +446,7 @@ spec:
                     - type
                     x-kubernetes-list-type: map
                 required:
-                - operation
                 - requestedAt
-                - sequence
                 type: object
             type: object
         type: object

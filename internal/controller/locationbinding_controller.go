@@ -456,8 +456,6 @@ func (r *LocationBindingReconciler) aggregateSetup(
 				requestedAt = entitlement.Spec.ProviderActivation.RequestedAt
 			}
 			entitlement.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
-				Sequence:    1,
-				Operation:   servicesv1alpha1.ServiceSetupOperationInitial,
 				RequestedAt: requestedAt,
 			}
 		}
@@ -501,16 +499,15 @@ func (r *LocationBindingReconciler) aggregateSetup(
 			"NotApplicable", "This service does not declare a provider acknowledgement stage.")
 
 		complete := authorized && dependencies && provisioned && projectionComplete
-		setup.BlockingReason = firstIncompleteSetupStage(setup.Stages)
+		blockingStage := firstIncompleteSetupStage(setup.Stages)
 		if complete {
-			setup.BlockingReason = ""
-			setup.Outcome = servicesv1alpha1.ServiceSetupOutcomeSucceeded
+			blockingStage = ""
 		}
 		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
 			Type:               servicesv1alpha1.ConditionTypeSetupComplete,
 			Status:             conditionStatus(complete),
-			Reason:             setupCompleteReason(complete, setup.BlockingReason),
-			Message:            setupCompleteMessage(complete, setup.BlockingReason),
+			Reason:             setupCompleteReason(complete, blockingStage),
+			Message:            setupCompleteMessage(complete, blockingStage),
 			ObservedGeneration: entitlement.Generation,
 		})
 		if complete && setup.FirstCompletedAt == nil {

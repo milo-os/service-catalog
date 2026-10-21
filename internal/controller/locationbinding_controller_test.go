@@ -310,7 +310,7 @@ func TestLocationBindingReconciler_RecordsSetupCompletionWithoutPeriodicRequeue(
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if result.Requeue || result.RequeueAfter != 0 {
+	if result.RequeueAfter != 0 {
 		t.Fatalf("successful reconcile scheduled periodic work: %+v", result)
 	}
 	var got servicesv1alpha1.ServiceEntitlement
@@ -320,9 +320,6 @@ func TestLocationBindingReconciler_RecordsSetupCompletionWithoutPeriodicRequeue(
 	if got.Status.Setup == nil {
 		t.Fatal("status.setup is nil")
 	}
-	if got.UID != types.UID("setup-attempt") || got.Status.Setup.Sequence != 1 {
-		t.Fatalf("unexpected setup identity: %#v", got.Status.Setup)
-	}
 	if !got.Status.Setup.RequestedAt.Equal(&requestedAt) {
 		t.Fatalf("requestedAt = %s, want %s", got.Status.Setup.RequestedAt, requestedAt)
 	}
@@ -331,9 +328,6 @@ func TestLocationBindingReconciler_RecordsSetupCompletionWithoutPeriodicRequeue(
 	}
 	if !apimeta.IsStatusConditionTrue(got.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete) {
 		t.Fatalf("SetupComplete is not true: %#v", got.Status.Conditions)
-	}
-	if got.Status.Setup.Outcome != servicesv1alpha1.ServiceSetupOutcomeSucceeded {
-		t.Fatalf("outcome = %q", got.Status.Setup.Outcome)
 	}
 }
 

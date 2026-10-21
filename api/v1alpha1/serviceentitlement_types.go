@@ -149,43 +149,11 @@ const (
 	ConditionTypeSetupComplete = "SetupComplete"
 )
 
-// ServiceSetupOperation identifies the customer operation represented by an
-// attempt. Reconciliation retries never create a new operation.
-//
-// +kubebuilder:validation:Enum=Initial;Resume;Reconfigure
-type ServiceSetupOperation string
-
-const (
-	ServiceSetupOperationInitial     ServiceSetupOperation = "Initial"
-	ServiceSetupOperationResume      ServiceSetupOperation = "Resume"
-	ServiceSetupOperationReconfigure ServiceSetupOperation = "Reconfigure"
-)
-
-// ServiceSetupOutcome is the terminal result of a setup attempt.
-//
-// +kubebuilder:validation:Enum=Succeeded;Rejected;Canceled;Failed
-type ServiceSetupOutcome string
-
-const (
-	ServiceSetupOutcomeSucceeded ServiceSetupOutcome = "Succeeded"
-	ServiceSetupOutcomeRejected  ServiceSetupOutcome = "Rejected"
-	ServiceSetupOutcomeCanceled  ServiceSetupOutcome = "Canceled"
-	ServiceSetupOutcomeFailed    ServiceSetupOutcome = "Failed"
-)
-
-// ServiceSetupStatus persists the current setup attempt across retries and
-// leader changes. Stage conditions use bounded type/reason values and retain
-// their transition timestamps through ordinary reconciliation.
+// ServiceSetupStatus records the timing and gates for initial service setup.
+// The owning entitlement's UID identifies the setup across retries and leader
+// changes. Reconfiguration and resume can extend this contract when those
+// operations acquire concrete lifecycle semantics.
 type ServiceSetupStatus struct {
-	// Sequence increases only when a distinct customer operation starts. The
-	// attempt identity is the owning entitlement's metadata.uid plus Sequence;
-	// storing a second derived identifier here could let the two representations
-	// drift apart.
-	// +kubebuilder:validation:Minimum=1
-	Sequence int64 `json:"sequence"`
-
-	Operation ServiceSetupOperation `json:"operation"`
-
 	// RequestedAt is the original accepted request time. Provider-initiated
 	// activation carries the originating request timestamp here.
 	RequestedAt metav1.Time `json:"requestedAt"`
@@ -198,11 +166,6 @@ type ServiceSetupStatus struct {
 	// +optional
 	ConfigurationRevision string `json:"configurationRevision,omitempty"`
 
-	// DependencyRevision identifies the dependency observation used by the
-	// aggregate writer.
-	// +optional
-	DependencyRevision string `json:"dependencyRevision,omitempty"`
-
 	// Stages are the separately observable setup gates.
 	// +listType=map
 	// +listMapKey=type
@@ -211,14 +174,6 @@ type ServiceSetupStatus struct {
 	// FirstCompletedAt is immutable after the first successful convergence.
 	// +optional
 	FirstCompletedAt *metav1.Time `json:"firstCompletedAt,omitempty"`
-
-	// Outcome is set for a terminal attempt.
-	// +optional
-	Outcome ServiceSetupOutcome `json:"outcome,omitempty"`
-
-	// BlockingReason is a bounded machine-readable reason for the current gate.
-	// +optional
-	BlockingReason string `json:"blockingReason,omitempty"`
 }
 
 // ProvisionedResourceState is the delivery state of one declared resource.
