@@ -1,5 +1,6 @@
 apiVersion: apiserver.config.miloapis.com/v1alpha1
 kind: ServicesOperator
+locationSource: locations.miloapis.com/v1alpha1
 metricsServer:
   bindAddress: "0"
 webhookServer: {}
