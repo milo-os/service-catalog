@@ -64,6 +64,7 @@ rules:
   verbs:
   - create
   - delete
+  - deletecollection
   - get
   - list
   - patch
@@ -83,6 +84,7 @@ rules:
   - locationbindings
   verbs:
   - delete
+  - deletecollection
   - list
 - apiGroups:
   - portal.miloapis.com
@@ -154,13 +156,10 @@ rules:
   - services.miloapis.com
   resources:
   - serviceavailabilities
-  - serviceconfigurations
-  - serviceconsumers
-  - serviceentitlements
-  - services
   verbs:
   - create
   - delete
+  - deletecollection
   - get
   - list
   - patch
@@ -175,3 +174,18 @@ rules:
   - services/finalizers
   verbs:
   - update
+- apiGroups:
+  - services.miloapis.com
+  resources:
+  - serviceconfigurations
+  - serviceconsumers
+  - serviceentitlements
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
