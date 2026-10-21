@@ -320,7 +320,7 @@ func TestLocationBindingReconciler_RecordsSetupCompletionWithoutPeriodicRequeue(
 	if got.Status.Setup == nil {
 		t.Fatal("status.setup is nil")
 	}
-	if got.Status.Setup.ID != "setup-attempt/1" || got.Status.Setup.Sequence != 1 {
+	if got.UID != types.UID("setup-attempt") || got.Status.Setup.Sequence != 1 {
 		t.Fatalf("unexpected setup identity: %#v", got.Status.Setup)
 	}
 	if !got.Status.Setup.RequestedAt.Equal(&requestedAt) {

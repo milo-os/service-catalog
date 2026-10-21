@@ -387,10 +387,6 @@ spec:
                       convergence.
                     format: date-time
                     type: string
-                  id:
-                    description: ID is deterministic for this resource and attempt
-                      sequence.
-                    type: string
                   operation:
                     description: |-
                       ServiceSetupOperation identifies the customer operation represented by an
@@ -415,8 +411,11 @@ spec:
                     format: date-time
                     type: string
                   sequence:
-                    description: Sequence increases only when a distinct customer
-                      operation starts.
+                    description: |-
+                      Sequence increases only when a distinct customer operation starts. The
+                      attempt identity is the owning entitlement's metadata.uid plus Sequence;
+                      storing a second derived identifier here could let the two representations
+                      drift apart.
                     format: int64
                     minimum: 1
                     type: integer
@@ -482,7 +481,6 @@ spec:
                     - type
                     x-kubernetes-list-type: map
                 required:
-                - id
                 - operation
                 - requestedAt
                 - sequence

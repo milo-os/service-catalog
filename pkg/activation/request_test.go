@@ -100,7 +100,7 @@ func TestRequestWaitDoesNotStopAtAuthorization(t *testing.T) {
 		}
 	}
 	active.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
-		ID: "compute/1", Sequence: 1, Operation: servicesv1alpha1.ServiceSetupOperationInitial,
+		Sequence: 1, Operation: servicesv1alpha1.ServiceSetupOperationInitial,
 		RequestedAt: metav1.Now(), BlockingReason: "Projection",
 	}
 	ec, _ := newFake(withObjects(pending), withWatch(modifiedEvent(active)))

@@ -177,11 +177,10 @@ const (
 // leader changes. Stage conditions use bounded type/reason values and retain
 // their transition timestamps through ordinary reconciliation.
 type ServiceSetupStatus struct {
-	// ID is deterministic for this resource and attempt sequence.
-	// +kubebuilder:validation:Required
-	ID string `json:"id"`
-
-	// Sequence increases only when a distinct customer operation starts.
+	// Sequence increases only when a distinct customer operation starts. The
+	// attempt identity is the owning entitlement's metadata.uid plus Sequence;
+	// storing a second derived identifier here could let the two representations
+	// drift apart.
 	// +kubebuilder:validation:Minimum=1
 	Sequence int64 `json:"sequence"`
 

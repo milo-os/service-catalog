@@ -455,12 +455,7 @@ func (r *LocationBindingReconciler) aggregateSetup(
 			if entitlement.Spec.ProviderActivation != nil && !entitlement.Spec.ProviderActivation.RequestedAt.IsZero() {
 				requestedAt = entitlement.Spec.ProviderActivation.RequestedAt
 			}
-			identity := string(entitlement.UID)
-			if identity == "" {
-				identity = entitlement.Name
-			}
 			entitlement.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
-				ID:          identity + "/1",
 				Sequence:    1,
 				Operation:   servicesv1alpha1.ServiceSetupOperationInitial,
 				RequestedAt: requestedAt,
