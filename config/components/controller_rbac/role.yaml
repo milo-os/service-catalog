@@ -78,6 +78,13 @@ rules:
   - patch
   - update
 - apiGroups:
+  - networking.datumapis.com
+  resources:
+  - locationbindings
+  verbs:
+  - delete
+  - list
+- apiGroups:
   - portal.miloapis.com
   resources:
   - consumerportalplugins

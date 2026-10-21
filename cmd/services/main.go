@@ -508,6 +508,12 @@ func main() {
 				os.Exit(1)
 			}
 			go func() {
+				// controller-runtime returns from Start when this manager loses
+				// project-projection.services.miloapis.com. Exit the process so the
+				// pod restarts as one unit, including admission, instead of leaving a
+				// partially running replica whose projection ownership has changed.
+				// The deployment Role grants resource-wide CRUD on coordination
+				// Leases, so this lease is covered alongside the primary manager's.
 				if err := projectionMcMgr.Start(ctx); err != nil {
 					setupLog.Error(err, "elected projection manager failed")
 					os.Exit(1)

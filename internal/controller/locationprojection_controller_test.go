@@ -16,6 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -35,6 +36,8 @@ func projectionScheme() *runtime.Scheme {
 	_ = servicesv1alpha1.AddToScheme(s)
 	s.AddKnownTypeWithName(LocationGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(LocationGVK.GroupVersion().WithKind("LocationList"), &unstructured.UnstructuredList{})
+	s.AddKnownTypeWithName(legacyLocationBindingGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(legacyLocationBindingGVK.GroupVersion().WithKind("LocationBindingList"), &unstructured.UnstructuredList{})
 	return s
 }
 
@@ -45,10 +48,12 @@ func projectionRootClient(objs ...client.Object) client.Client {
 func projectionConsumerClient(objs ...client.Object) client.Client {
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)
+	legacyBinding := &unstructured.Unstructured{}
+	legacyBinding.SetGroupVersionKind(legacyLocationBindingGVK)
 	return fake.NewClientBuilder().
 		WithScheme(projectionScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(location, &servicesv1alpha1.ServiceAvailability{}, &servicesv1alpha1.ServiceEntitlement{}).
+		WithStatusSubresource(location, legacyBinding, &servicesv1alpha1.ServiceAvailability{}, &servicesv1alpha1.ServiceEntitlement{}).
 		Build()
 }
 
@@ -219,6 +224,26 @@ func TestLocationProjectionReconciler_PrunesStaleObjects(t *testing.T) {
 	}
 }
 
+func TestLocationProjectionReconcilerRemovesLegacyLocationBindings(t *testing.T) {
+	legacy := &unstructured.Unstructured{}
+	legacy.SetGroupVersionKind(legacyLocationBindingGVK)
+	legacy.SetName(projectionLocation)
+	legacy.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
+	unmanaged := &unstructured.Unstructured{}
+	unmanaged.SetGroupVersionKind(legacyLocationBindingGVK)
+	unmanaged.SetName("unmanaged")
+	consumer := projectionConsumerClient(activeProjectionEntitlement(), legacy, unmanaged)
+	if _, err := reconcileProjection(t, projectionRootClient(), consumer); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.Get(context.Background(), client.ObjectKey{Name: projectionLocation}, legacy); err == nil {
+		t.Fatal("legacy LocationBinding was not removed")
+	}
+	if err := consumer.Get(context.Background(), client.ObjectKey{Name: unmanaged.GetName()}, unmanaged); err != nil {
+		t.Fatalf("unmanaged LocationBinding was removed: %v", err)
+	}
+}
+
 func TestLocationProjectionReconciler_ClearsLegacyMetadata(t *testing.T) {
 	stale := platformLocation(projectionLocation, true, projectionClass)
 	stale.SetLabels(map[string]string{
@@ -285,6 +310,99 @@ func TestProjectionProjectIndex(t *testing.T) {
 	if len(got) != 1 || got[0] != "b" {
 		t.Fatalf("projects = %#v, want [b]", got)
 	}
+	if got := index.ProjectsForService("compute"); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("compute projects = %#v, want [b]", got)
+	}
+}
+
+func TestProjectionRootDispatcherTargetsServicesAndDoesNotDropOnFullBuffer(t *testing.T) {
+	index := newProjectionProjectIndex()
+	index.Replace("compute-a", []string{"compute"})
+	index.Replace("compute-b", []string{"compute"})
+	index.Replace("storage", []string{"storage"})
+	events := make(chan event.TypedGenericEvent[mcreconcile.Request], 1)
+	dispatcher := &projectionRootDispatcher{index: index, events: events}
+	sa := &servicesv1alpha1.ServiceAvailability{Spec: servicesv1alpha1.ServiceAvailabilitySpec{
+		ServiceRef: servicesv1alpha1.ServiceRef{Name: "compute"},
+	}}
+
+	done := make(chan struct{})
+	go func() {
+		dispatcher.dispatchObjects(context.Background(), sa)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for len(events) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-done:
+		t.Fatal("dispatcher completed after one delivery; a project invalidation was dropped")
+	default:
+	}
+	first := <-events
+	second := <-events
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher did not complete after buffer capacity became available")
+	}
+	got := []string{string(first.Object.ClusterName), string(second.Object.ClusterName)}
+	if got[0] != "compute-a" || got[1] != "compute-b" {
+		t.Fatalf("dispatched projects = %#v, want [compute-a compute-b]", got)
+	}
+
+	dispatcher.dispatchObjects(context.Background(), &servicesv1alpha1.ServiceConfiguration{
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{ServiceRef: servicesv1alpha1.ServiceReference{Name: "storage"}},
+	})
+	if got := string((<-events).Object.ClusterName); got != "storage" {
+		t.Fatalf("storage event dispatched to %q", got)
+	}
+}
+
+func TestProjectionRootDispatcherUnionsUpdateTargetsAndFansOutLocations(t *testing.T) {
+	index := newProjectionProjectIndex()
+	index.Replace("compute", []string{"compute"})
+	index.Replace("storage", []string{"storage"})
+	events := make(chan event.TypedGenericEvent[mcreconcile.Request], 4)
+	dispatcher := &projectionRootDispatcher{index: index, events: events}
+
+	dispatcher.dispatchObjects(context.Background(),
+		&servicesv1alpha1.ServiceConfiguration{Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: "compute"},
+		}},
+		&servicesv1alpha1.ServiceConfiguration{Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: "storage"},
+		}},
+	)
+	for _, want := range []string{"compute", "storage"} {
+		if got := string((<-events).Object.ClusterName); got != want {
+			t.Fatalf("update dispatched to %q, want %q", got, want)
+		}
+	}
+
+	location := &unstructured.Unstructured{}
+	location.SetGroupVersionKind(LocationGVK)
+	dispatcher.dispatchObjects(context.Background(), location)
+	for _, want := range []string{"compute", "storage"} {
+		if got := string((<-events).Object.ClusterName); got != want {
+			t.Fatalf("Location dispatched to %q, want %q", got, want)
+		}
+	}
+}
+
+func TestLocationProjectionReconcilerDropsDisengagedProjectFromIndex(t *testing.T) {
+	index := newProjectionProjectIndex()
+	index.Replace(projectionProject, []string{projectionService})
+	r := &LocationProjectionReconciler{Manager: newTestManager(), projects: index}
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: projectionProject})
+	if err != nil || result != (ctrl.Result{}) {
+		t.Fatalf("reconcile result=%+v err=%v", result, err)
+	}
+	if got := index.Projects(); len(got) != 0 {
+		t.Fatalf("stale projects = %#v, want none", got)
+	}
 }
 
 func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
@@ -294,7 +412,11 @@ func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
 	managedAvailability := availableAt(projectionLocation, true)
 	managedAvailability.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
 	unmanagedAvailability := availableAt("unmanaged", true)
-	c := projectionConsumerClient(managedLocation, unmanagedLocation, managedAvailability, unmanagedAvailability)
+	managedLegacyBinding := &unstructured.Unstructured{}
+	managedLegacyBinding.SetGroupVersionKind(legacyLocationBindingGVK)
+	managedLegacyBinding.SetName(projectionLocation)
+	managedLegacyBinding.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
+	c := projectionConsumerClient(managedLocation, unmanagedLocation, managedLegacyBinding, managedAvailability, unmanagedAvailability)
 
 	if err := (ProjectionTeardown{}).TeardownConsumer(context.Background(), projectionProject, c, nil); err != nil {
 		t.Fatal(err)
@@ -304,6 +426,9 @@ func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
 	}
 	if _, ok := mirroredAvailability(t, c, managedAvailability.Name); ok {
 		t.Error("managed ServiceAvailability was not deleted")
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Name: projectionLocation}, managedLegacyBinding); err == nil {
+		t.Error("managed legacy LocationBinding was not deleted")
 	}
 	if _, ok := projectedLocation(t, c, unmanagedLocation.GetName()); !ok {
 		t.Error("unmanaged Location was deleted")

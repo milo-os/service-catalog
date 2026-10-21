@@ -5,7 +5,9 @@
 > **Implementation update (2026-10-21):** Consumer-scoped projection manages
 > `locations.miloapis.com/v1alpha1` `Location` objects. The `LocationBinding`
 > examples below record the earlier compatibility design; service catalog no
-> longer reads or writes the network-services location APIs.
+> longer reads network-services `Location` objects or writes bindings. It keeps
+> temporary list/delete access only to remove managed bindings left by older
+> releases while the legacy CRD is still present.
 
 ## Summary
 
@@ -415,9 +417,10 @@ catalog's reference integration:
 - The `ServiceEntitlement` / `ServiceConsumer` / `Service` API types and webhooks. No new CRD.
 - `ServiceEntitlementReconciler` and `ServiceConsumerReconciler` — they stay on the all-projects Milo manager; the entitlement→consumer→approval lifecycle described in [Service Enablement Architecture](./service-enablement-architecture.md) is untouched.
 - The `ServiceConsumer` hash-naming scheme.
-- `LocationBindingReconciler`'s reconcile logic, the three-gate model, and the `LocationBinding` projection shape from [Locations as Platform Primitives](./locations-platform-primitive.md) — only which manager hosts it changes, and only behind the flag.
+- The location projection's three-gate model from [Locations as Platform Primitives](./locations-platform-primitive.md); the current implementation projects canonical `Location` and per-service `ServiceAvailability` objects.
 - Milo's own multicluster-runtime provider — this is a sibling library, not a modification.
-- The default behavior of service-catalog: with `--consumer-scoped-projection=false` (the default), `LocationBinding` projection runs exactly as it does today.
+- The manager-placement flag does not change the projection API shape; both
+  paths use the canonical Location API and clean up managed legacy bindings.
 
 ## Open Questions
 

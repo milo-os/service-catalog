@@ -28,7 +28,9 @@ func (ProjectionTeardown) TeardownConsumer(
 ) error {
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)
-	objects := []client.Object{location, &servicesv1alpha1.ServiceAvailability{}}
+	legacyBinding := &unstructured.Unstructured{}
+	legacyBinding.SetGroupVersionKind(legacyLocationBindingGVK)
+	objects := []client.Object{location, legacyBinding, &servicesv1alpha1.ServiceAvailability{}}
 	for _, object := range objects {
 		if err := c.DeleteAllOf(ctx, object, client.MatchingLabels{labelManagedBy: labelManagedByValue}); err != nil {
 			if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {

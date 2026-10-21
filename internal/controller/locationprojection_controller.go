@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -43,6 +44,17 @@ import (
 // a project-scoped reader sees exactly the object a service operator created
 // with no separate identity to reconcile.
 var serviceAvailabilityMirrorGVK = servicesv1alpha1.GroupVersion.WithKind("ServiceAvailability")
+
+// legacyLocationBindingGVK identifies the former consumer projection. Active
+// compute and portal readers use locations.miloapis.com Location now, so the
+// reconciler only removes bindings left by older service-catalog releases. A
+// control plane where NSO has already removed the CRD is handled by prune as a
+// no-op.
+var legacyLocationBindingGVK = schema.GroupVersionKind{
+	Group:   "networking.datumapis.com",
+	Version: "v1alpha",
+	Kind:    "LocationBinding",
+}
 
 const (
 	// locationProjectionFieldManager identifies writes this reconciler makes.
@@ -119,6 +131,7 @@ type LocationProjectionReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=locationbindings,verbs=list;delete
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations/status,verbs=get;update;patch
 // The Milo multicluster provider watches resourcemanager Projects to discover
@@ -141,6 +154,12 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			if r.projects != nil {
+				r.projects.Remove(string(consumerProject))
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
@@ -286,6 +305,9 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{LocationGVK}, keySet(desiredLocationFields)); err != nil {
 		return ctrl.Result{}, err
+	}
+	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{legacyLocationBindingGVK}, map[string]struct{}{}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to remove legacy LocationBindings: %w", err)
 	}
 
 	for _, sa := range desiredMirrors {
@@ -867,7 +889,7 @@ func (r *LocationProjectionReconciler) prune(
 		if err := consumerClient.List(ctx, &list,
 			client.MatchingLabelsSelector{Selector: managedByFanoutSelector},
 		); err != nil {
-			if apimeta.IsNoMatchError(err) {
+			if apimeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 				// The kind is not installed in this project cluster; nothing
 				// to prune.
 				continue
@@ -933,6 +955,21 @@ func (i *projectionProjectIndex) Replace(project string, serviceNames []string) 
 	}
 }
 
+func (i *projectionProjectIndex) Remove(project string) {
+	i.Replace(project, nil)
+}
+
+func (i *projectionProjectIndex) ProjectsForService(service string) []string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	projects := make([]string, 0, len(i.services[service]))
+	for project := range i.services[service] {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	return projects
+}
+
 func (i *projectionProjectIndex) Projects() []string {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -979,9 +1016,9 @@ func (d *projectionRootDispatcher) Start(ctx context.Context) error {
 			return fmt.Errorf("get required projection source informer for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
 		}
 		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
-			AddFunc:    func(any) { d.dispatch() },
-			UpdateFunc: func(_, _ any) { d.dispatch() },
-			DeleteFunc: func(any) { d.dispatch() },
+			AddFunc:    func(obj any) { d.dispatchObjects(ctx, obj) },
+			UpdateFunc: func(oldObj, newObj any) { d.dispatchObjects(ctx, oldObj, newObj) },
+			DeleteFunc: func(obj any) { d.dispatchObjects(ctx, obj) },
 		}); err != nil {
 			return fmt.Errorf("register projection source handler for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
 		}
@@ -995,18 +1032,41 @@ func (d *projectionRootDispatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func (d *projectionRootDispatcher) dispatch() {
-	for _, project := range d.index.Projects() {
+func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects ...any) {
+	projects := make(map[string]struct{})
+	for _, object := range objects {
+		if tombstone, ok := object.(toolscache.DeletedFinalStateUnknown); ok {
+			object = tombstone.Obj
+		}
+		var selected []string
+		switch object := object.(type) {
+		case *servicesv1alpha1.ServiceAvailability:
+			selected = d.index.ProjectsForService(object.Spec.ServiceRef.Name)
+		case *servicesv1alpha1.ServiceConfiguration:
+			selected = d.index.ProjectsForService(object.Spec.ServiceRef.Name)
+		default:
+			// Location changes can affect every service, and an unfamiliar event
+			// must favor a complete resync over a missed invalidation.
+			selected = d.index.Projects()
+		}
+		for _, project := range selected {
+			projects[project] = struct{}{}
+		}
+	}
+	ordered := make([]string, 0, len(projects))
+	for project := range projects {
+		ordered = append(ordered, project)
+	}
+	sort.Strings(ordered)
+	for _, project := range ordered {
 		req := mcreconcile.Request{
 			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
 			ClusterName: multicluster.ClusterName(project),
 		}
 		select {
 		case d.events <- event.TypedGenericEvent[mcreconcile.Request]{Object: req}:
-		default:
-			// Queue coalescing makes a duplicate unnecessary. A full handoff
-			// buffer already contains pending invalidations; future root or
-			// entitlement events will retry without blocking informer delivery.
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -1018,7 +1078,7 @@ func (d *projectionRootDispatcher) dispatch() {
 // via Watches rather than For, so events collapse onto one project-keyed
 // request (see locationProjectionRequestName).
 //
-// Root ServiceAvailability, ServiceConfiguration, and configured Location
+// Root ServiceAvailability, ServiceConfiguration, and canonical Location
 // informer events are translated by projectionRootDispatcher into the same
 // project key. Managed projection objects are watched in each project so
 // deletion and drift repair do not depend on a periodic sweep.

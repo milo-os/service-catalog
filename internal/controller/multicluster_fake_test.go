@@ -85,7 +85,7 @@ func (m *testManager) add(name string, c client.Client) {
 func (m *testManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
 	c, ok := m.clusters[string(name)]
 	if !ok {
-		return nil, fmt.Errorf("cluster %q not engaged", name)
+		return nil, fmt.Errorf("cluster %q not engaged: %w", name, multicluster.ErrClusterNotFound)
 	}
 	return c, nil
 }

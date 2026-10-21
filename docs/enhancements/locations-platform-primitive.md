@@ -13,10 +13,14 @@ author: Scot Wells
 > [`milo-os/locations`](https://github.com/milo-os/locations) as
 > `locations.miloapis.com/v1alpha1`, alongside `LocationClass` and
 > `ServingLocation`. The service catalog reads that API directly and projects
-> the same `Location` kind into consumer control planes. The former
-> `ServicesOperator.locationSource` switch and the
-> `networking.datumapis.com/v1alpha` `LocationBinding` compatibility projection
-> were removed after network-services-operator moved off those resources.
+> the same `Location` kind into consumer control planes. Compute's placement
+> reader and cloud-portal's location UI have migrated to that canonical API.
+> The former `ServicesOperator.locationSource` switch and the
+> `networking.datumapis.com/v1alpha` `LocationBinding` writer are therefore
+> removed. During the cleanup release, service-catalog still lists and deletes
+> managed legacy bindings when that CRD is present; after rollout confirms no
+> bindings remain, network-services-operator can remove the CRD and IAM surface
+> and service-catalog can drop that temporary delete permission.
 >
 > A location's class is an open reference: `spec.locationClassRef` names a
 > `LocationClass` object, and that class carries provider configuration.
@@ -24,8 +28,8 @@ author: Scot Wells
 > class names rather than a fixed enum.
 >
 > The remainder records the original design and is retained as implementation
-> history. References to `LocationBinding` and the old networking API describe
-> the superseded design rather than current behavior.
+> history. References to `LocationBinding` and the old networking API below
+> describe the superseded design rather than current behavior.
 
 ## Overview
 
