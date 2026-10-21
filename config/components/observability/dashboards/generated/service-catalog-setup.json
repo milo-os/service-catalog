@@ -1,0 +1,2641 @@
+{
+   "description": "Customer-visible service setup latency and blockers, projection queue capacity, observer health, leader ownership, Kubernetes API pressure, and rollout state.",
+   "editable": true,
+   "graphTooltip": 1,
+   "links": [
+      {
+         "icon": "external link",
+         "includeVars": true,
+         "keepTime": true,
+         "targetBlank": true,
+         "title": "Runbook",
+         "tooltip": "Diagnose service setup stalls",
+         "type": "link",
+         "url": "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+      },
+      {
+         "icon": "dashboard",
+         "includeVars": true,
+         "keepTime": true,
+         "targetBlank": false,
+         "title": "Milo API latency",
+         "tooltip": "Control-plane API latency and dependencies",
+         "type": "link",
+         "url": "/d/milo-api-latency"
+      }
+   ],
+   "panels": [
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "title": "Customer outcomes",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Request acceptance to first successful SetupComplete. -1 means the telemetry is not deployed or no successful setup exists in the rate window.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No completed setups"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No completed setups"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 60
+                     },
+                     {
+                        "color": "red",
+                        "value": 300
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 1
+         },
+         "id": 2,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(service_catalog_setup_duration_seconds_bucket{clock=\"user\"}[$__rate_interval]))) or vector(-1)",
+               "legendFormat": "user p95"
+            }
+         ],
+         "title": "User setup p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Authorization to first successful SetupComplete. External approval time is excluded. -1 means no observation is available.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No completed setups"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No completed setups"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 60
+                     },
+                     {
+                        "color": "red",
+                        "value": 300
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 1
+         },
+         "id": 3,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(service_catalog_setup_duration_seconds_bucket{clock=\"platform\"}[$__rate_interval]))) or vector(-1)",
+               "legendFormat": "platform p95"
+            }
+         ],
+         "title": "Platform setup p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Successful initial setup attempts in the selected dashboard range. Zero is valid only while observer telemetry is present.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 1
+         },
+         "id": 4,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(increase(service_catalog_setup_attempts_total{outcome=\"succeeded\"}[$__range]))) or (absent(service_catalog_setup_observer_healthy) * -1) or vector(0)",
+               "legendFormat": "completed"
+            }
+         ],
+         "title": "Completed setups",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Fraction of discovered service-catalog controller targets that VictoriaMetrics is scraping successfully.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 0.5
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 1
+         },
+         "id": 5,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(count(up{job=\"services-system/services-controller-manager\"} == 1) / clamp_min(count(up{job=\"services-system/services-controller-manager\"}), 1)) or vector(0)",
+               "legendFormat": "scrape coverage"
+            }
+         ],
+         "title": "Replicas scraped",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "End-to-end p95. The -1 fallback keeps the panel explicit before telemetry rollout or during an idle range; use Observer health before interpreting it.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 6
+         },
+         "id": 6,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval]))) or label_replace(label_replace(vector(-1), \"service_class\", \"none\", \"\", \"\"), \"clock\", \"no observations\", \"\", \"\")",
+               "legendFormat": "p95 {{service_class}} / {{clock}}"
+            }
+         ],
+         "title": "Setup latency by service class and clock",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 14
+         },
+         "id": 7,
+         "title": "Unfinished work",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Persisted setup attempts that have not reached first completion. Missing or unhealthy observer telemetry renders Telemetry unavailable.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 10
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 15
+         },
+         "id": 8,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(service_catalog_setup_inflight)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "legendFormat": "in flight"
+            }
+         ],
+         "title": "In flight",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Unfinished attempts older than the initial 60-second objective.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 15
+         },
+         "id": 9,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(service_catalog_setup_overdue)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "legendFormat": "overdue"
+            }
+         ],
+         "title": "Overdue (>60s)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Age of the oldest unfinished persisted setup attempt.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No observations"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 60
+                     },
+                     {
+                        "color": "red",
+                        "value": 300
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 15
+         },
+         "id": 10,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(max(service_catalog_setup_oldest_inflight_seconds)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "legendFormat": "oldest"
+            }
+         ],
+         "title": "Oldest unfinished",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Current unfinished attempts grouped by the first incomplete stage. -1 means coverage is unavailable, while a healthy empty observer reports a zero series.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "normal"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 20
+         },
+         "id": 11,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (blocking_stage) (service_catalog_setup_inflight) or label_replace(((max(service_catalog_setup_observer_healthy) == 1) * 0), \"blocking_stage\", \"none\", \"\", \"\") or label_replace((((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)), \"blocking_stage\", \"telemetry unavailable\", \"\", \"\")",
+               "legendFormat": "{{blocking_stage}}"
+            }
+         ],
+         "title": "Unfinished attempts by blocking stage",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 28
+         },
+         "id": 12,
+         "title": "Stage breakdown",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Execution time for bounded projection phases. This does not include workqueue delay.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 29
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval]))) or label_replace(vector(-1), \"phase\", \"no observations\", \"\", \"\")",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Projection phase p95",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Successful setup observations per interval. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "normal"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 29
+         },
+         "id": 14,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service_class, clock) (increase(service_catalog_setup_duration_seconds_count[$__interval])) or label_replace(label_replace(vector(0), \"service_class\", \"none\", \"\", \"\"), \"clock\", \"no completions\", \"\", \"\")",
+               "legendFormat": "{{service_class}} / {{clock}}"
+            }
+         ],
+         "title": "Setup completion volume by class",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 37
+         },
+         "id": 15,
+         "title": "Controller capacity and queueing",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Projects waiting in the projection queue. The selector spans the legacy location-binding and new location-projection controller names.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 10
+                     },
+                     {
+                        "color": "red",
+                        "value": 50
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 38
+         },
+         "id": 16,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(workqueue_depth{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}) or vector(0)",
+               "legendFormat": "queued"
+            }
+         ],
+         "title": "Projection queue depth",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Time from enqueue to worker start. Zero means no queue-delay observations in the rate window.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 38
+         },
+         "id": 17,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds_bucket{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}[$__rate_interval]))) or vector(0)",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "Queue delay p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Worker execution time after dequeue. Compare this with queue delay to distinguish capacity from slow reconciliation.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 38
+         },
+         "id": 18,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=\"services-system/services-controller-manager\",controller=~\"location-(binding|projection)\"}[$__rate_interval]))) or vector(0)",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "Reconcile execution p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Active workers across the selected projection controller. Under elected projection, only the owner should process work.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 4
+                     },
+                     {
+                        "color": "red",
+                        "value": 8
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 38
+         },
+         "id": 19,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(controller_runtime_active_workers{job=\"services-system/services-controller-manager\",controller=~\"location-(binding|projection)\"}) or vector(0)",
+               "legendFormat": "active"
+            }
+         ],
+         "title": "Active projection workers",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queueing, execution, and the longest active worker. A growing queue delay with bounded work time indicates insufficient effective ownership or worker capacity.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 0,
+            "y": 43
+         },
+         "id": 20,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds_bucket{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}[$__rate_interval]))) or vector(0)",
+               "legendFormat": "queue p95"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(workqueue_work_duration_seconds_bucket{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}[$__rate_interval]))) or vector(0)",
+               "legendFormat": "work p95"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "max(workqueue_longest_running_processor_seconds{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}) or vector(0)",
+               "legendFormat": "longest active"
+            }
+         ],
+         "title": "Queue delay and worker execution",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Outstanding projects and retry pressure. Both series use bounded controller names and carry no project labels.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 43
+         },
+         "id": 21,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(workqueue_depth{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}) or vector(0)",
+               "legendFormat": "depth"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(rate(workqueue_retries_total{job=\"services-system/services-controller-manager\",name=~\"location-(binding|projection)\"}[$__rate_interval])) or vector(0)",
+               "legendFormat": "retries/s"
+            }
+         ],
+         "title": "Projection queue depth and retries",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 51
+         },
+         "id": 22,
+         "title": "Observer health",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Whether all source caches needed to interpret setup state are synchronized on the projection owner. Missing data is explicitly unknown.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Not reported"
+                        },
+                        "0": {
+                           "color": "red",
+                           "text": "Unhealthy"
+                        },
+                        "1": {
+                           "color": "green",
+                           "text": "Healthy"
+                        }
+                     },
+                     "type": "value"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 0
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 52
+         },
+         "id": 23,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "max(service_catalog_setup_observer_healthy) or vector(-1)",
+               "legendFormat": "observer"
+            }
+         ],
+         "title": "Setup observer",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Seconds since the aggregate writer last completed a successful observation pass. -1 means it has never reported.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "Never reported"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "Never reported"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 120
+                     },
+                     {
+                        "color": "red",
+                        "value": 300
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 52
+         },
+         "id": 24,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(time() - max(service_catalog_setup_observer_last_success_timestamp_seconds)) or vector(-1)",
+               "legendFormat": "age"
+            }
+         ],
+         "title": "Last successful observation",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Number of service-catalog controller targets currently scraped as up. This proves scrape reachability, not cache completeness.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "green",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 52
+         },
+         "id": 25,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "count(up{job=\"services-system/services-controller-manager\"} == 1) or vector(0)",
+               "legendFormat": "up"
+            }
+         ],
+         "title": "Controller targets up",
+         "type": "stat"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 57
+         },
+         "id": 26,
+         "title": "Leadership",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Exactly one replica should own the projection lease after rollout. -1 means this release has not exposed the distinct projection election.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 0
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 58
+         },
+         "id": 27,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(leader_election_master_status{job=\"services-system/services-controller-manager\",name=~\"(consumer|project)-projection[.]services[.]miloapis[.]com\"}) or vector(-1)",
+               "legendFormat": "leaders"
+            }
+         ],
+         "title": "Projection leaders",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Exactly one primary controller manager leader is expected.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 0
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 58
+         },
+         "id": 28,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(leader_election_master_status{job=\"services-system/services-controller-manager\",name=\"services.miloapis.com\"}) or vector(-1)",
+               "legendFormat": "leaders"
+            }
+         ],
+         "title": "Primary manager leaders",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Replicas holding any service-catalog manager election. Separate primary and projection managers may intentionally land on different pods.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 2
+                     },
+                     {
+                        "color": "red",
+                        "value": 3
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 58
+         },
+         "id": 29,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "count(sum by (pod) (leader_election_master_status{job=\"services-system/services-controller-manager\"} == 1)) or vector(0)",
+               "legendFormat": "replicas"
+            }
+         ],
+         "title": "Leader-bearing replicas",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Sum of leader-election status across replicas for each manager name. Each active election should remain at exactly one.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 63
+         },
+         "id": 30,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (name) (leader_election_master_status{job=\"services-system/services-controller-manager\"}) or label_replace(vector(-1), \"name\", \"not reported\", \"\", \"\")",
+               "legendFormat": "{{name}}"
+            }
+         ],
+         "title": "Election ownership by manager",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 70
+         },
+         "id": 31,
+         "title": "API and throttling",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Time spent waiting for client-side rate-limit tokens. Zero means no waits were observed in the rate window.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 0.10000000000000001
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 71
+         },
+         "id": 32,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval]))) or vector(0)",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "Client throttle wait p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Kubernetes API responses rejected for server-side throttling.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 0.01
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.10000000000000001
+                     }
+                  ]
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 71
+         },
+         "id": 33,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(rate(rest_client_requests_total{job=\"services-system/services-controller-manager\",code=\"429\"}[$__rate_interval])) or vector(0)",
+               "legendFormat": "429/s"
+            }
+         ],
+         "title": "HTTP 429 rate",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Kubernetes REST round-trip latency. This excludes client rate-limiter wait. -1 means the histogram is unavailable on the deployed release.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "No request observations"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "No request observations"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 0.5
+                     },
+                     {
+                        "color": "red",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 71
+         },
+         "id": 34,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval]))) or vector(-1)",
+               "legendFormat": "p95"
+            }
+         ],
+         "title": "API request p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Controller REST traffic grouped by bounded HTTP response code. Use this to correlate retries and 429s with setup delay.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "normal"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 76
+         },
+         "id": 35,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (code) (rate(rest_client_requests_total{job=\"services-system/services-controller-manager\"}[$__rate_interval])) or label_replace(vector(0), \"code\", \"none\", \"\", \"\")",
+               "legendFormat": "{{code}}"
+            }
+         ],
+         "title": "Kubernetes API request rate by response code",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "P95 REST round-trip latency grouped by method label (`verb`). Client-side limiter waits are shown separately.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 76
+         },
+         "id": 36,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval]))) or label_replace(vector(-1), \"verb\", \"telemetry unavailable\", \"\", \"\")",
+               "legendFormat": "{{verb}}"
+            }
+         ],
+         "title": "Kubernetes API request latency by method",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 84
+         },
+         "id": 37,
+         "title": "Rollout and version",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Container restarts during the selected range. Leadership loss intentionally terminates the process, so correlate restarts with election changes.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 3
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 85
+         },
+         "id": 38,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"services-system\",container=\"manager\",pod=~\"services-controller-manager-.*\"}[$__range])) or vector(0)",
+               "legendFormat": "restarts"
+            }
+         ],
+         "title": "Controller restarts",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Ready service-catalog controller-manager pods.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [ ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "green",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 85
+         },
+         "id": 39,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(kube_pod_status_ready{namespace=\"services-system\",pod=~\"services-controller-manager-.*\",condition=\"true\"}) or vector(0)",
+               "legendFormat": "ready"
+            }
+         ],
+         "title": "Ready controller pods",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Age of the youngest scraped controller process. A reset identifies rollout or restart timing.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Telemetry unavailable"
+                        }
+                     },
+                     "type": "value"
+                  },
+                  {
+                     "options": {
+                        "match": "null",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  },
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "color": "text",
+                           "text": "Not reported"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "purple",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 0
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 300
+                     },
+                     {
+                        "color": "green",
+                        "value": 1800
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 85
+         },
+         "id": 40,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "min(time() - process_start_time_seconds{job=\"services-system/services-controller-manager\"}) or vector(-1)",
+               "legendFormat": "age"
+            }
+         ],
+         "title": "Process age (youngest)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Current replica count by immutable image reference. Mixed series identify a rollout in progress.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 90
+         },
+         "id": 41,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "count by (image) (kube_pod_container_info{namespace=\"services-system\",container=\"manager\",pod=~\"services-controller-manager-.*\"}) or label_replace(vector(0), \"image\", \"not observed\", \"\", \"\")",
+               "legendFormat": "{{image}}"
+            }
+         ],
+         "title": "Running replicas by image",
+         "type": "timeseries"
+      }
+   ],
+   "refresh": "30s",
+   "schemaVersion": 39,
+   "tags": [
+      "milo",
+      "service-catalog",
+      "setup",
+      "platform"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-6h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Service Catalog Setup",
+   "uid": "service-catalog-setup"
+}
