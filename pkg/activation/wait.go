@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/watch"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -72,7 +73,7 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 	if err != nil {
 		return state, e, false, err
 	}
-	if isResolved(state) {
+	if isResolved(state, e) {
 		return state, e, false, nil
 	}
 
@@ -102,7 +103,7 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 				st, ent, gerr := getAndClassify(ctx, ec, name)
 				if gerr == nil {
 					state, e = st, ent
-					if isResolved(state) {
+					if isResolved(state, e) {
 						if w != nil {
 							w.Stop()
 						}
@@ -125,7 +126,7 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 					continue
 				}
 				state, e = Classify(Observation{Entitlement: ent}), ent
-				if isResolved(state) {
+				if isResolved(state, e) {
 					w.Stop()
 					return state, e, false, nil
 				}
@@ -145,7 +146,7 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 				st, ent, gerr := getAndClassify(ctx, ec, name)
 				if gerr == nil {
 					state, e = st, ent
-					if isResolved(state) {
+					if isResolved(state, e) {
 						return state, e, false, nil
 					}
 				}
@@ -156,8 +157,12 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 
 // isResolved reports whether a state will not change without user or provider
 // action — the terminal outcomes plus Active.
-func isResolved(s State) bool {
-	return s == StateActive || s.Terminal()
+func isResolved(s State, entitlement *servicesv1alpha1.ServiceEntitlement) bool {
+	if s.Terminal() {
+		return true
+	}
+	return s == StateActive && entitlement != nil &&
+		apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete)
 }
 
 // entitlementFromEvent extracts a matching entitlement from a watch event,

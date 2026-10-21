@@ -47,7 +47,7 @@ const (
 	// up in customer projects. The trigger we do get is the ServiceEntitlement
 	// watch; multicluster-runtime gives us no clean way to turn a root-cluster
 	// event into a project-scoped reconcile, so a periodic pass covers the rest
-	// — the same trade-off LocationBinding makes.
+	// — the same trade-off Location projection makes.
 	capabilityBindingResyncInterval = 5 * time.Minute
 
 	// Labels recording what a projected binding came from, so it can be found
@@ -61,7 +61,7 @@ const (
 	// controller writes into at once. One reconcile is one project and is
 	// almost entirely API round-trips, so a serial controller mostly waits.
 	// Publishing an agent across a fleet enqueues one request per project at
-	// once; see locationBindingMaxConcurrentReconciles for the same reasoning.
+	// once; see locationProjectionMaxConcurrentReconciles for the same reasoning.
 	capabilityBindingMaxConcurrentReconciles = 5
 )
 

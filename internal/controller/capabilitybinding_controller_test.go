@@ -166,7 +166,7 @@ func newCapabilityReconciler(rootClient, consumerClient client.Client) *Capabili
 
 func cbRequest() mcreconcile.Request {
 	return mcreconcile.Request{
-		Request:     ctrlreconcile.Request{NamespacedName: types.NamespacedName{Name: locationBindingRequestName}},
+		Request:     ctrlreconcile.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
 		ClusterName: cbProject,
 	}
 }

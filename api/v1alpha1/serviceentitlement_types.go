@@ -142,7 +142,39 @@ const (
 	// ReasonDependencyEnrollmentFailed is the DependenciesSatisfied=False
 	// reason when one or more dependencies could not be enabled.
 	ReasonDependencyEnrollmentFailed = "DependencyEnrollmentFailed"
+
+	// ConditionTypeSetupComplete reports aggregate catalog convergence. Ready
+	// continues to mean that access was authorized; SetupComplete additionally
+	// requires dependency, provisioning, and service projection stages.
+	ConditionTypeSetupComplete = "SetupComplete"
 )
+
+// ServiceSetupStatus records the timing and gates for initial service setup.
+// The owning entitlement's UID identifies the setup across retries and leader
+// changes. Reconfiguration and resume can extend this contract when those
+// operations acquire concrete lifecycle semantics.
+type ServiceSetupStatus struct {
+	// RequestedAt is the original accepted request time. Provider-initiated
+	// activation carries the originating request timestamp here.
+	RequestedAt metav1.Time `json:"requestedAt"`
+
+	// AuthorizedAt is set when external approval/access authorization finishes.
+	// +optional
+	AuthorizedAt *metav1.Time `json:"authorizedAt,omitempty"`
+
+	// ConfigurationRevision is the UID and generation evaluated by setup.
+	// +optional
+	ConfigurationRevision string `json:"configurationRevision,omitempty"`
+
+	// Stages are the separately observable setup gates.
+	// +listType=map
+	// +listMapKey=type
+	Stages []metav1.Condition `json:"stages,omitempty"`
+
+	// FirstCompletedAt is immutable after the first successful convergence.
+	// +optional
+	FirstCompletedAt *metav1.Time `json:"firstCompletedAt,omitempty"`
+}
 
 // ProvisionedResourceState is the delivery state of one declared resource.
 //
@@ -392,6 +424,11 @@ type ServiceEntitlementStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	LastProvisioningEvaluation *metav1.Time `json:"lastProvisioningEvaluation,omitempty"`
+
+	// Setup is the durable aggregate setup attempt. It does not replace Ready
+	// (authorization) or Provisioned (declared-resource delivery).
+	// +optional
+	Setup *ServiceSetupStatus `json:"setup,omitempty"`
 }
 
 // ServiceEntitlement is the Schema for the serviceentitlements API. A consumer
@@ -409,6 +446,7 @@ type ServiceEntitlementStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.origin`
 // +kubebuilder:printcolumn:name="Suspended",type=string,JSONPath=`.status.conditions[?(@.type=="Suspended")].status`
+// +kubebuilder:printcolumn:name="Setup",type=string,JSONPath=`.status.conditions[?(@.type=="SetupComplete")].status`
 type ServiceEntitlement struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -52,8 +52,7 @@ type ServiceLocationConfig struct {
 // LocationRef is a reference to a platform Location resource (cluster-scoped).
 // Location lives in a separate API group; this reference only constrains the
 // shape so ServiceAvailability does not take a compile-time dependency on the
-// Location Go type. The name is resolved against locations.miloapis.com first
-// and networking.datumapis.com second.
+// Location Go type. The name is resolved against locations.miloapis.com/v1alpha1.
 type LocationRef struct {
 	// Name is the metadata.name of the referenced Location.
 	//
@@ -71,7 +70,7 @@ type LocationRef struct {
 // hardware is Ready" (a Location concern) from "this service is
 // operational here" (a service-operator concern). Each service operator
 // creates a ServiceAvailability when it completes deployment and health
-// checks at a Location; the LocationBindingReconciler reads it as the
+// checks at a Location; the LocationProjectionReconciler reads it as the
 // third gate when deciding which locations to project into entitled
 // projects.
 //
@@ -102,7 +101,7 @@ type ServiceAvailabilitySpec struct {
 type ServiceAvailabilityStatus struct {
 	// Conditions represent the latest available observations of the
 	// availability's state. The Available condition is the gate the
-	// LocationBindingReconciler reads.
+	// LocationProjectionReconciler reads.
 	//
 	// +kubebuilder:validation:Optional
 	// +listType=map
