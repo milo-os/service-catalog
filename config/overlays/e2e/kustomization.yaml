@@ -40,6 +40,14 @@ images:
   - name: ghcr.io/milo-os/service-catalog
     newTag: dev
 
+configMapGenerator:
+  - name: services-config
+    behavior: replace
+    files:
+      - config.yaml
+    options:
+      disableNameSuffixHash: true
+
 patches:
   - patch: |-
       - op: replace
