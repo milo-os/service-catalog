@@ -63,6 +63,15 @@ jobs:
             deployment/services-controller-manager \
             -n services-system --timeout=120s
 
+      - name: Dump operator logs on deployment failure
+        if: failure()
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- -n services-system get pods
+          task --yes test-infra:kubectl -- -n services-system logs \
+            deployment/services-controller-manager --all-pods=true --tail=-1 || true
+
       - name: Wait for webhook certificate to be ready
         env:
           KUBECONFIG: .test-infra/kubeconfig

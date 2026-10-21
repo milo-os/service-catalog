@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -470,9 +471,15 @@ func main() {
 			// caches and mutation workers start only on the holder of this
 			// distinct lease; single-replica development and e2e retain the
 			// configured no-election behavior.
+			// The Milo provider registers a projectcontrolplane controller on
+			// each manager that hosts it. This second instance is intentional:
+			// it is isolated behind the projection lease, but controller-runtime
+			// otherwise rejects its duplicate metrics label process-wide.
+			projectionControllerOpts := controllerOpts
+			projectionControllerOpts.SkipNameValidation = ptr.To(true)
 			projectionLocalMgr, err := ctrl.NewManager(cfg, ctrl.Options{
 				Scheme:                  scheme,
-				Controller:              controllerOpts,
+				Controller:              projectionControllerOpts,
 				Metrics:                 metricsserver.Options{BindAddress: "0"},
 				LeaderElection:          enableLeaderElection,
 				LeaderElectionID:        "project-projection.services.miloapis.com",
