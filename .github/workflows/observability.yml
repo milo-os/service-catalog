@@ -29,7 +29,8 @@ jobs:
           go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
       - name: Verify generated dashboard
         run: |
-          task observability:install
-          task observability:verify
+          cd observability
+          jb install
+          task --taskfile Taskfile.yaml verify ROOT_DIR="$GITHUB_WORKSPACE"
       - name: Validate observability component
         run: kubectl kustomize config/components/observability >/dev/null
