@@ -2,6 +2,11 @@
 
 **Status:** Proposed
 
+> **Implementation update (2026-10-21):** Consumer-scoped projection manages
+> `locations.miloapis.com/v1alpha1` `Location` objects. The `LocationBinding`
+> examples below record the earlier compatibility design; service catalog no
+> longer reads or writes the network-services location APIs.
+
 ## Summary
 
 Any Milo service operator that integrates with the platform and

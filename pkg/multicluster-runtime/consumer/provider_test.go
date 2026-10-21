@@ -641,10 +641,10 @@ func TestProjectRestConfig_Errors(t *testing.T) {
 
 // --- Phase 2: deactivation cleanup (ManagedResources + Teardown) -------------
 
-var locationBindingGVK = schema.GroupVersionKind{
-	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
-	Kind:    "LocationBinding",
+var managedWidgetGVK = schema.GroupVersionKind{
+	Group:   "tests.example.com",
+	Version: "v1alpha1",
+	Kind:    "ManagedWidget",
 }
 
 // recordedDelete captures one DeleteAllOf call: the addressed GVK, namespace,
@@ -661,7 +661,7 @@ type recordedDelete struct {
 // implements client.Client by embedding the interface (nil) and overrides
 // DeleteAllOf and List (namespace enumeration) — every other method panics if
 // unexpectedly called, which is a useful guard that teardown touches nothing
-// else. LocationBinding is an external unstructured GVK absent from our scheme,
+// else. ManagedWidget is an external unstructured GVK absent from our scheme,
 // so recording the requests (rather than a real fake client) is the cleanest
 // way to assert label-scoping.
 type recordingClient struct {
@@ -767,7 +767,7 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -784,8 +784,8 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 		t.Fatalf("expected 1 DeleteAllOf, got %d: %+v", len(rec.deletes), rec.deletes)
 	}
 	d := rec.deletes[0]
-	if d.gvk != locationBindingGVK {
-		t.Errorf("delete gvk = %v, want %v", d.gvk, locationBindingGVK)
+	if d.gvk != managedWidgetGVK {
+		t.Errorf("delete gvk = %v, want %v", d.gvk, managedWidgetGVK)
 	}
 	if d.namespace != "default" {
 		t.Errorf("delete namespace = %q, want \"default\" (per-namespace scoping required by Milo)", d.namespace)
@@ -834,7 +834,7 @@ func TestDisengage_DeletesCartesianOverServiceNames(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical, storageCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -849,7 +849,7 @@ func TestDisengage_DeletesCartesianOverServiceNames(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, d := range rec.deletes {
-		if d.gvk != locationBindingGVK {
+		if d.gvk != managedWidgetGVK {
 			t.Errorf("unexpected delete gvk %v", d.gvk)
 		}
 		got[d.selector] = true
@@ -870,7 +870,7 @@ func TestDisengage_TeardownErrorAbortsKeepsEngagedThenSucceeds(t *testing.T) {
 	td := &recordingTeardown{err: boom}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -918,7 +918,7 @@ func TestDisengage_DeleteErrorAbortsBeforeTeardowns(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -941,15 +941,15 @@ func TestDisengage_DeleteErrorAbortsBeforeTeardowns(t *testing.T) {
 // in a permanent retry it can never satisfy.
 func TestDisengage_ToleratesMissingType_NoMatchError(t *testing.T) {
 	rec := &recordingClient{err: &meta.NoKindMatchError{
-		GroupKind:        schema.GroupKind{Group: locationBindingGVK.Group, Kind: locationBindingGVK.Kind},
-		SearchedVersions: []string{locationBindingGVK.Version},
+		GroupKind:        schema.GroupKind{Group: managedWidgetGVK.Group, Kind: managedWidgetGVK.Kind},
+		SearchedVersions: []string{managedWidgetGVK.Version},
 	}}
 	// A Teardown is declared too: a missing managed-type CRD must NOT block the
 	// teardown hooks — they still run.
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -973,10 +973,10 @@ func TestDisengage_ToleratesMissingType_NoMatchError(t *testing.T) {
 // A NotFound from DeleteAllOf (collection already gone) is likewise tolerated.
 func TestDisengage_ToleratesMissingType_NotFound(t *testing.T) {
 	rec := &recordingClient{err: apierrors.NewNotFound(
-		schema.GroupResource{Group: locationBindingGVK.Group, Resource: "locationbindings"}, "")}
+		schema.GroupResource{Group: managedWidgetGVK.Group, Resource: "managedwidgets"}, "")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -994,7 +994,7 @@ func TestDisengage_TeardownIsIdempotent(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1026,7 +1026,7 @@ func TestReconcile_TeardownErrorKeepsEngagedThenRecovers(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("boom")}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1081,7 +1081,7 @@ func TestGet_MidTeardownReportsSentinel(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("teardown stuck")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1136,7 +1136,7 @@ func TestMetrics_TeardownFailureCounter(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("stuck")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1179,7 +1179,7 @@ func TestReconcile_RestartTearsDownRevokedConsumerWithoutEngaging(t *testing.T) 
 	mcMgr := newFakeMCMgr()
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(mcMgr),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 
@@ -1191,8 +1191,8 @@ func TestReconcile_RestartTearsDownRevokedConsumerWithoutEngaging(t *testing.T) 
 	if len(rec.deletes) != 1 {
 		t.Fatalf("expected 1 DeleteAllOf for the revoked project's projected resources, got %d", len(rec.deletes))
 	}
-	if rec.deletes[0].gvk != locationBindingGVK {
-		t.Errorf("delete gvk = %v, want %v", rec.deletes[0].gvk, locationBindingGVK)
+	if rec.deletes[0].gvk != managedWidgetGVK {
+		t.Errorf("delete gvk = %v, want %v", rec.deletes[0].gvk, managedWidgetGVK)
 	}
 	if want := labelServiceName + "=" + computeCanonical; rec.deletes[0].selector != want {
 		t.Errorf("delete selector = %q, want %q", rec.deletes[0].selector, want)
@@ -1216,7 +1216,7 @@ func TestReconcile_PendingOnlyProjectIsNotTornDown(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 
@@ -1241,7 +1241,7 @@ func TestReconcile_StampsTeardownFinalizerOnActiveConsumer(t *testing.T) {
 	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 	)
 
 	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
@@ -1290,7 +1290,7 @@ func TestReconcile_StampsFinalizerOnActiveAndDeniedConsumers(t *testing.T) {
 	)
 	p := newTestProvider(providerClient, []string{computeCanonical, storageCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 	)
 
 	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
@@ -1320,7 +1320,7 @@ func TestDisengage_RemovesTeardownFinalizerAfterTeardownSucceeds(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -1355,7 +1355,7 @@ func TestDisengage_KeepsTeardownFinalizerWhenTeardownFails(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("teardown boom")}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)

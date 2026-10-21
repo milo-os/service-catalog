@@ -30,6 +30,8 @@ import (
 	"go.miloapis.com/service-catalog/internal/provisioning"
 )
 
+const labelServiceName = "services.miloapis.com/service-name"
+
 const (
 	// provisioningResyncInterval bounds how long a change no watch here observes
 	// takes to reach consumer projects. Declaration edits do not wait for it,
@@ -106,7 +108,7 @@ const (
 type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
-	// cannot see them. Mirrors LocationBindingReconciler.
+	// cannot see them. Mirrors LocationProjectionReconciler.
 	rootClient client.Client
 	Manager    mcmanager.Manager
 	Scheme     *runtime.Scheme

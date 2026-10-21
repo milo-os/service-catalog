@@ -1,6 +1,5 @@
 apiVersion: apiserver.config.miloapis.com/v1alpha1
 kind: ServicesOperator
-locationSource: locations.miloapis.com/v1alpha1
 metricsServer:
   bindAddress: "0"
 webhookServer: {}
@@ -10,5 +9,5 @@ webhookServer: {}
 kubeconfigPath: /etc/milo/kubeconfig
 # Consumer-scoped projection stays off, as in config/overlays/e2e. It is a
 # separate capability with its own gating, and enabling it would move
-# LocationBinding projection to another manager without covering what this
+# Location projection to another manager without covering what this
 # environment proves.

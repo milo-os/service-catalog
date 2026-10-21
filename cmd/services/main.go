@@ -135,19 +135,10 @@ func main() {
 
 	setupLog.Info("server config", "config", serverConfig)
 
-	// Register exactly the configured Location source as an unstructured type
-	// before constructing the manager. This makes manager.GetClient serve
-	// projection reads from the shared informer cache instead of issuing a live
-	// GET for every service/location pair. The alternate Location group is not
-	// cached or watched.
-	locationGVK, err := serverConfig.LocationSource.GVK()
-	if err != nil {
-		setupLog.Error(err, "invalid location source")
-		os.Exit(1)
-	}
-	scheme.AddKnownTypeWithName(locationGVK, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(locationGVK.GroupVersion().WithKind(locationGVK.Kind+"List"), &unstructured.UnstructuredList{})
-	setupLog.Info("reading locations from shared cache", "locationSource", serverConfig.LocationSource)
+	// Register Location before constructing the manager so reads use the shared
+	// informer cache instead of issuing a live GET for every pair.
+	scheme.AddKnownTypeWithName(controller.LocationGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(controller.LocationGVK.GroupVersion().WithKind(controller.LocationGVK.Kind+"List"), &unstructured.UnstructuredList{})
 
 	// Services resources live in the Milo control plane, not in the cluster
 	// that hosts the controller pod. Connect directly to Milo using the
@@ -212,7 +203,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConfiguration")
 		os.Exit(1)
 	}
-	if err = (&controller.ServiceAvailabilityReconciler{LocationGVK: locationGVK}).SetupWithManager(mgr); err != nil {
+	if err = (&controller.ServiceAvailabilityReconciler{}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
 		os.Exit(1)
 	}
@@ -250,7 +241,7 @@ func main() {
 			// Engaged project clusters must use our scheme; without it their cache
 			// falls back to the client-go global scheme, which lacks the
 			// services.miloapis.com types, and every ServiceEntitlement /
-			// ServiceConsumer / LocationBinding watch fails with "kind must be
+			// ServiceConsumer / Location watch fails with "kind must be
 			// registered to the Scheme".
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) { o.Scheme = scheme },
@@ -292,7 +283,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Provisioning")
 		os.Exit(1)
 	}
-	// LocationBinding projection runs either on the all-projects manager
+	// Location projection runs either on the all-projects manager
 	// (today's default) or, when consumer-scoped projection is enabled, on a
 	// dedicated multicluster manager whose membership is driven by the consumer
 	// provider — only consumer projects with an active ServiceConsumer for one
@@ -347,19 +338,15 @@ func main() {
 			ClusterOptions: []cluster.Option{
 				func(o *cluster.Options) { o.Scheme = scheme },
 			},
-			// The types the catalog projects into consumer projects; each is
-			// deleted (label-scoped) on deactivation. Location is the object
-			// consumers read going forward; LocationBinding is still written
-			// for the network-services operator until it moves off.
-			// Note: networking.datumapis.com uses version v1alpha (not v1alpha1).
+			// Service-specific resources use the provider's label-scoped cleanup.
+			// Shared Locations and availability mirrors use ProjectionTeardown.
 			ManagedResources: []schema.GroupVersionKind{
-				{Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location"},
-				{Group: "networking.datumapis.com", Version: "v1alpha", Kind: "LocationBinding"},
 				// What the project's AI assistant is allowed to do. Left behind
 				// on deactivation it would keep offering a service the customer
 				// no longer pays for.
 				{Group: "capabilities.assistant.miloapis.com", Version: "v1alpha1", Kind: "CapabilityBinding"},
 			},
+			Teardowns: []consumer.Teardown{controller.ProjectionTeardown{}},
 		}
 		consumerProvider, err := consumer.New(providerMgr, consumerOpts)
 		if err != nil {
@@ -370,13 +357,13 @@ func main() {
 		// mcmanager.Options is controller-runtime's manager.Options verbatim and
 		// mcmanager.New passes it straight to manager.New, so this manager
 		// uses the same leader-election setting as the primary one — including routing the
-		// LocationBinding controller and the auto-wired consumerProvider.Start
+		// Location projection controller and the auto-wired consumerProvider.Start
 		// into the leader-election runnable group.
 		//
 		// When leader election is enabled, this is the one lease that decides which replica projects into
 		// consumer projects. Unlike the all-projects manager (see
 		// newDiscoveryManager and #62), nothing here has to work on a
-		// non-leader: consumerMcMgr hosts only the LocationBinding reconciler,
+		// non-leader: consumerMcMgr hosts only the projection reconcilers,
 		// and no webhook resolves clusters through it. Its ID is distinct from
 		// the primary manager's so the two do not contend for one lease — they
 		// are separate managers in the same process and would otherwise elect
@@ -399,8 +386,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+		if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 			os.Exit(1)
 		}
 		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
@@ -457,8 +444,8 @@ func main() {
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
 	} else {
 		if enableSingleClusterForE2ETests {
-			if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 				os.Exit(1)
 			}
 			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
@@ -512,8 +499,8 @@ func main() {
 				setupLog.Error(err, "unable to add elected projection provider")
 				os.Exit(1)
 			}
-			if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(projectionMcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+			if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 				os.Exit(1)
 			}
 			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr.GetClient()); err != nil {
@@ -587,7 +574,7 @@ func main() {
 	// own fixed name already. The multicluster coordinator tracks engagement
 	// by name, not cluster identity, so engaging that same cluster under ""
 	// too would start a second, duplicate informer for every mcbuilder-based
-	// watch (ServiceEntitlement, LocationBinding) — each create/update then
+	// watch (ServiceEntitlement, Location) — each create/update then
 	// fires twice, once per name, and the ""-tagged copy is rejected by
 	// reconcilers that require a non-empty cluster name.
 	if !enableSingleClusterForE2ETests {

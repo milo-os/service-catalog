@@ -231,14 +231,13 @@ Ship in this order:
 2. The ownership fix, alone. It fixes an existing bug.
 3. The availability records and their permissions, together.
 
-### LocationBinding
+### Location projection
 
-`LocationBinding` is being retired. This design adds nothing to it. It inherits
-the ownership fix, which it needs, because it fails on a second service the same
-way. When its last reader moves, it leaves this design with no other change.
-
-For the current reader set, see
-[locations-platform-primitive.md](./locations-platform-primitive.md#migration-off-locationbinding).
+The migration is complete. Service catalog projects
+`locations.miloapis.com/v1alpha1` `Location` objects and per-service
+`ServiceAvailability` records into entitled projects. It no longer reads
+network-services `Location` objects or writes `LocationBinding` compatibility
+objects.
 
 ## Production Readiness Review Questionnaire
 
