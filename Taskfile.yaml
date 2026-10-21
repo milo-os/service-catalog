@@ -25,6 +25,12 @@ includes:
     taskfile: ./ui/Taskfile.yaml
     dir: ./ui
 
+  observability:
+    taskfile: ./observability/Taskfile.yaml
+    dir: ./observability
+    vars:
+      ROOT_DIR: "{{.USER_WORKING_DIR}}"
+
 tasks:
   default:
     desc: List all available tasks

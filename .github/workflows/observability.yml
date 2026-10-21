@@ -1,0 +1,36 @@
+name: Observability
+
+on:
+  push:
+    paths:
+      - "observability/**"
+      - "config/components/observability/**"
+      - ".github/workflows/observability.yml"
+  pull_request:
+    paths:
+      - "observability/**"
+      - "config/components/observability/**"
+      - ".github/workflows/observability.yml"
+
+jobs:
+  verify-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+      - name: Install Jsonnet tools
+        run: |
+          go install github.com/google/go-jsonnet/cmd/jsonnet@v0.21.0
+          go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
+      - name: Verify generated dashboard
+        run: |
+          cd observability
+          jb install
+          task --taskfile Taskfile.yaml verify ROOT_DIR="$GITHUB_WORKSPACE"
+      - name: Validate observability component
+        run: kubectl kustomize config/components/observability >/dev/null
