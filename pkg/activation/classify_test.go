@@ -46,6 +46,13 @@ func entitlement(spec string, phase servicesv1alpha1.EntitlementPhase, reason, m
 		Reason:  reason,
 		Message: message,
 	}}
+	if phase == servicesv1alpha1.EntitlementPhaseActive {
+		e.Status.Conditions = append(e.Status.Conditions, metav1.Condition{
+			Type:   servicesv1alpha1.ConditionTypeSetupComplete,
+			Status: metav1.ConditionTrue,
+			Reason: "TestSetupComplete",
+		})
+	}
 	return e
 }
 

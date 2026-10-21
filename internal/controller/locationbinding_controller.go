@@ -5,7 +5,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,15 +17,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -69,15 +77,6 @@ var projectionGVKs = []schema.GroupVersionKind{projectedLocationGVK, locationBin
 var serviceAvailabilityMirrorGVK = servicesv1alpha1.GroupVersion.WithKind("ServiceAvailability")
 
 const (
-	// locationBindingResyncInterval bounds how long a gate change on the root
-	// cluster (ServiceAvailability flips, Location readiness, a new published
-	// ServiceConfiguration) takes to propagate into project bindings. The
-	// primary trigger is the ServiceEntitlement watch; multicluster-runtime
-	// does not give us a clean way to enqueue project-scoped reconciles from
-	// root-cluster object events, so a periodic resync covers the cross-cluster
-	// gates instead. See SetupWithManager.
-	locationBindingResyncInterval = 5 * time.Minute
-
 	// LocationBinding metadata labels. labelLocation and labelClass mirror the
 	// referenced Location for label-selector discovery without a platform
 	// lookup.
@@ -181,6 +180,8 @@ type LocationBindingReconciler struct {
 	// LocationGVK is the configured location source. Only this group is read.
 	// It is unrelated to projectedLocationGVK, which is what gets written.
 	LocationGVK schema.GroupVersionKind
+
+	projects *projectionProjectIndex
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -197,6 +198,10 @@ type LocationBindingReconciler struct {
 // +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get;list;watch
 
 func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+	reconcileStarted := time.Now()
+	defer func() {
+		projectionPhaseDuration.WithLabelValues("total").Observe(time.Since(reconcileStarted).Seconds())
+	}()
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
 	ctx = log.IntoContext(ctx, logger)
 
@@ -228,6 +233,13 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 			active = append(active, e)
 		}
 	}
+	if r.projects != nil {
+		services := make([]string, 0, len(active))
+		for _, entitlement := range active {
+			services = append(services, entitlement.Spec.ServiceRef.Name)
+		}
+		r.projects.Replace(string(consumerProject), services)
+	}
 	// Processing order only ever affects which of several equally-closed gates
 	// is reported as the aggregate Location's reason; sorting by service name
 	// makes that choice deterministic across reconciles instead of depending on
@@ -246,6 +258,7 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 	desiredLocationFields := make(map[string]locationFields)
 	desiredMirrors := make(map[string]*servicesv1alpha1.ServiceAvailability)
 	locationCache := make(map[string]*unstructured.Unstructured)
+	projectionStages := make(map[string]setupProjectionStage)
 
 	for _, entitlement := range active {
 		serviceRefName := entitlement.Spec.ServiceRef.Name
@@ -253,17 +266,28 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 		// Gate-source 1: the active (latest Published) ServiceConfiguration for
 		// the service supplies spec.locations.supportedClasses. Without one
 		// there is nothing to evaluate for this entitlement; it contributes
-		// nothing this pass and is picked up again on the periodic resync.
+		// nothing this pass and is picked up when configuration publication
+		// produces a root informer event.
 		sc, err := r.latestPublishedConfiguration(ctx, serviceRefName)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if sc == nil {
 			logger.V(1).Info("no published ServiceConfiguration for service yet", "service", serviceRefName)
+			projectionStages[serviceRefName] = setupProjectionStage{reason: "ConfigurationUnavailable"}
 			continue
 		}
 		if sc.Spec.Locations == nil || len(sc.Spec.Locations.SupportedClasses) == 0 {
+			projectionStages[serviceRefName] = setupProjectionStage{
+				complete: true,
+				reason:   "NotApplicable",
+				revision: fmt.Sprintf("%s/%d", sc.UID, sc.Generation),
+			}
 			continue
+		}
+		stage := setupProjectionStage{
+			reason:   "NoApplicableLocations",
+			revision: fmt.Sprintf("%s/%d", sc.UID, sc.Generation),
 		}
 		supported := make(map[servicesv1alpha1.LocationClassName]struct{}, len(sc.Spec.Locations.SupportedClasses))
 		for _, c := range sc.Spec.Locations.SupportedClasses {
@@ -337,10 +361,13 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 				continue
 			}
 			desiredMirrors[sa.Name] = sa
+			stage.complete = true
+			stage.reason = "ProjectionConverged"
 			if _, ok := desiredLocationFields[locName]; !ok {
 				desiredLocationFields[locName] = fields
 			}
 		}
+		projectionStages[serviceRefName] = stage
 	}
 
 	for locName, v := range desiredBindings {
@@ -369,11 +396,238 @@ func (r *LocationBindingReconciler) Reconcile(ctx context.Context, req mcreconci
 	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{serviceAvailabilityMirrorGVK}, keySet(desiredMirrors)); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.aggregateSetup(ctx, string(consumerProject), consumerClient, entitlementList.Items, projectionStages); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	logger.V(1).Info("reconciled location projections",
 		"activeEntitlements", len(active), "bindings", len(desiredBindings),
 		"locations", len(desiredLocationFields), "availabilityMirrors", len(desiredMirrors))
-	return ctrl.Result{RequeueAfter: locationBindingResyncInterval}, nil
+	return ctrl.Result{}, nil
+}
+
+type setupProjectionStage struct {
+	complete bool
+	reason   string
+	revision string
+}
+
+const (
+	setupStageAuthorization = "Authorization"
+	setupStageDependencies  = "Dependencies"
+	setupStageProvisioning  = "Provisioning"
+	setupStageProjection    = "Projection"
+	setupStageProviderAck   = "ProviderAcknowledgement"
+)
+
+func (r *LocationBindingReconciler) aggregateSetup(
+	ctx context.Context,
+	project string,
+	consumerClient client.Client,
+	entitlements []servicesv1alpha1.ServiceEntitlement,
+	projectionStages map[string]setupProjectionStage,
+) error {
+	var serviceList servicesv1alpha1.ServiceList
+	if err := r.rootClient.List(ctx, &serviceList); err != nil {
+		return fmt.Errorf("list Services for setup dependency aggregation: %w", err)
+	}
+	servicesByName := make(map[string]*servicesv1alpha1.Service, len(serviceList.Items))
+	for i := range serviceList.Items {
+		service := &serviceList.Items[i]
+		servicesByName[service.Name] = service
+		if service.Spec.ServiceName != "" {
+			servicesByName[service.Spec.ServiceName] = service
+		}
+	}
+	entitlementsByService := make(map[string]*servicesv1alpha1.ServiceEntitlement, len(entitlements))
+	for i := range entitlements {
+		entitlement := &entitlements[i]
+		entitlementsByService[entitlement.Spec.ServiceRef.Name] = entitlement
+		if entitlement.Status.ServiceName != "" {
+			entitlementsByService[entitlement.Status.ServiceName] = entitlement
+		}
+	}
+	for i := range entitlements {
+		entitlement := &entitlements[i]
+		before := entitlement.DeepCopy()
+		if entitlement.Status.Setup == nil {
+			requestedAt := entitlement.CreationTimestamp
+			if entitlement.Spec.ProviderActivation != nil && !entitlement.Spec.ProviderActivation.RequestedAt.IsZero() {
+				requestedAt = entitlement.Spec.ProviderActivation.RequestedAt
+			}
+			identity := string(entitlement.UID)
+			if identity == "" {
+				identity = entitlement.Name
+			}
+			entitlement.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
+				ID:          identity + "/1",
+				Sequence:    1,
+				Operation:   servicesv1alpha1.ServiceSetupOperationInitial,
+				RequestedAt: requestedAt,
+			}
+		}
+		setup := entitlement.Status.Setup
+
+		ready := apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeReady)
+		suspended := apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSuspended)
+		authorized := ready && !suspended
+		setSetupStage(&setup.Stages, entitlement.Generation, setupStageAuthorization, authorized,
+			setupAuthorizationReason(entitlement, ready, suspended), "Access must be authorized and the project active.")
+		if authorized && setup.AuthorizedAt == nil {
+			if condition := apimeta.FindStatusCondition(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeReady); condition != nil {
+				t := condition.LastTransitionTime
+				setup.AuthorizedAt = &t
+			}
+		}
+
+		dependencies, dependencyReason := transitiveDependenciesComplete(
+			entitlement, servicesByName, entitlementsByService, map[string]bool{},
+		)
+		setSetupStage(&setup.Stages, entitlement.Generation, setupStageDependencies, dependencies,
+			dependencyReason,
+			"Every transitive service dependency must complete enrollment.")
+
+		provisioned := apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+		setSetupStage(&setup.Stages, entitlement.Generation, setupStageProvisioning, provisioned,
+			conditionReason(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned, "ProvisioningPending"),
+			"Declared service resources must be installed.")
+
+		projection := projectionStages[entitlement.Spec.ServiceRef.Name]
+		projectionComplete := projection.complete && entitlement.Status.Phase == servicesv1alpha1.EntitlementPhaseActive
+		projectionReason := projection.reason
+		if projectionReason == "" {
+			projectionReason = "EntitlementNotActive"
+		}
+		setSetupStage(&setup.Stages, entitlement.Generation, setupStageProjection, projectionComplete,
+			projectionReason, "Required service locations and availability records must converge.")
+		setup.ConfigurationRevision = projection.revision
+
+		setSetupStage(&setup.Stages, entitlement.Generation, setupStageProviderAck, true,
+			"NotApplicable", "This service does not declare a provider acknowledgement stage.")
+
+		complete := authorized && dependencies && provisioned && projectionComplete
+		setup.BlockingReason = firstIncompleteSetupStage(setup.Stages)
+		if complete {
+			setup.BlockingReason = ""
+			setup.Outcome = servicesv1alpha1.ServiceSetupOutcomeSucceeded
+		}
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
+			Type:               servicesv1alpha1.ConditionTypeSetupComplete,
+			Status:             conditionStatus(complete),
+			Reason:             setupCompleteReason(complete, setup.BlockingReason),
+			Message:            setupCompleteMessage(complete, setup.BlockingReason),
+			ObservedGeneration: entitlement.Generation,
+		})
+		if complete && setup.FirstCompletedAt == nil {
+			condition := apimeta.FindStatusCondition(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete)
+			t := condition.LastTransitionTime
+			observeSetupSuccess(entitlement, t.Time)
+			setup.FirstCompletedAt = &t
+		}
+
+		if reflect.DeepEqual(before.Status, entitlement.Status) {
+			continue
+		}
+		if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before)); err != nil {
+			return fmt.Errorf("patch setup status for ServiceEntitlement %q: %w", entitlement.Name, err)
+		}
+	}
+	setupInflight.replaceProject(project, entitlements)
+	setupObserverLastSuccess.SetToCurrentTime()
+	return nil
+}
+
+func transitiveDependenciesComplete(
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	services map[string]*servicesv1alpha1.Service,
+	entitlements map[string]*servicesv1alpha1.ServiceEntitlement,
+	visiting map[string]bool,
+) (bool, string) {
+	if !apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied) {
+		return false, conditionReason(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied, "DependenciesPending")
+	}
+	service := services[entitlement.Spec.ServiceRef.Name]
+	if service == nil && entitlement.Status.ServiceName != "" {
+		service = services[entitlement.Status.ServiceName]
+	}
+	if service == nil || len(service.Spec.Dependencies) == 0 {
+		return true, "DependenciesComplete"
+	}
+	key := service.Name
+	if visiting[key] {
+		return false, "DependencyCycle"
+	}
+	visiting[key] = true
+	defer delete(visiting, key)
+	for _, dependency := range service.Spec.Dependencies {
+		child := entitlements[dependency.ServiceRef.Name]
+		if child == nil {
+			return false, "DependencyEntitlementMissing"
+		}
+		if childService := services[dependency.ServiceRef.Name]; childService != nil && visiting[childService.Name] {
+			return false, "DependencyCycle"
+		}
+		if complete, reason := transitiveDependenciesComplete(child, services, entitlements, visiting); !complete {
+			return false, reason
+		}
+		if child.Status.Setup == nil || !apimeta.IsStatusConditionTrue(child.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete) {
+			return false, "DependencySetupPending"
+		}
+	}
+	return true, "DependenciesComplete"
+}
+
+func setSetupStage(conditions *[]metav1.Condition, generation int64, stage string, complete bool, reason, message string) {
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
+		Type: stage, Status: conditionStatus(complete), Reason: reason, Message: message, ObservedGeneration: generation,
+	})
+}
+
+func conditionStatus(value bool) metav1.ConditionStatus {
+	if value {
+		return metav1.ConditionTrue
+	}
+	return metav1.ConditionFalse
+}
+
+func conditionReason(conditions []metav1.Condition, conditionType, fallback string) string {
+	if condition := apimeta.FindStatusCondition(conditions, conditionType); condition != nil && condition.Reason != "" {
+		return condition.Reason
+	}
+	return fallback
+}
+
+func setupAuthorizationReason(entitlement *servicesv1alpha1.ServiceEntitlement, ready, suspended bool) string {
+	if suspended {
+		return "ProjectSuspended"
+	}
+	if ready {
+		return "Authorized"
+	}
+	return conditionReason(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeReady, "AuthorizationPending")
+}
+
+func firstIncompleteSetupStage(stages []metav1.Condition) string {
+	for _, stage := range []string{setupStageAuthorization, setupStageDependencies, setupStageProvisioning, setupStageProjection, setupStageProviderAck} {
+		if !apimeta.IsStatusConditionTrue(stages, stage) {
+			return stage
+		}
+	}
+	return ""
+}
+
+func setupCompleteReason(complete bool, blocker string) string {
+	if complete {
+		return "AllStagesComplete"
+	}
+	return blocker + "Pending"
+}
+
+func setupCompleteMessage(complete bool, blocker string) string {
+	if complete {
+		return "Service catalog setup is complete."
+	}
+	return fmt.Sprintf("Service catalog setup is waiting on the %s stage.", blocker)
 }
 
 // bindingVerdict accumulates one LocationBinding's aggregate projection state
@@ -875,6 +1129,117 @@ func mapServiceEntitlementToProjectRequest(_ context.Context, _ client.Object) [
 	}}
 }
 
+// projectionProjectIndex is rebuilt from the complete entitlement set each
+// time a project is reconciled. Root-source events use the snapshot to target
+// projects without periodically walking the fleet. Startup entitlement LIST
+// events repopulate it after a restart, so correctness does not depend on old
+// watch events being replayed.
+type projectionProjectIndex struct {
+	mu       sync.RWMutex
+	services map[string]map[string]struct{}
+}
+
+func newProjectionProjectIndex() *projectionProjectIndex {
+	return &projectionProjectIndex{services: make(map[string]map[string]struct{})}
+}
+
+func (i *projectionProjectIndex) Replace(project string, serviceNames []string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for service, projects := range i.services {
+		delete(projects, project)
+		if len(projects) == 0 {
+			delete(i.services, service)
+		}
+	}
+	for _, service := range serviceNames {
+		projects := i.services[service]
+		if projects == nil {
+			projects = make(map[string]struct{})
+			i.services[service] = projects
+		}
+		projects[project] = struct{}{}
+	}
+}
+
+func (i *projectionProjectIndex) Projects() []string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	set := make(map[string]struct{})
+	for _, projects := range i.services {
+		for project := range projects {
+			set[project] = struct{}{}
+		}
+	}
+	projects := make([]string, 0, len(set))
+	for project := range set {
+		projects = append(projects, project)
+	}
+	sort.Strings(projects)
+	return projects
+}
+
+// projectionRootDispatcher attaches handlers directly to the shared root
+// informers. It runs on every replica because cache observation is also needed
+// on the projection-lease holder when the primary manager lease is held by a
+// different replica. Only the elected projection controller consumes and
+// mutates from these events.
+type projectionRootDispatcher struct {
+	rootMgr manager.Manager
+	gvk     schema.GroupVersionKind
+	index   *projectionProjectIndex
+	events  chan<- event.TypedGenericEvent[mcreconcile.Request]
+}
+
+func (d *projectionRootDispatcher) NeedLeaderElection() bool { return false }
+
+func (d *projectionRootDispatcher) Start(ctx context.Context) error {
+	objects := []client.Object{
+		&servicesv1alpha1.ServiceAvailability{},
+		&servicesv1alpha1.ServiceConfiguration{},
+	}
+	location := &unstructured.Unstructured{}
+	location.SetGroupVersionKind(d.gvk)
+	objects = append(objects, location)
+
+	for _, object := range objects {
+		informer, err := d.rootMgr.GetCache().GetInformer(ctx, object)
+		if err != nil {
+			return fmt.Errorf("get required projection source informer for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
+		}
+		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+			AddFunc:    func(any) { d.dispatch() },
+			UpdateFunc: func(_, _ any) { d.dispatch() },
+			DeleteFunc: func(any) { d.dispatch() },
+		}); err != nil {
+			return fmt.Errorf("register projection source handler for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
+		}
+	}
+	if !d.rootMgr.GetCache().WaitForCacheSync(ctx) {
+		return fmt.Errorf("required projection source caches did not synchronize")
+	}
+	setupObserverHealthy.Set(1)
+	defer setupObserverHealthy.Set(0)
+	<-ctx.Done()
+	return nil
+}
+
+func (d *projectionRootDispatcher) dispatch() {
+	for _, project := range d.index.Projects() {
+		req := mcreconcile.Request{
+			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Name: locationBindingRequestName}},
+			ClusterName: multicluster.ClusterName(project),
+		}
+		select {
+		case d.events <- event.TypedGenericEvent[mcreconcile.Request]{Object: req}:
+		default:
+			// Queue coalescing makes a duplicate unnecessary. A full handoff
+			// buffer already contains pending invalidations; future root or
+			// entitlement events will retry without blocking informer delivery.
+		}
+	}
+}
+
 // SetupWithManager registers the reconciler on the multicluster manager.
 //
 // The primary watch is ServiceEntitlement, scoped to engaged project clusters
@@ -882,29 +1247,60 @@ func mapServiceEntitlementToProjectRequest(_ context.Context, _ client.Object) [
 // via Watches rather than For, so events collapse onto one project-keyed
 // request (see locationBindingRequestName).
 //
-// The three gates also depend on ServiceAvailability, ServiceConfiguration, and
-// Location objects on the root cluster; multicluster-runtime has no clean way
-// to translate a root-cluster object event into a project-scoped reconcile
-// request, so those gates are picked up by the periodic resync configured via
-// RequeueAfter rather than by additional watches.
+// Root ServiceAvailability, ServiceConfiguration, and configured Location
+// informer events are translated by projectionRootDispatcher into the same
+// project key. Managed projection objects are watched in each project so
+// deletion and drift repair do not depend on a periodic sweep.
 //
 // Reconciles run concurrently across projects. Two passes over the same
 // project are serialized by controller-runtime's per-key locking, since every
 // entitlement in a project maps to the same key, so the concurrency here only
 // puts different projects in flight at once. See
 // locationBindingMaxConcurrentReconciles.
-func (r *LocationBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
-	r.rootClient = rootClient
+func (r *LocationBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr manager.Manager) error {
+	r.rootClient = rootMgr.GetClient()
 	r.Manager = mgr
-	return mcbuilder.ControllerManagedBy(mgr).
+	r.projects = newProjectionProjectIndex()
+	rootEvents := make(chan event.TypedGenericEvent[mcreconcile.Request], 4096)
+	if err := rootMgr.Add(&projectionRootDispatcher{
+		rootMgr: rootMgr,
+		gvk:     r.LocationGVK,
+		index:   r.projects,
+		events:  rootEvents,
+	}); err != nil {
+		return fmt.Errorf("add projection root dispatcher: %w", err)
+	}
+	rootSource := source.TypedChannel[mcreconcile.Request, mcreconcile.Request](
+		rootEvents,
+		handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, req mcreconcile.Request) []mcreconcile.Request {
+			return []mcreconcile.Request{req}
+		}),
+		source.WithBufferSize[mcreconcile.Request, mcreconcile.Request](4096),
+	)
+	builder := mcbuilder.ControllerManagedBy(mgr).
 		Named("location-binding").
+		WatchesRawSource(rootSource).
 		Watches(
 			&servicesv1alpha1.ServiceEntitlement{},
 			mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
 			mcbuilder.WithEngageWithProviderClusters(true),
-		).
-		WithOptions(controller.TypedOptions[mcreconcile.Request]{
-			MaxConcurrentReconciles: locationBindingMaxConcurrentReconciles,
-		}).
+		)
+	for _, gvk := range projectionGVKs {
+		projection := &unstructured.Unstructured{}
+		projection.SetGroupVersionKind(gvk)
+		builder = builder.Watches(
+			projection,
+			mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
+			mcbuilder.WithEngageWithProviderClusters(true),
+		)
+	}
+	builder = builder.Watches(
+		&servicesv1alpha1.ServiceAvailability{},
+		mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
+		mcbuilder.WithEngageWithProviderClusters(true),
+	)
+	return builder.WithOptions(controller.TypedOptions[mcreconcile.Request]{
+		MaxConcurrentReconciles: locationBindingMaxConcurrentReconciles,
+	}).
 		Complete(r)
 }

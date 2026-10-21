@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -21,6 +23,7 @@ import (
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -131,6 +134,20 @@ func main() {
 
 	setupLog.Info("server config", "config", serverConfig)
 
+	// Register exactly the configured Location source as an unstructured type
+	// before constructing the manager. This makes manager.GetClient serve
+	// projection reads from the shared informer cache instead of issuing a live
+	// GET for every service/location pair. The alternate Location group is not
+	// cached or watched.
+	locationGVK, err := serverConfig.LocationSource.GVK()
+	if err != nil {
+		setupLog.Error(err, "invalid location source")
+		os.Exit(1)
+	}
+	scheme.AddKnownTypeWithName(locationGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(locationGVK.GroupVersion().WithKind(locationGVK.Kind+"List"), &unstructured.UnstructuredList{})
+	setupLog.Info("reading locations from shared cache", "locationSource", serverConfig.LocationSource)
+
 	// Services resources live in the Milo control plane, not in the cluster
 	// that hosts the controller pod. Connect directly to Milo using the
 	// configured kubeconfig, falling back to ctrl.GetConfig() for local /
@@ -194,16 +211,6 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConfiguration")
 		os.Exit(1)
 	}
-	// Resolved once, at startup: a locationSource naming no known group is a
-	// config error the operator should hear about before it serves anything,
-	// not on the first reconcile that happens to need a location.
-	locationGVK, err := serverConfig.LocationSource.GVK()
-	if err != nil {
-		setupLog.Error(err, "invalid location source")
-		os.Exit(1)
-	}
-	setupLog.Info("reading locations from", "locationSource", serverConfig.LocationSource)
-
 	if err = (&controller.ServiceAvailabilityReconciler{LocationGVK: locationGVK}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceAvailability")
 		os.Exit(1)
@@ -379,7 +386,7 @@ func main() {
 			Metrics: metricsserver.Options{
 				BindAddress: "0",
 			},
-			LeaderElection:          enableLeaderElection,
+			LeaderElection:          true,
 			LeaderElectionID:        "consumer-projection.services.miloapis.com",
 			LeaderElectionNamespace: leaderElectionNamespace,
 			LeaseDuration:           &leaseDuration,
@@ -391,7 +398,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(consumerMcMgr, mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
 			os.Exit(1)
 		}
@@ -448,13 +455,68 @@ func main() {
 		setupLog.Info("consumer-scoped projection enabled",
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
 	} else {
-		if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
-			os.Exit(1)
-		}
-		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
-			os.Exit(1)
+		if enableSingleClusterForE2ETests {
+			if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(mcMgr, mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+				os.Exit(1)
+			}
+			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
+				os.Exit(1)
+			}
+		} else {
+			// Admission discovery stays on mcMgr on every replica. Projection
+			// gets a second Milo provider and manager so its caches and mutation
+			// workers start only on the holder of this distinct lease.
+			projectionLocalMgr, err := ctrl.NewManager(cfg, ctrl.Options{
+				Scheme:                  scheme,
+				Controller:              controllerOpts,
+				Metrics:                 metricsserver.Options{BindAddress: "0"},
+				LeaderElection:          true,
+				LeaderElectionID:        "project-projection.services.miloapis.com",
+				LeaderElectionNamespace: leaderElectionNamespace,
+				LeaseDuration:           &leaseDuration,
+				RenewDeadline:           &renewDeadline,
+				RetryPeriod:             &retryPeriod,
+			})
+			if err != nil {
+				setupLog.Error(err, "unable to create elected projection manager")
+				os.Exit(1)
+			}
+			projectionProvider, err := miloprovider.New(projectionLocalMgr, miloprovider.Options{
+				InternalServiceDiscovery: false,
+				ProjectRestConfig:        cfg,
+				ClusterOptions:           []cluster.Option{func(o *cluster.Options) { o.Scheme = scheme }},
+			})
+			if err != nil {
+				setupLog.Error(err, "unable to create elected projection provider")
+				os.Exit(1)
+			}
+			projectionMcMgr, err := mcmanager.WithMultiCluster(projectionLocalMgr, miloprovider.WithoutAutoStart(projectionProvider))
+			if err != nil {
+				setupLog.Error(err, "unable to create elected projection multicluster manager")
+				os.Exit(1)
+			}
+			if err := projectionLocalMgr.Add(manager.RunnableFunc(func(runCtx context.Context) error {
+				return projectionProvider.Start(runCtx, projectionMcMgr)
+			})); err != nil {
+				setupLog.Error(err, "unable to add elected projection provider")
+				os.Exit(1)
+			}
+			if err = (&controller.LocationBindingReconciler{Scheme: scheme, LocationGVK: locationGVK}).SetupWithManager(projectionMcMgr, mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "LocationBinding")
+				os.Exit(1)
+			}
+			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr.GetClient()); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
+				os.Exit(1)
+			}
+			go func() {
+				if err := projectionMcMgr.Start(ctx); err != nil {
+					setupLog.Error(err, "elected projection manager failed")
+					os.Exit(1)
+				}
+			}()
 		}
 	}
 

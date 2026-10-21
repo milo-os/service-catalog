@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,6 +67,7 @@ func newBindingConsumerClient(objs ...client.Object) client.Client {
 		subresourced = append(subresourced, u)
 	}
 	subresourced = append(subresourced, &servicesv1alpha1.ServiceAvailability{})
+	subresourced = append(subresourced, &servicesv1alpha1.ServiceEntitlement{})
 	return fake.NewClientBuilder().
 		WithScheme(bindingScheme()).
 		WithObjects(objs...).
@@ -279,6 +281,109 @@ func TestLocationBindingReconciler_AllGatesOpen(t *testing.T) {
 	}
 	if len(u.GetOwnerReferences()) != 0 {
 		t.Errorf("binding carries an owner reference, want none: projections are pruned by desired-state, not GC cascade")
+	}
+}
+
+func TestLocationBindingReconciler_RecordsSetupCompletionWithoutPeriodicRequeue(t *testing.T) {
+	requestedAt := metav1.NewTime(time.Date(2026, 10, 21, 19, 48, 0, 0, time.UTC))
+	entitlement := newActiveEntitlement()
+	entitlement.CreationTimestamp = requestedAt
+	entitlement.UID = types.UID("setup-attempt")
+	for _, conditionType := range []string{
+		servicesv1alpha1.ConditionTypeReady,
+		servicesv1alpha1.ConditionTypeDependenciesSatisfied,
+		servicesv1alpha1.ConditionTypeProvisioned,
+	} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
+			Type: conditionType, Status: metav1.ConditionTrue, Reason: "TestComplete", Message: "complete",
+			LastTransitionTime: requestedAt,
+		})
+	}
+	rootClient := newBindingRootClient(
+		newPublishedConfigWithClasses(lbClass),
+		newAvailabilityWithCondition(lbLoc, true),
+		newClassyLocation(lbLoc, true, lbClass),
+	)
+	consumerClient := newBindingConsumerClient(entitlement)
+
+	result, err := reconcileBindings(t, rootClient, consumerClient)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Fatalf("successful reconcile scheduled periodic work: %+v", result)
+	}
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: entitlement.Name}, &got); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if got.Status.Setup == nil {
+		t.Fatal("status.setup is nil")
+	}
+	if got.Status.Setup.ID != "setup-attempt/1" || got.Status.Setup.Sequence != 1 {
+		t.Fatalf("unexpected setup identity: %#v", got.Status.Setup)
+	}
+	if !got.Status.Setup.RequestedAt.Equal(&requestedAt) {
+		t.Fatalf("requestedAt = %s, want %s", got.Status.Setup.RequestedAt, requestedAt)
+	}
+	if got.Status.Setup.FirstCompletedAt == nil {
+		t.Fatal("firstCompletedAt is nil")
+	}
+	if !apimeta.IsStatusConditionTrue(got.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete) {
+		t.Fatalf("SetupComplete is not true: %#v", got.Status.Conditions)
+	}
+	if got.Status.Setup.Outcome != servicesv1alpha1.ServiceSetupOutcomeSucceeded {
+		t.Fatalf("outcome = %q", got.Status.Setup.Outcome)
+	}
+}
+
+func TestLocationBindingReconciler_SetupUsesProviderActivationRequestTime(t *testing.T) {
+	originalRequest := metav1.NewTime(time.Date(2026, 10, 21, 19, 40, 0, 0, time.UTC))
+	entitlement := newActiveEntitlement()
+	entitlement.CreationTimestamp = metav1.NewTime(originalRequest.Add(8 * time.Minute))
+	entitlement.Spec.ProviderActivation = &servicesv1alpha1.ProviderActivation{RequestedAt: originalRequest}
+	consumerClient := newBindingConsumerClient(entitlement)
+
+	if _, err := reconcileBindings(t, newBindingRootClient(), consumerClient); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: entitlement.Name}, &got); err != nil {
+		t.Fatalf("get entitlement: %v", err)
+	}
+	if got.Status.Setup == nil || !got.Status.Setup.RequestedAt.Equal(&originalRequest) {
+		t.Fatalf("setup request time = %#v, want original activation time %s", got.Status.Setup, originalRequest)
+	}
+}
+
+func TestTransitiveDependenciesCompleteDetectsCycle(t *testing.T) {
+	a := newActiveEntitlement()
+	a.Name = "service-a"
+	a.Spec.ServiceRef.Name = "service-a"
+	b := newActiveEntitlement()
+	b.Name = "service-b"
+	b.Spec.ServiceRef.Name = "service-b"
+	for _, entitlement := range []*servicesv1alpha1.ServiceEntitlement{a, b} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
+			Type: servicesv1alpha1.ConditionTypeDependenciesSatisfied, Status: metav1.ConditionTrue,
+			Reason: servicesv1alpha1.ReasonDependenciesSatisfied,
+		})
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
+			Type: servicesv1alpha1.ConditionTypeSetupComplete, Status: metav1.ConditionTrue, Reason: "Test",
+		})
+	}
+	services := map[string]*servicesv1alpha1.Service{
+		"service-a": {ObjectMeta: metav1.ObjectMeta{Name: "service-a"}, Spec: servicesv1alpha1.ServiceSpec{
+			Dependencies: []servicesv1alpha1.ServiceDependency{{ServiceRef: servicesv1alpha1.ServiceRef{Name: "service-b"}}},
+		}},
+		"service-b": {ObjectMeta: metav1.ObjectMeta{Name: "service-b"}, Spec: servicesv1alpha1.ServiceSpec{
+			Dependencies: []servicesv1alpha1.ServiceDependency{{ServiceRef: servicesv1alpha1.ServiceRef{Name: "service-a"}}},
+		}},
+	}
+	complete, reason := transitiveDependenciesComplete(a, services,
+		map[string]*servicesv1alpha1.ServiceEntitlement{"service-a": a, "service-b": b}, map[string]bool{})
+	if complete || reason != "DependencyCycle" {
+		t.Fatalf("complete=%v reason=%q, want false/DependencyCycle", complete, reason)
 	}
 }
 
@@ -643,7 +748,7 @@ func TestLocationBindingReconciler_PrunesEveryProjection(t *testing.T) {
 		t.Fatalf("get entitlement: %v", err)
 	}
 	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
-	if err := consumerClient.Update(context.Background(), ent); err != nil {
+	if err := consumerClient.Status().Update(context.Background(), ent); err != nil {
 		t.Fatalf("update entitlement: %v", err)
 	}
 
@@ -1103,7 +1208,7 @@ func TestLocationBindingReconciler_PrunesStaleMirror(t *testing.T) {
 		t.Fatalf("get entitlement: %v", err)
 	}
 	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
-	if err := consumerClient.Update(context.Background(), ent); err != nil {
+	if err := consumerClient.Status().Update(context.Background(), ent); err != nil {
 		t.Fatalf("update entitlement: %v", err)
 	}
 

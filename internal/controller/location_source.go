@@ -30,10 +30,11 @@ var errLocationSourceUnavailable = errors.New("configured location source is not
 // no second attempt against another group: the source is chosen by
 // configuration precisely so that nothing here decides it silently.
 //
-// The read is unstructured, which the controller-runtime client answers
-// straight from the API server rather than through an informer. A group that
-// is not installed therefore costs one failed request rather than a cache that
-// never syncs and takes the manager down with it.
+// The selected unstructured GVK is registered before manager construction, so
+// the injected manager reader answers this from its shared informer cache. A
+// cache miss after synchronization is a legitimate absent Location; source
+// discovery and initial synchronization failures prevent the controller from
+// starting and therefore cannot be mistaken for an empty desired set.
 func getLocation(ctx context.Context, c client.Reader, gvk schema.GroupVersionKind, name string) (*unstructured.Unstructured, bool, error) {
 	loc := &unstructured.Unstructured{}
 	loc.SetGroupVersionKind(gvk)

@@ -6,6 +6,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -41,13 +42,54 @@ func RenderStatus(w io.Writer, cfg ServiceInfo, project string, state State, e *
 		_, _ = fmt.Fprintf(w, "          %s\n", cfg.Description)
 	}
 	_, _ = fmt.Fprintf(w, "Project:  %s\n", project)
-	_, _ = fmt.Fprintf(w, "Status:   %s\n", statusLine(cfg, state, e))
+	_, _ = fmt.Fprintf(w, "Access:   %s\n", statusLine(cfg, state, e))
 	if msg := serverMessage(state, e); msg != "" {
 		_, _ = fmt.Fprintf(w, "          %s\n", msg)
+	}
+	if e != nil && e.Status.Setup != nil {
+		_, _ = fmt.Fprintf(w, "Setup:    %s\n", setupLine(e))
 	}
 	if hint := nextStepHint(cfg, state); hint != "" {
 		_, _ = fmt.Fprintf(w, "\n%s\n", hint)
 	}
+}
+
+func setupLine(e *servicesv1alpha1.ServiceEntitlement) string {
+	setup := e.Status.Setup
+	if setup == nil {
+		return "Observation pending"
+	}
+	if condition := apimeta.FindStatusCondition(e.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete); condition != nil && condition.Status == metav1.ConditionTrue {
+		if setup.FirstCompletedAt != nil {
+			return fmt.Sprintf("Complete (%s)", compactDuration(setup.FirstCompletedAt.Sub(setup.RequestedAt.Time)))
+		}
+		return "Complete"
+	}
+	blocker := setupBlockingReason(e)
+	if blocker == "" {
+		blocker = "observation"
+	}
+	return fmt.Sprintf("Waiting on %s (%s elapsed)", blocker, compactDuration(time.Since(setup.RequestedAt.Time)))
+}
+
+func setupBlockingReason(e *servicesv1alpha1.ServiceEntitlement) string {
+	if e == nil || e.Status.Setup == nil {
+		return ""
+	}
+	return e.Status.Setup.BlockingReason
+}
+
+func compactDuration(duration time.Duration) string {
+	if duration < 0 {
+		return "unknown"
+	}
+	if duration < time.Second {
+		return "<1s"
+	}
+	if duration < time.Minute {
+		return duration.Truncate(time.Second).String()
+	}
+	return duration.Truncate(time.Minute).String()
 }
 
 // CatalogReport is the machine-readable form emitted by the `services list`
