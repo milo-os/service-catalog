@@ -368,11 +368,11 @@ func main() {
 
 		// mcmanager.Options is controller-runtime's manager.Options verbatim and
 		// mcmanager.New passes it straight to manager.New, so this manager
-		// leader-elects exactly like the primary one — including routing the
+		// uses the same leader-election setting as the primary one — including routing the
 		// LocationBinding controller and the auto-wired consumerProvider.Start
 		// into the leader-election runnable group.
 		//
-		// This is the one lease that decides which replica projects into
+		// When leader election is enabled, this is the one lease that decides which replica projects into
 		// consumer projects. Unlike the all-projects manager (see
 		// newDiscoveryManager and #62), nothing here has to work on a
 		// non-leader: consumerMcMgr hosts only the LocationBinding reconciler,
@@ -386,7 +386,7 @@ func main() {
 			Metrics: metricsserver.Options{
 				BindAddress: "0",
 			},
-			LeaderElection:          true,
+			LeaderElection:          enableLeaderElection,
 			LeaderElectionID:        "consumer-projection.services.miloapis.com",
 			LeaderElectionNamespace: leaderElectionNamespace,
 			LeaseDuration:           &leaseDuration,
@@ -466,13 +466,15 @@ func main() {
 			}
 		} else {
 			// Admission discovery stays on mcMgr on every replica. Projection
-			// gets a second Milo provider and manager so its caches and mutation
-			// workers start only on the holder of this distinct lease.
+			// gets a second Milo provider and manager. With --leader-elect, its
+			// caches and mutation workers start only on the holder of this
+			// distinct lease; single-replica development and e2e retain the
+			// configured no-election behavior.
 			projectionLocalMgr, err := ctrl.NewManager(cfg, ctrl.Options{
 				Scheme:                  scheme,
 				Controller:              controllerOpts,
 				Metrics:                 metricsserver.Options{BindAddress: "0"},
-				LeaderElection:          true,
+				LeaderElection:          enableLeaderElection,
 				LeaderElectionID:        "project-projection.services.miloapis.com",
 				LeaderElectionNamespace: leaderElectionNamespace,
 				LeaseDuration:           &leaseDuration,
