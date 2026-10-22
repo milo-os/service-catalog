@@ -10,6 +10,7 @@ spec:
   includedPermissions:
     - services.miloapis.com/serviceactivationrequests.list
     - services.miloapis.com/serviceactivationrequests.get
+    - services.miloapis.com/serviceactivationrequests/status.get
     - services.miloapis.com/serviceactivationrequests.create
     - services.miloapis.com/serviceactivationrequests.delete
     - services.miloapis.com/serviceactivationrequests.watch
