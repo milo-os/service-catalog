@@ -26,6 +26,10 @@ spec:
     and take it to 1 when that is the number CI shows. Each run prints the
     measured times, so the CI logs say how much headroom is left.
 
+    When the budget was set to 5s, CI measured about 0.4s for one project and
+    0.7-1.1s per project for three at once. 5s leaves room for a slow runner
+    and still fails on the 8-15s staging showed.
+
     The single-project step runs first so the two numbers come from the same
     environment, minutes apart. It is the baseline the concurrent one is read
     against; the suite does not assert a ratio between them, because at
@@ -61,7 +65,7 @@ spec:
             timeout: 3m
             env:
               - name: SETUP_BUDGET_SECONDS
-                value: "30"
+                value: "5"
             content: |
               set -e
               ./measure-setup.sh "one project" e2e-enablement-1
@@ -84,7 +88,7 @@ spec:
             timeout: 5m
             env:
               - name: SETUP_BUDGET_SECONDS
-                value: "30"
+                value: "5"
             content: |
               ./measure-setup.sh "three projects at once" \
                 e2e-enablement-1 e2e-enablement-2 e2e-enablement-3

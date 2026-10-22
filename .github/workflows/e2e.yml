@@ -127,7 +127,11 @@ jobs:
       # The concurrent-enablement suite enforces a time budget, and a budget
       # that passes once and fails on the next run is worse than none. Repeat
       # it so a flaky budget shows up here rather than on someone else's PR.
+      #
+      # It runs even when the step above fails: the timings it prints are worth
+      # having from a run that went red for some other suite's reason.
       - name: Repeat the concurrent enablement timing suite
+        if: ${{ !cancelled() }}
         run: task --yes e2e-milo:timing REPEAT=5
 
       - name: Dump operator logs on failure
