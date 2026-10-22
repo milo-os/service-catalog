@@ -2,7 +2,11 @@
 
 package main
 
-import "k8s.io/client-go/rest"
+import (
+	"fmt"
+
+	"k8s.io/client-go/rest"
+)
 
 // Client-side rate limits for requests to Milo. controller-runtime builds one
 // REST client, and so one limiter, per kind per project control plane, so each
@@ -28,4 +32,20 @@ func setClientRateLimits(cfg *rest.Config, qps float32, burst int) {
 	cfg.QPS = qps
 	cfg.Burst = burst
 	cfg.RateLimiter = nil
+}
+
+// validateClientRateLimits rejects values client-go would quietly replace with
+// its own 5 requests per second and burst of 10: a QPS of 0, or a positive QPS
+// with no burst. Those are the limits that made setup slow, so asking for
+// them by accident must fail at startup instead.
+func validateClientRateLimits(qps float32, burst int) error {
+	if qps == 0 {
+		return fmt.Errorf("--kube-api-qps must not be 0, which client-go replaces with its default of %v; "+
+			"set a positive rate, or a negative one to turn throttling off", rest.DefaultQPS)
+	}
+	if qps > 0 && burst <= 0 {
+		return fmt.Errorf("--kube-api-burst must be positive when --kube-api-qps is %v; "+
+			"client-go replaces %d with its default of %d", qps, burst, rest.DefaultBurst)
+	}
+	return nil
 }

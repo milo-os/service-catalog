@@ -96,9 +96,9 @@ func main() {
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 	flag.Float64Var(&kubeAPIQPS, "kube-api-qps", float64(defaultKubeAPIQPS),
 		"Requests per second each Milo client may sustain. Clients are per kind per project, so this limits "+
-			"one kind in one project, not the whole operator. A negative value turns client-side throttling off.")
+			"one kind in one project, not the whole operator. A negative value turns client-side throttling off; 0 is rejected.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst,
-		"Requests each Milo client may send at once before --kube-api-qps applies.")
+		"Requests each Milo client may send at once before --kube-api-qps applies. Must be positive unless --kube-api-qps is negative.")
 	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
 		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
 			"project name (consumer and provider alike) to this single cluster, so ServiceEntitlement/"+
@@ -159,6 +159,10 @@ func main() {
 	}
 	// Before anything copies cfg: every manager, the Milo providers, and each
 	// project control plane's config derive from it.
+	if err := validateClientRateLimits(float32(kubeAPIQPS), kubeAPIBurst); err != nil {
+		setupLog.Error(err, "invalid client rate limits")
+		os.Exit(1)
+	}
 	setClientRateLimits(cfg, float32(kubeAPIQPS), kubeAPIBurst)
 
 	ctx := ctrl.SetupSignalHandler()

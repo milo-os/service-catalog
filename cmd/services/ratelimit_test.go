@@ -72,3 +72,25 @@ func TestSetClientRateLimits_FlagValuesAreUsed(t *testing.T) {
 		t.Fatalf("limiter = %v, want QPS 7", limiter)
 	}
 }
+
+func TestValidateClientRateLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		qps     float32
+		burst   int
+		wantErr bool
+	}{
+		{"defaults", defaultKubeAPIQPS, defaultKubeAPIBurst, false},
+		{"throttling off", -1, 0, false},
+		{"zero QPS falls back to client-go's default", 0, 100, true},
+		{"zero burst falls back to client-go's default", 50, 0, true},
+		{"negative burst", 50, -1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientRateLimits(tc.qps, tc.burst)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateClientRateLimits(%v, %d) error = %v, wantErr %v", tc.qps, tc.burst, err, tc.wantErr)
+			}
+		})
+	}
+}
