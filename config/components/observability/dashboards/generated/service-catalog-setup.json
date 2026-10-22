@@ -316,7 +316,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((sum(increase(service_catalog_setup_attempts_total{outcome=\"succeeded\"}[$__range]))) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "expr": "((sum(increase(service_catalog_setup_attempts_total{outcome=\"succeeded\"}[$__range]))) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)",
                "legendFormat": "completed"
             }
          ],
@@ -550,7 +550,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((sum(service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "expr": "((sum(service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)",
                "legendFormat": "in flight"
             }
          ],
@@ -648,7 +648,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((sum(service_catalog_setup_overdue)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "expr": "((sum(service_catalog_setup_overdue)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)",
                "legendFormat": "overdue"
             }
          ],
@@ -746,7 +746,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((max(service_catalog_setup_oldest_inflight_seconds)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "expr": "((max(service_catalog_setup_oldest_inflight_seconds)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)",
                "legendFormat": "oldest"
             }
          ],
@@ -806,7 +806,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or label_replace((absent((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, \"blocking_stage\", \"none\", \"\", \"\") or label_replace(absent((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) * (((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)), \"blocking_stage\", \"telemetry unavailable\", \"\", \"\")",
+               "expr": "((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or label_replace((absent((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, \"blocking_stage\", \"none\", \"\", \"\") or label_replace(absent((sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)) * (((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)), \"blocking_stage\", \"telemetry unavailable\", \"\", \"\")",
                "legendFormat": "{{blocking_stage}}"
             }
          ],

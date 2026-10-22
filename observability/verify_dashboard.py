@@ -48,7 +48,7 @@ for title in ("Completed setups", "In flight", "Overdue (>60s)", "Oldest unfinis
     expression = by_title[title]["targets"][0]["expr"]
     if "and on() (max(service_catalog_setup_observer_healthy) == 1)" not in expression:
         fail(f"{title!r} must suppress stale values while the observer is unhealthy")
-    if "max(service_catalog_setup_observer_healthy) == 0" not in expression:
+    if "(max(service_catalog_setup_observer_healthy) == 0) - 1" not in expression:
         fail(f"{title!r} must render unhealthy observer telemetry as unavailable")
 
 completion = by_title["Setup completion volume by class"]["targets"][0]["expr"]

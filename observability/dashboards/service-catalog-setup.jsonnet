@@ -45,7 +45,7 @@ local observerMappings = [
 // A setup aggregate is zero only when the observer is healthy. A missing or
 // unhealthy observer produces -1 so an empty or stale cache cannot look healthy.
 local observedAggregate(expr) =
-  '((%s) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)' % expr;
+  '((%s) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)' % expr;
 
 local completedAggregate(expr) = observedAggregate(expr);
 
@@ -156,7 +156,7 @@ local panels = [
     'Age of the oldest unfinished persisted setup attempt.', telemetryMappings()),
   timePanel(
     'Unfinished attempts by blocking stage over time',
-    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
+    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
     'short', { h: 8, w: 24, x: 0, y: 20 },
     'Unfinished attempts grouped by the first incomplete stage over the selected range. The legend uses the final sample, so stages that have drained do not look current. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal'),
 
