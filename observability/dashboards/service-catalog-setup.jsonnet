@@ -34,7 +34,12 @@ local unfinishedByStage = '(sum by (blocking_stage) (service_catalog_setup_infli
 // hour past authorization. Releases before the stalled gauge count every
 // overdue attempt here.
 local slowByStage = '((sum by (service_class, blocking_stage) (service_catalog_setup_overdue) - (sum by (service_class, blocking_stage) (service_catalog_setup_stalled) or sum by (service_class, blocking_stage) (service_catalog_setup_overdue) * 0)) > 0) ' + observerHealthy;
+// The stalled gauge is absent both when nothing is unfinished and on releases
+// that predate it. Unfinished work without the gauge means the latter, which
+// must read as unavailable rather than as zero stalled setups.
+local stalledUnavailable = '(absent(service_catalog_setup_stalled) * -1 and on() count(service_catalog_setup_inflight))';
 local clientMetricsPending = 'Not exported yet';
+local clientMetricsIdleOrPending = 'No requests in range, or client-go %s metrics not exported yet';
 
 local prom(expr, legend='') =
   prometheus.new(ds, expr)
@@ -110,10 +115,10 @@ local timePanel(title, targets, unit, gridPos, description, stacking='none', leg
 local stalledTable(gridPos) =
   table.new('Stalled setups by blocking stage')
   + pos(gridPos.h, gridPos.w, gridPos.x, gridPos.y)
-  + table.panelOptions.withDescription('Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first.')
+  + table.panelOptions.withDescription('Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([
-    prom('sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) ' + observerHealthy)
+    prom('(sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) ' + observerHealthy + ') or label_replace(' + stalledUnavailable + ', "blocking_stage", "Telemetry unavailable", "", "")')
     + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('stalled'),
     prom('max by (service_class, blocking_stage) (service_catalog_setup_oldest_inflight_seconds and on(service_class, operation, blocking_stage) (service_catalog_setup_stalled > 0)) ' + observerHealthy)
     + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('oldest'),
@@ -129,6 +134,9 @@ local stalledTable(gridPos) =
   + table.standardOptions.withNoValue('No stalled setups')
   + table.standardOptions.withOverrides([
     { matcher: { id: 'byName', options: 'Oldest' }, properties: [{ id: 'unit', value: 'dtdurations' }] },
+    { matcher: { id: 'byName', options: 'Stalled' }, properties: [{ id: 'mappings', value: [
+      { type: 'value', options: { '-1': { text: 'Telemetry unavailable', color: 'purple' } } },
+    ] }] },
     { matcher: { id: 'byName', options: 'Blocked at' }, properties: [{ id: 'mappings', value: [
       { type: 'value', options: {
         Authorization: { text: 'Authorization: access not approved, or project suspended' },
@@ -187,9 +195,9 @@ local panels = [
     observedAggregate('sum(service_catalog_setup_overdue) - (sum(service_catalog_setup_stalled) or vector(0))'), 'slow', 'short',
     [['purple', null], ['green', 0], ['yellow', 1], ['red', 5]], { h: 5, w: 4, x: 12, y: 1 },
     'Unfinished setups between one minute and one hour past authorization: work that should finish but has not yet. This is the number to act on. Stalled setups are counted separately. Releases without the stalled gauge count every overdue setup here.', telemetryMappings()),
-  statPanel('Stalled (>1h)', observedAggregate('sum(service_catalog_setup_stalled)'), 'stalled', 'short',
+  statPanel('Stalled (>1h)', '%s or (%s)' % [stalledUnavailable, observedAggregate('sum(service_catalog_setup_stalled)')], 'stalled', 'short',
     [['purple', null], ['green', 0], ['orange', 1]], { h: 5, w: 4, x: 16, y: 1 },
-    'Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs.', telemetryMappings()),
+    'Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.', telemetryMappings()),
   statPanel('Setup observer', 'max(service_catalog_setup_observer_healthy) or vector(-1)', 'observer', 'short',
     [['purple', null], ['red', 0], ['green', 1]], { h: 5, w: 4, x: 20, y: 1 },
     'Whether all source caches needed to interpret setup state are synchronized on the projection owner. The unfinished-work numbers are trustworthy only while this is Healthy.', observerMappings),
@@ -269,13 +277,13 @@ local panels = [
     [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 0, y: 60 },
     'Controller-wide p95 API round-trip latency by scope (root is the platform API, project is any project control plane) and HTTP verb. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.',
-    noValue=clientMetricsPending + ': client-go latency metrics are not registered by this release'),
+    noValue=clientMetricsIdleOrPending % 'latency'),
   timePanel(
     'Client throttle wait p95 by verb and scope',
     [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 12, y: 60 },
     'Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb.',
-    noValue=clientMetricsPending + ': client-go rate-limiter metrics are not registered by this release'),
+    noValue=clientMetricsIdleOrPending % 'rate-limiter'),
   timePanel(
     'Kubernetes API request rate by response code',
     [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
