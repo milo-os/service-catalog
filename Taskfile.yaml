@@ -250,7 +250,7 @@ tasks:
         echo "e2e environment ready! Run 'task e2e' to execute the chainsaw suite."
 
   e2e-milo:setup:
-    desc: Spin up the multi-project e2e environment — a real Milo control plane, three real Projects, and the operator wired to it (see test/e2e-milo/README.md)
+    desc: Spin up the multi-project e2e environment — a real Milo control plane, real Projects, and the operator wired to it (see test/e2e-milo/README.md)
     silent: true
     cmds:
       # Built here rather than by the script: the image is this repo's, the
@@ -278,6 +278,22 @@ tasks:
       # including the ephemeral namespace it creates per test. Without it that
       # lands in whatever cluster the developer's ambient kubeconfig points at.
       - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
+    silent: false
+
+  e2e-milo:timing:
+    desc: Run the concurrent-enablement timing suite REPEAT times in a row (default 5; requires 'task e2e-milo:setup' first)
+    deps:
+      - task: install-go-tool
+        vars:
+          NAME: chainsaw
+          PACKAGE: github.com/kyverno/chainsaw
+          VERSION: "{{.CHAINSAW_VERSION}}"
+    vars:
+      REPEAT: '{{.REPEAT | default "5"}}'
+    cmds:
+      # A timing budget is only worth enforcing if it holds run after run, so
+      # CI runs this suite repeatedly on top of the single pass in 'e2e-milo'.
+      - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml --repeat-count {{.REPEAT}} test/e2e-milo/concurrent-enablement
     silent: false
 
   e2e-milo:down:
