@@ -1339,3 +1339,58 @@ func TestProvisioningReportsAnObjectTakenOverInThePast(t *testing.T) {
 		t.Errorf("expected Installed/ObjectAdopted with a warning, got %+v", entry)
 	}
 }
+
+// A declaration that fails to install right after enablement is usually held
+// up by something that clears within seconds, such as the owning service's
+// webhook not yet serving the new project. Waiting for the five-minute resync
+// left setup stalled long after the cause was gone.
+func TestProvisioningRetriesFailedResourcesWithBackoff(t *testing.T) {
+	failing := true
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if failing {
+					return apierrors.NewForbidden(
+						schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+						"tenant-endpoint-ipv6", errors.New("consumer project not engaged yet"))
+				}
+				return c.Apply(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+
+	steps := []struct {
+		failing bool
+		want    time.Duration
+	}{
+		{failing: true, want: provisioningFailureRetryInitial},
+		{failing: true, want: 2 * provisioningFailureRetryInitial},
+		{failing: false, want: provisioningResyncInterval},
+		// After a success, a new failure starts again from the short delay.
+		{failing: true, want: provisioningFailureRetryInitial},
+	}
+	for i, step := range steps {
+		failing = step.failing
+		if got := provReconcile(t, r).RequeueAfter; got != step.want {
+			t.Errorf("pass %d (failing=%v): requeueAfter = %s, want %s", i+1, step.failing, got, step.want)
+		}
+	}
+}
+
+func TestProvisioningFailureRetryIsCappedAtTheResyncInterval(t *testing.T) {
+	r := &ProvisioningReconciler{}
+	var got time.Duration
+	for i := 0; i < 20; i++ {
+		got = r.failureRetryDelay("entitlement-uid")
+	}
+	if got != provisioningResyncInterval {
+		t.Errorf("retry delay after repeated failures = %s, want the %s resync cap", got, provisioningResyncInterval)
+	}
+}
