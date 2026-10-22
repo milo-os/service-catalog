@@ -1,10 +1,13 @@
 // Service Catalog Setup Dashboard
 //
-// Operational view of customer-visible setup latency, unfinished work, the
-// elected projection path, and the Kubernetes client pressure that can delay
-// convergence. Empty-state fallbacks are deliberate: a healthy observer with
-// no work reports zero, while missing or unhealthy setup telemetry reports -1
-// and is rendered as "Telemetry unavailable" rather than a healthy zero.
+// Answers "is setup fast and healthy right now, and if not, why?" The top row
+// separates setup that is slow right now from setup stalled on a known
+// blocker; the sections below show where setup time goes (controller queues,
+// Kubernetes API latency versus client throttling) and the leader changes and
+// restarts behind most outliers. Empty-state fallbacks are deliberate: a
+// healthy observer with no work reports zero, while missing or unhealthy setup
+// telemetry reports -1 and is rendered as "Telemetry unavailable" rather than
+// a healthy zero.
 
 local g = import 'github.com/grafana/grafonnet/gen/grafonnet-v11.4.0/main.libsonnet';
 
@@ -12,14 +15,26 @@ local prometheus = g.query.prometheus;
 local stat = g.panel.stat;
 local timeSeries = g.panel.timeSeries;
 local row = g.panel.row;
+local table = g.panel.table;
 local var = g.dashboard.variable;
 
 local ds = '${datasource}';
 local job = 'job="services-system/services-controller-manager"';
 local controllerPods = 'namespace="services-system",container="manager",pod=~"services-controller-manager-.*"';
-local projectionQueue = job + ',name=~"location-(binding|projection)"';
-local projectionController = job + ',controller=~"location-(binding|projection)"';
-local unfinishedByStage = '(sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)';
+// The controllers a setup passes through, in order.
+local setupControllers = 'service-entitlement|service-provisioning|location-projection|capability-binding';
+local setupQueues = job + ',name=~"%s"' % setupControllers;
+local setupReconcilers = job + ',controller=~"%s"' % setupControllers;
+// Project discovery: after a start or failover every project control plane is
+// queued here, and setup in a project waits until its project is reconnected.
+local projectReconnectQueue = job + ',name="projectcontrolplane"';
+local observerHealthy = 'and on() (max(service_catalog_setup_observer_healthy) == 1)';
+local unfinishedByStage = '(sum by (blocking_stage) (service_catalog_setup_inflight)) ' + observerHealthy;
+// Setup that is overdue but not stalled: more than a minute and less than an
+// hour past authorization. Releases before the stalled gauge count every
+// overdue attempt here.
+local slowByStage = '((sum by (service_class, blocking_stage) (service_catalog_setup_overdue) - (sum by (service_class, blocking_stage) (service_catalog_setup_stalled) or sum by (service_class, blocking_stage) (service_catalog_setup_overdue) * 0)) > 0) ' + observerHealthy;
+local clientMetricsPending = 'Not exported yet';
 
 local prom(expr, legend='') =
   prometheus.new(ds, expr)
@@ -28,8 +43,8 @@ local prom(expr, legend='') =
 local pos(h, w, x, y) = { gridPos: { h: h, w: w, x: x, y: y } };
 local steps(values) = [{ color: value[0], value: value[1] } for value in values];
 
-local telemetryMappings(noObservation='No observations') = [
-  { type: 'value', options: { '-1': { text: 'Telemetry unavailable', color: 'purple' } } },
+local telemetryMappings(noObservation='No observations', unavailable='Telemetry unavailable') = [
+  { type: 'value', options: { '-1': { text: unavailable, color: 'purple' } } },
   { type: 'special', options: { match: 'null', result: { text: noObservation, color: 'text' } } },
   { type: 'special', options: { match: 'nan', result: { text: noObservation, color: 'text' } } },
 ];
@@ -67,14 +82,14 @@ local statPanel(title, expr, legend, unit, thresholds, gridPos,
   + stat.standardOptions.thresholds.withMode('absolute')
   + stat.standardOptions.thresholds.withSteps(steps(thresholds));
 
-local timePanel(title, targets, unit, gridPos, description, stacking='none', legendCalcs=['lastNotNull', 'max']) =
+local timePanel(title, targets, unit, gridPos, description, stacking='none', legendCalcs=['lastNotNull', 'max'], noValue='No observations in range') =
   timeSeries.new(title)
   + pos(gridPos.h, gridPos.w, gridPos.x, gridPos.y)
   + timeSeries.panelOptions.withDescription(description)
   + timeSeries.queryOptions.withDatasource('prometheus', ds)
   + timeSeries.queryOptions.withTargets(targets)
   + timeSeries.standardOptions.withUnit(unit)
-  + timeSeries.standardOptions.withNoValue('No observations in range')
+  + timeSeries.standardOptions.withNoValue(noValue)
   + timeSeries.fieldConfig.defaults.custom.withDrawStyle('line')
   + timeSeries.fieldConfig.defaults.custom.withLineInterpolation('smooth')
   + timeSeries.fieldConfig.defaults.custom.withLineWidth(2)
@@ -89,6 +104,42 @@ local timePanel(title, targets, unit, gridPos, description, stacking='none', leg
   + timeSeries.options.legend.withCalcs(legendCalcs)
   + timeSeries.options.legend.withSortBy('Max')
   + timeSeries.options.legend.withSortDesc(true);
+
+// Stalled setups as one row per service class and blocking stage, with the
+// stage translated into what usually blocks it.
+local stalledTable(gridPos) =
+  table.new('Stalled setups by blocking stage')
+  + pos(gridPos.h, gridPos.w, gridPos.x, gridPos.y)
+  + table.panelOptions.withDescription('Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first.')
+  + table.queryOptions.withDatasource('prometheus', ds)
+  + table.queryOptions.withTargets([
+    prom('sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) ' + observerHealthy)
+    + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('stalled'),
+    prom('max by (service_class, blocking_stage) (service_catalog_setup_oldest_inflight_seconds and on(service_class, operation, blocking_stage) (service_catalog_setup_stalled > 0)) ' + observerHealthy)
+    + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('oldest'),
+  ])
+  + table.queryOptions.withTransformations([
+    { id: 'merge', options: {} },
+    { id: 'organize', options: {
+      excludeByName: { Time: true },
+      indexByName: { blocking_stage: 0, service_class: 1, 'Value #stalled': 2, 'Value #oldest': 3 },
+      renameByName: { blocking_stage: 'Blocked at', service_class: 'Service class', 'Value #stalled': 'Stalled', 'Value #oldest': 'Oldest' },
+    } },
+  ])
+  + table.standardOptions.withNoValue('No stalled setups')
+  + table.standardOptions.withOverrides([
+    { matcher: { id: 'byName', options: 'Oldest' }, properties: [{ id: 'unit', value: 'dtdurations' }] },
+    { matcher: { id: 'byName', options: 'Blocked at' }, properties: [{ id: 'mappings', value: [
+      { type: 'value', options: {
+        Authorization: { text: 'Authorization: access not approved, or project suspended' },
+        Dependencies: { text: 'Dependencies: a required service has not finished setup' },
+        Provisioning: { text: 'Provisioning: provider resources not installed (see the Provisioned condition)' },
+        Projection: { text: 'Projection: no available locations, or availability not converged' },
+        ProviderAck: { text: 'Provider acknowledgement pending' },
+      } },
+    ] }] },
+  ])
+  + table.options.withSortBy([{ displayName: 'Stalled', desc: true }]);
 
 local section(title, id, y) =
   row.new(title)
@@ -111,169 +162,224 @@ local datasourceVar =
   + var.datasource.withRegex('');
 
 local panels = [
-  section('Customer outcomes', 100, 0),
+  section('Is setup fast and healthy?', 100, 0),
   statPanel(
     'User setup p95',
     'histogram_quantile(0.95, sum by (le) (increase(service_catalog_setup_duration_seconds_bucket{clock="user"}[$__range]))) or vector(-1)',
     'user p95', 's', [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]],
-    { h: 5, w: 6, x: 0, y: 1 },
+    { h: 5, w: 4, x: 0, y: 1 },
     'Request acceptance to first successful SetupComplete for completions in the selected range. -1 means the telemetry is not deployed or no successful setup exists in the range.',
     telemetryMappings('No completed setups'), 'area'),
   statPanel(
     'Platform setup p95',
     'histogram_quantile(0.95, sum by (le) (increase(service_catalog_setup_duration_seconds_bucket{clock="platform"}[$__range]))) or vector(-1)',
     'platform p95', 's', [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]],
-    { h: 5, w: 6, x: 6, y: 1 },
+    { h: 5, w: 4, x: 4, y: 1 },
     'Authorization to first successful SetupComplete for completions in the selected range. External approval time is excluded. -1 means no observation is available.',
     telemetryMappings('No completed setups'), 'area'),
   statPanel(
     'Completed setups',
     completedAggregate('sum(increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__range]))'),
     'completed', 'short', [['purple', null], ['green', 0]],
-    { h: 5, w: 6, x: 12, y: 1 },
+    { h: 5, w: 4, x: 8, y: 1 },
     'Successful initial setup attempts in the selected dashboard range. Zero is valid only while observer telemetry is present.', telemetryMappings()),
+  statPanel('Slow right now',
+    observedAggregate('sum(service_catalog_setup_overdue) - (sum(service_catalog_setup_stalled) or vector(0))'), 'slow', 'short',
+    [['purple', null], ['green', 0], ['yellow', 1], ['red', 5]], { h: 5, w: 4, x: 12, y: 1 },
+    'Unfinished setups between one minute and one hour past authorization: work that should finish but has not yet. This is the number to act on. Stalled setups are counted separately. Releases without the stalled gauge count every overdue setup here.', telemetryMappings()),
+  statPanel('Stalled (>1h)', observedAggregate('sum(service_catalog_setup_stalled)'), 'stalled', 'short',
+    [['purple', null], ['green', 0], ['orange', 1]], { h: 5, w: 4, x: 16, y: 1 },
+    'Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs.', telemetryMappings()),
+  statPanel('Setup observer', 'max(service_catalog_setup_observer_healthy) or vector(-1)', 'observer', 'short',
+    [['purple', null], ['red', 0], ['green', 1]], { h: 5, w: 4, x: 20, y: 1 },
+    'Whether all source caches needed to interpret setup state are synchronized on the projection owner. The unfinished-work numbers are trustworthy only while this is Healthy.', observerMappings),
+  timePanel(
+    'Setup latency by service class and clock',
+    [prom('(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) or (label_replace(label_replace(absent(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) * -1, "service_class", "none", "", ""), "clock", "no observations", "", ""))', 'p95 {{service_class}} / {{clock}}')],
+    's', { h: 7, w: 24, x: 0, y: 6 },
+    'End-to-end p95. The -1 fallback keeps the panel explicit before telemetry rollout or during an idle range; use Setup observer before interpreting it. Annotations mark controller starts and leader acquisitions, which cause most outliers.'),
+
+  section('Unfinished work', 200, 13),
+  stalledTable({ h: 8, w: 12, x: 0, y: 14 }),
+  timePanel(
+    'Slow setups by stage',
+    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "")' % [slowByStage, slowByStage], '{{service_class}} at {{blocking_stage}}')],
+    'short', { h: 8, w: 12, x: 12, y: 14 },
+    'Setups between one minute and one hour past authorization, by service class and the stage they are waiting on. Zero means nothing is slow; stalled setups are excluded.', 'normal', ['max']),
+  timePanel(
+    'Unfinished attempts by blocking stage over time',
+    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
+    'short', { h: 7, w: 24, x: 0, y: 22 },
+    'All unfinished attempts, slow and stalled, grouped by the first incomplete stage over the selected range. The legend reports only the range maximum because a disappeared stage has no trustworthy current sample. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal', ['max']),
+
+  section('Where setup time goes', 300, 29),
+  timePanel(
+    'Queue wait p95 by controller',
+    [prom('histogram_quantile(0.95, sum by (le, name) (rate(workqueue_queue_duration_seconds_bucket{%s}[$__rate_interval])))' % setupQueues, '{{name}}')],
+    's', { h: 8, w: 12, x: 0, y: 30 },
+    'Time a request waits in each setup controller queue before a worker picks it up. High wait with normal reconcile time means too little worker capacity or a backlog after a restart.',
+    noValue='No queued work in range'),
+  timePanel(
+    'Reconcile time p95 by controller',
+    [prom('histogram_quantile(0.95, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval])))' % setupReconcilers, '{{controller}}')],
+    's', { h: 8, w: 12, x: 12, y: 30 },
+    'Time each setup controller spends on one reconcile after dequeue. Rising reconcile time with normal queue wait points at slow Kubernetes API calls or client throttling; see the API section below.',
+    noValue='No reconciles in range'),
+  timePanel(
+    'Reconcile errors by controller',
+    [prom('sum by (controller) (rate(controller_runtime_reconcile_errors_total{%s}[$__rate_interval]))' % setupReconcilers, '{{controller}}')],
+    'reqps', { h: 8, w: 8, x: 0, y: 38 },
+    'Reconciles that returned an error and will retry with backoff. Each retry adds backoff delay to setup.'),
+  timePanel(
+    'Requeues by controller',
+    [prom('sum by (controller, result) (rate(controller_runtime_reconcile_total{%s,result=~"requeue|requeue_after"}[$__rate_interval]))' % setupReconcilers, '{{controller}} {{result}}')],
+    'reqps', { h: 8, w: 8, x: 8, y: 38 },
+    'Reconciles that asked to run again, either immediately (requeue) or after a delay (requeue_after). Sustained requeues usually mean a controller is waiting on another stage.'),
+  timePanel(
+    'Queue depth by controller',
+    [prom('sum by (name) (workqueue_depth{%s})' % setupQueues, '{{name}}')],
+    'short', { h: 8, w: 8, x: 16, y: 38 },
+    'Requests waiting for a worker in each setup controller queue.'),
+  timePanel(
+    'Projection phase p95',
+    [prom('(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) * -1, "phase", "no observations", "", "")', '{{phase}}')],
+    's', { h: 8, w: 12, x: 0, y: 46 },
+    'Execution time for bounded projection phases inside a location-projection reconcile. This does not include workqueue delay.'),
+  timePanel(
+    'Setup completion volume by class',
+    [prom('(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) or label_replace(absent(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) * 0, "service_class", "none", "", "")', '{{service_class}}')],
+    'short', { h: 8, w: 12, x: 12, y: 46 },
+    'Successful setup attempts per interval and service class. Each completion is counted once. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.', 'normal'),
+
+  section('Kubernetes API: slow server or client throttling?', 400, 54),
+  statPanel('API round-trip p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or (absent(rest_client_request_duration_seconds_bucket{%s}) * -1)' % [job, job], 'p95', 's',
+    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 6, x: 0, y: 55 },
+    'Controller-wide Kubernetes API round-trip latency, excluding time waiting on the client rate limiter. High values mean the API servers are slow. Not exported yet means the deployed release does not register client-go latency metrics.', telemetryMappings('No request observations', clientMetricsPending), 'area'),
+  statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{%s})) * -1)' % [job, job], 'p95', 's',
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 6, x: 6, y: 55 },
+    'Controller-wide time requests wait for a client-side rate-limit token before being sent. High values mean the controller is throttling itself, not that the API is slow. Not exported yet must not be read as zero wait.', telemetryMappings('No throttle observations', clientMetricsPending), 'area'),
+  statPanel('Request time spent throttled', '(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) / clamp_min(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) + sum(rate(rest_client_request_duration_seconds_sum{%s}[$__rate_interval])), 1e-9)) or (absent(rest_client_rate_limiter_duration_seconds_sum{%s}) * -1)' % [job, job, job, job], 'throttled', 'percentunit',
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 0.3]], { h: 5, w: 6, x: 12, y: 55 },
+    'Share of total request time spent waiting on the client rate limiter rather than on the API server. Above roughly 10% the controller limits itself; below it, slowness comes from the server.', telemetryMappings('No request observations', clientMetricsPending), 'area'),
+  statPanel('HTTP 429 rate', 'sum(rate(rest_client_requests_total{%s,code="429"}[$__rate_interval])) or vector(0)' % job, '429/s', 'reqps',
+    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 6, x: 18, y: 55 },
+    'Kubernetes API responses rejected by server-side throttling (API priority and fairness).', [], 'area'),
+  timePanel(
+    'API round-trip p95 by verb and host',
+    [prom('histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{verb}} {{host}}')],
+    's', { h: 8, w: 12, x: 0, y: 60 },
+    'Controller-wide p95 API round-trip latency by HTTP verb and API host. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.',
+    noValue=clientMetricsPending + ': client-go latency metrics are not registered by this release'),
+  timePanel(
+    'Client throttle wait p95 by verb and host',
+    [prom('histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{verb}} {{host}}')],
+    's', { h: 8, w: 12, x: 12, y: 60 },
+    'Controller-wide p95 wait for a client-side rate-limit token by HTTP verb and API host.',
+    noValue=clientMetricsPending + ': client-go rate-limiter metrics are not registered by this release'),
+  timePanel(
+    'Kubernetes API request rate by response code',
+    [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
+    'reqps', { h: 7, w: 24, x: 0, y: 68 },
+    'Controller-wide REST traffic grouped by HTTP response code.', 'normal'),
+
+  section('Leadership, restarts and reconnection', 500, 75),
+  statPanel('Leader changes', '(sum(count_over_time((leader_election_master_status{%s} == 1 unless leader_election_master_status{%s} offset 1m == 1)[$__range:1m]))) or vector(0)' % [job, job], 'acquisitions', 'short',
+    [['green', null], ['yellow', 1], ['red', 4]], { h: 5, w: 4, x: 0, y: 76 },
+    'Times a replica acquired a manager lease in the selected range, across the primary and projection elections. Each change stalls that manager while the new leader starts, syncs caches and reconnects projects.'),
+  statPanel('Controller starts', '(count(min_over_time(process_start_time_seconds{%s}[$__range]) > time() - $__range_s) or vector(0)) + (sum(increase(kube_pod_container_status_restarts_total{%s}[$__range])) or vector(0))' % [job, controllerPods], 'starts', 'short',
+    [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 4, x: 4, y: 76 },
+    'Controller processes started in the selected range: new pods from rollouts plus in-place container restarts from crashes and leadership-loss exits. Setup right after a start waits for projects to reconnect.'),
+  statPanel('Container restarts', 'sum(increase(kube_pod_container_status_restarts_total{%s}[$__range])) or vector(0)' % controllerPods, 'restarts', 'short',
+    [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 4, x: 8, y: 76 },
+    'Container restarts in place during the selected range. Leadership loss intentionally terminates the process, so restarts usually pair with a leader change.'),
+  statPanel('Projects awaiting reconnection', 'sum(workqueue_depth{%s}) or vector(-1)' % projectReconnectQueue, 'queued', 'short',
+    [['purple', null], ['green', 0], ['yellow', 1], ['red', 50]], { h: 5, w: 4, x: 12, y: 76 },
+    'Project control planes queued for connection. Every project is queued after a start or failover; setup in a project waits until it is reconnected. Should return to zero within seconds.', telemetryMappings('Not reported', 'Not reported'), 'area'),
+  statPanel('Projection leaders', 'sum(leader_election_master_status{%s,name=~"(consumer|project)-projection[.]services[.]miloapis[.]com"}) or vector(-1)' % job, 'leaders', 'short',
+    [['purple', null], ['red', 0], ['green', 1], ['red', 2]], { h: 5, w: 4, x: 16, y: 76 },
+    'Exactly one replica should own the projection lease. -1 means this release has not exposed the distinct projection election.', telemetryMappings('Not reported')),
+  statPanel('Primary manager leaders', 'sum(leader_election_master_status{%s,name="services.miloapis.com"}) or vector(-1)' % job, 'leaders', 'short',
+    [['purple', null], ['red', 0], ['green', 1], ['red', 2]], { h: 5, w: 4, x: 20, y: 76 },
+    'Exactly one primary controller manager leader is expected.', telemetryMappings('Not reported')),
+  timePanel(
+    'Project reconnection backlog by replica',
+    [prom('sum by (pod) (workqueue_depth{%s})' % projectReconnectQueue, '{{pod}}')],
+    'short', { h: 8, w: 12, x: 0, y: 81 },
+    'Projects still waiting to be reconnected on each replica. After a start the backlog jumps to every project and drains; the time to drain is the time to reconnect projects after a restart.'),
+  timePanel(
+    'Lease holder by manager',
+    [prom('max by (name, pod) (leader_election_master_status{%s}) == 1' % job, '{{name}} on {{pod}}')],
+    'short', { h: 8, w: 12, x: 12, y: 81 },
+    'Which replica holds each manager lease. A line ending and another starting is a leader change.',
+    legendCalcs=[], noValue='No replica holds a lease'),
+
+  collapsedSection('Observer and scrape health', 600, 89, [
+  statPanel('Last successful observation', '(time() - max(service_catalog_setup_observer_last_success_timestamp_seconds)) or vector(-1)', 'age', 's',
+    [['purple', null], ['green', 0], ['yellow', 120], ['red', 300]], { h: 5, w: 8, x: 0, y: 90 },
+    'Seconds since the aggregate writer last completed a successful observation pass. -1 means it has never reported.', telemetryMappings('Never reported'), 'area'),
   statPanel(
     'Replicas scraped',
     '(count(up{%s} == 1) / clamp_min(count(up{%s}), 1)) or vector(0)' % [job, job],
     'scrape coverage', 'percentunit', [['red', null], ['yellow', 0.5], ['green', 1]],
-    { h: 5, w: 6, x: 18, y: 1 },
+    { h: 5, w: 8, x: 8, y: 90 },
     'Fraction of discovered service-catalog controller targets that VictoriaMetrics is scraping successfully.', [], 'area'),
-  timePanel(
-    'Setup latency by service class and clock',
-    [prom('(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) or (label_replace(label_replace(absent(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) * -1, "service_class", "none", "", ""), "clock", "no observations", "", ""))', 'p95 {{service_class}} / {{clock}}')],
-    's', { h: 8, w: 24, x: 0, y: 6 },
-    'End-to-end p95. The -1 fallback keeps the panel explicit before telemetry rollout or during an idle range; use Observer health before interpreting it.'),
-
-  section('Unfinished work', 200, 14),
-  statPanel('In flight', observedAggregate('sum(service_catalog_setup_inflight)'), 'in flight', 'short',
-    [['purple', null], ['green', 0], ['yellow', 1], ['red', 10]], { h: 5, w: 8, x: 0, y: 15 },
-    'Persisted setup attempts that have not reached first completion. Missing or unhealthy observer telemetry renders Telemetry unavailable.', telemetryMappings()),
-  statPanel('Overdue (>60s)', observedAggregate('sum(service_catalog_setup_overdue)'), 'overdue', 'short',
-    [['purple', null], ['green', 0], ['yellow', 1], ['red', 5]], { h: 5, w: 8, x: 8, y: 15 },
-    'Unfinished attempts more than 60 seconds past access authorization, the initial objective. Time waiting for external approval is excluded.', telemetryMappings()),
-  statPanel('Oldest unfinished', observedAggregate('max(service_catalog_setup_oldest_inflight_seconds)'), 'oldest', 's',
-    [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]], { h: 5, w: 8, x: 16, y: 15 },
-    'Age of the oldest unfinished persisted setup attempt.', telemetryMappings()),
-  timePanel(
-    'Unfinished attempts by blocking stage over time',
-    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
-    'short', { h: 8, w: 24, x: 0, y: 20 },
-    'Unfinished attempts grouped by the first incomplete stage over the selected range. The legend reports only the range maximum because a disappeared stage has no trustworthy current sample. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal', ['max']),
-
-  section('Stage breakdown', 300, 28),
-  timePanel(
-    'Projection phase p95',
-    [prom('(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) * -1, "phase", "no observations", "", "")', '{{phase}}')],
-    's', { h: 8, w: 12, x: 0, y: 29 },
-    'Execution time for bounded projection phases. This does not include workqueue delay.'),
-  timePanel(
-    'Setup completion volume by class',
-    [prom('(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) or label_replace(absent(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) * 0, "service_class", "none", "", "")', '{{service_class}}')],
-    'short', { h: 8, w: 12, x: 12, y: 29 },
-    'Successful setup attempts per interval and service class. Each completion is counted once. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.', 'normal'),
-
-  section('Controller capacity and queueing', 400, 37),
-  statPanel('Projection queue depth', 'sum(workqueue_depth{%s}) or vector(0)' % projectionQueue, 'queued', 'short',
-    [['green', null], ['yellow', 10], ['red', 50]], { h: 5, w: 6, x: 0, y: 38 },
-    'Projects waiting in the projection queue. The selector spans the legacy location-binding and new location-projection controller names.', [], 'area'),
-  statPanel('Queue delay p95', 'histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(0)' % projectionQueue, 'p95', 's',
-    [['green', null], ['yellow', 1], ['red', 5]], { h: 5, w: 6, x: 6, y: 38 },
-    'Time from enqueue to worker start. Zero means no queue-delay observations in the rate window.', [], 'area'),
-  statPanel('Reconcile execution p95', 'histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval]))) or vector(0)' % projectionController, 'p95', 's',
-    [['green', null], ['yellow', 1], ['red', 5]], { h: 5, w: 6, x: 12, y: 38 },
-    'Worker execution time after dequeue. Compare this with queue delay to distinguish capacity from slow reconciliation.', [], 'area'),
-  statPanel('Active projection workers', 'sum(controller_runtime_active_workers{%s}) or vector(0)' % projectionController, 'active', 'short',
-    [['green', null], ['yellow', 4], ['red', 8]], { h: 5, w: 6, x: 18, y: 38 },
-    'Active workers across the selected projection controller. Under elected projection, only the owner should process work.', [], 'area'),
-  timePanel(
-    'Queue delay and worker execution',
-    [
-      prom('histogram_quantile(0.95, sum by (le) (rate(workqueue_queue_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(0)' % projectionQueue, 'queue p95'),
-      prom('histogram_quantile(0.95, sum by (le) (rate(workqueue_work_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(0)' % projectionQueue, 'work p95'),
-      prom('max(workqueue_longest_running_processor_seconds{%s}) or vector(0)' % projectionQueue, 'longest active'),
-    ],
-    's', { h: 8, w: 16, x: 0, y: 43 },
-    'Queueing, execution, and the longest active worker. A growing queue delay with bounded work time indicates insufficient effective ownership or worker capacity.'),
-  timePanel(
-    'Projection queue depth and retries',
-    [
-      prom('sum(workqueue_depth{%s}) or vector(0)' % projectionQueue, 'depth'),
-      prom('sum(rate(workqueue_retries_total{%s}[$__rate_interval])) or vector(0)' % projectionQueue, 'retries/s'),
-    ],
-    'short', { h: 8, w: 8, x: 16, y: 43 },
-    'Outstanding projects and retry pressure. Both series use bounded controller names and carry no project labels.'),
-
-  section('Observer health', 500, 51),
-  statPanel('Setup observer', 'max(service_catalog_setup_observer_healthy) or vector(-1)', 'observer', 'short',
-    [['purple', null], ['red', 0], ['green', 1]], { h: 5, w: 8, x: 0, y: 52 },
-    'Whether all source caches needed to interpret setup state are synchronized on the projection owner. Missing data is explicitly unknown.', observerMappings),
-  statPanel('Last successful observation', '(time() - max(service_catalog_setup_observer_last_success_timestamp_seconds)) or vector(-1)', 'age', 's',
-    [['purple', null], ['green', 0], ['yellow', 120], ['red', 300]], { h: 5, w: 8, x: 8, y: 52 },
-    'Seconds since the aggregate writer last completed a successful observation pass. -1 means it has never reported.', telemetryMappings('Never reported'), 'area'),
   statPanel('Controller targets up', 'count(up{%s} == 1) or vector(0)' % job, 'up', 'short',
-    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 16, y: 52 },
+    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 16, y: 90 },
     'Number of service-catalog controller targets currently scraped as up. This proves scrape reachability, not cache completeness.', [], 'area'),
-
-  collapsedSection('Leadership', 600, 57, [
-  statPanel('Projection leaders', 'sum(leader_election_master_status{%s,name=~"(consumer|project)-projection[.]services[.]miloapis[.]com"}) or vector(-1)' % job, 'leaders', 'short',
-    [['purple', null], ['red', 0], ['green', 1], ['red', 2]], { h: 5, w: 8, x: 0, y: 58 },
-    'Exactly one replica should own the projection lease after rollout. -1 means this release has not exposed the distinct projection election.', telemetryMappings('Not reported')),
-  statPanel('Primary manager leaders', 'sum(leader_election_master_status{%s,name="services.miloapis.com"}) or vector(-1)' % job, 'leaders', 'short',
-    [['purple', null], ['red', 0], ['green', 1], ['red', 2]], { h: 5, w: 8, x: 8, y: 58 },
-    'Exactly one primary controller manager leader is expected.', telemetryMappings('Not reported')),
-  statPanel('Leader-bearing replicas', 'count(sum by (pod) (leader_election_master_status{%s} == 1)) or vector(0)' % job, 'replicas', 'short',
-    [['red', null], ['green', 1], ['yellow', 2], ['red', 3]], { h: 5, w: 8, x: 16, y: 58 },
-    'Replicas holding any service-catalog manager election. Separate primary and projection managers may intentionally land on different pods.', [], 'area'),
-  timePanel(
-    'Election ownership by manager',
-    [prom('(sum by (name) (leader_election_master_status{%s})) or label_replace(absent(sum by (name) (leader_election_master_status{%s})) * -1, "name", "not reported", "", "")' % [job, job], '{{name}}')],
-    'short', { h: 7, w: 24, x: 0, y: 63 },
-    'Sum of leader-election status across replicas for each manager name. Each active election should remain at exactly one.'),
   ]),
 
-  collapsedSection('Controller-wide API and throttling', 700, 58, [
-  statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{%s})) * -1)' % [job, job], 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 8, x: 0, y: 59 },
-    'Controller-wide time spent waiting for client-side rate-limit tokens. Telemetry unavailable means the deployed client does not expose this histogram; it must not be interpreted as zero wait.', telemetryMappings('No throttle observations'), 'area'),
-  statPanel('HTTP 429 rate', 'sum(rate(rest_client_requests_total{%s,code="429"}[$__rate_interval])) or vector(0)' % job, '429/s', 'reqps',
-    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 8, x: 8, y: 59 },
-    'Controller-wide Kubernetes API responses rejected for server-side throttling. Client metrics cannot attribute traffic to a specific reconciler.', [], 'area'),
-  statPanel('API request p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(-1)' % job, 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 8, x: 16, y: 59 },
-    'Controller-wide Kubernetes REST round-trip latency. This excludes client rate-limiter wait and cannot be attributed to a specific reconciler. -1 means the histogram is unavailable on the deployed release.', telemetryMappings('No request observations'), 'area'),
-  timePanel(
-    'Kubernetes API request rate by response code',
-    [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
-    'reqps', { h: 8, w: 12, x: 0, y: 64 },
-    'Controller-wide REST traffic grouped by bounded HTTP response code. Correlation with setup delay is indirect because client metrics have no reconciler label.', 'normal'),
-  timePanel(
-    'Kubernetes API request latency by method',
-    [prom('(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) * -1, "verb", "telemetry unavailable", "", "")' % [job, job], '{{verb}}')],
-    's', { h: 8, w: 12, x: 12, y: 64 },
-    'Controller-wide p95 REST round-trip latency grouped by method label (`verb`). Client-side limiter waits are shown separately.'),
-  ]),
-
-  collapsedSection('Rollout and version', 800, 59, [
-  statPanel('Controller restarts', 'sum(increase(kube_pod_container_status_restarts_total{%s}[$__range])) or vector(0)' % controllerPods, 'restarts', 'short',
-    [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 8, x: 0, y: 60 },
-    'Container restarts during the selected range. Leadership loss intentionally terminates the process, so correlate restarts with election changes.', [], 'area'),
+  collapsedSection('Rollout and version', 700, 90, [
   statPanel('Ready controller pods', 'sum(kube_pod_status_ready{namespace="services-system",pod=~"services-controller-manager-.*",condition="true"}) or vector(0)', 'ready', 'short',
-    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 8, y: 60 },
+    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 12, x: 0, y: 91 },
     'Ready service-catalog controller-manager pods.'),
   statPanel('Process age (youngest)', 'min(time() - process_start_time_seconds{%s}) or vector(-1)' % job, 'age', 's',
-    [['purple', null], ['red', 0], ['yellow', 300], ['green', 1800]], { h: 5, w: 8, x: 16, y: 60 },
+    [['purple', null], ['red', 0], ['yellow', 300], ['green', 1800]], { h: 5, w: 12, x: 12, y: 91 },
     'Age of the youngest scraped controller process. A reset identifies rollout or restart timing.', telemetryMappings('Not reported'), 'area'),
   timePanel(
     'Replica count by image over selected range',
     [prom('(count by (image) (kube_pod_container_info{%s})) or label_replace(absent(count by (image) (kube_pod_container_info{%s})) * 0, "image", "not observed", "", "")' % [controllerPods, controllerPods], '{{image}}')],
-    'short', { h: 8, w: 24, x: 0, y: 65 },
+    'short', { h: 8, w: 24, x: 0, y: 96 },
     'Replica count by immutable image reference over the selected range. Historical image series remain visible to show rollout transitions.'),
   ]),
 ];
 
+// Controller starts and lease acquisitions on every time series: they cause
+// most setup latency outliers.
+local annotations = [
+  {
+    builtIn: 1,
+    datasource: { type: 'grafana', uid: '-- Grafana --' },
+    enable: true,
+    hide: true,
+    iconColor: 'rgba(0, 211, 255, 1)',
+    name: 'Annotations & Alerts',
+    type: 'dashboard',
+  },
+  {
+    datasource: { type: 'prometheus', uid: ds },
+    enable: true,
+    expr: '(time() - max by (pod) (process_start_time_seconds{%s})) < 60' % job,
+    iconColor: 'orange',
+    name: 'Controller starts',
+    step: '30s',
+    titleFormat: 'Controller started',
+    textFormat: '{{pod}}',
+  },
+  {
+    datasource: { type: 'prometheus', uid: ds },
+    enable: true,
+    expr: 'max by (name, pod) (leader_election_master_status{%s} == 1 unless leader_election_master_status{%s} offset 1m == 1)' % [job, job],
+    iconColor: 'purple',
+    name: 'Leader changes',
+    step: '30s',
+    titleFormat: 'Lease acquired',
+    textFormat: '{{name}} on {{pod}}',
+  },
+];
+
 g.dashboard.new('Service Catalog Setup')
 + g.dashboard.withUid('service-catalog-setup')
-+ g.dashboard.withDescription('Customer-visible service setup latency and blockers, projection queue capacity, observer health, leader ownership, Kubernetes API pressure, and rollout state.')
++ g.dashboard.withDescription('Is service setup fast and healthy right now, and if not, why: slow versus stalled setups, where setup time goes, API latency versus client throttling, and the leader changes and restarts behind outliers.')
 + g.dashboard.withTags(['milo', 'service-catalog', 'setup', 'platform'])
 + g.dashboard.withEditable(true)
 + g.dashboard.withRefresh('30s')
@@ -286,4 +392,5 @@ g.dashboard.new('Service Catalog Setup')
   { icon: 'dashboard', includeVars: true, keepTime: true, targetBlank: false, title: 'Milo API latency', tooltip: 'Control-plane API latency and dependencies', type: 'link', url: '/d/milo-api-latency' },
 ])
 + g.dashboard.withVariables([datasourceVar])
++ { annotations: { list: annotations } }
 + g.dashboard.withPanels(panels)

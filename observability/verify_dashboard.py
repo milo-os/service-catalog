@@ -42,7 +42,7 @@ if '"No data"' in path.read_text():
     fail('panels must use semantic empty states instead of "No data"')
 
 for panel in panels:
-    if panel.get("type") in {"stat", "timeseries"}:
+    if panel.get("type") in {"stat", "timeseries", "table"}:
         no_value = panel.get("fieldConfig", {}).get("defaults", {}).get("noValue")
         if not no_value:
             fail(f"{panel.get('title')!r} must declare a semantic noValue message")
@@ -59,7 +59,7 @@ for title in ("User setup p95", "Platform setup p95"):
     if "increase(" not in expression or "$__range" not in expression or "$__rate_interval" in expression:
         fail(f"{title!r} must summarize completions over the selected dashboard range")
 
-for title in ("Completed setups", "In flight", "Overdue (>60s)", "Oldest unfinished"):
+for title in ("Completed setups", "Slow right now", "Stalled (>1h)"):
     expression = require_panel(title)["targets"][0]["expr"]
     if "and on() (max(service_catalog_setup_observer_healthy) == 1)" not in expression:
         fail(f"{title!r} must suppress stale values while the observer is unhealthy")
@@ -72,6 +72,10 @@ if "service_catalog_setup_attempts_total" not in completion or "service_catalog_
 if "clock" in completion:
     fail("setup completion volume must not split a single completion into clock observations")
 
+slow = require_panel("Slow right now")["targets"][0]["expr"]
+if "service_catalog_setup_stalled" not in slow:
+    fail("slow setups must exclude stalled setups so known blockers do not read as an outage")
+
 unfinished = require_panel("Unfinished attempts by blocking stage over time")
 if unfinished.get("options", {}).get("legend", {}).get("calcs") != ["max"]:
     fail("unfinished-stage legend must show only the range maximum, never a stale current value")
@@ -81,7 +85,12 @@ throttle_expression = throttle["targets"][0]["expr"]
 if "absent(rest_client_rate_limiter_duration_seconds_bucket" not in throttle_expression or "* -1" not in throttle_expression:
     fail("missing client-throttle telemetry must render unavailable rather than zero")
 
-for expected_y, title in enumerate(("Leadership", "Controller-wide API and throttling", "Rollout and version"), start=57):
+for title in ("API round-trip p95 by verb and host", "Client throttle wait p95 by verb and host"):
+    no_value = require_panel(title)["fieldConfig"]["defaults"]["noValue"]
+    if "not registered" not in no_value:
+        fail(f"{title!r} must explain that client-go metrics are missing rather than idle")
+
+for expected_y, title in enumerate(("Observer and scrape health", "Rollout and version"), start=89):
     panel = require_panel(title)
     if not panel.get("collapsed") or not panel.get("panels"):
         fail(f"diagnostic row {title!r} must be collapsed with nested panels")

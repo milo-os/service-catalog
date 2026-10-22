@@ -2,9 +2,11 @@
 
 The setup dashboard follows the Jsonnet and Grafonnet layout used by
 [milo-os/activity](https://github.com/milo-os/activity/tree/main/observability).
-It covers customer-visible setup latency, unfinished work, projection queue
-capacity, observer health, leader ownership, Kubernetes API pressure, and
-rollout state.
+It answers "is setup fast and healthy right now, and if not, why?": setup
+that is slow right now versus stalled on a known blocker, per-controller
+queue wait and reconcile time, Kubernetes API latency versus client
+throttling, and the leader changes, restarts and project reconnection behind
+most outliers.
 
 Install Python 3 (available as `python3`), `jsonnet`, and `jb`, then run:
 
