@@ -12,7 +12,23 @@ import (
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+const (
+	setupClassCompute     = "compute"
+	setupClassNetworking  = "networking"
+	setupClassDNS         = "dns"
+	setupClassStorage     = "storage"
+	setupClassOther       = "other"
+	setupOperationInitial = "initial"
+	setupClockUser        = "user"
+	setupClockPlatform    = "platform"
+	setupOutcomeSucceeded = "succeeded"
+)
+
 var (
+	setupServiceClasses       = []string{setupClassCompute, setupClassNetworking, setupClassDNS, setupClassStorage, setupClassOther}
+	setupOperations           = []string{setupOperationInitial}
+	setupClocks               = []string{setupClockUser, setupClockPlatform}
+	setupOutcomes             = []string{setupOutcomeSucceeded}
 	setupDurationBuckets      = []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
 	setupDuration             = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_setup_duration_seconds", Help: "Elapsed time from the original accepted request to successful catalog setup.", Buckets: setupDurationBuckets}, []string{"service_class", "operation", "clock"})
 	setupAttempts             = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "service_catalog_setup_attempts_total", Help: "Terminal service setup attempts observed by the aggregate writer."}, []string{"service_class", "operation", "outcome"})
@@ -24,7 +40,24 @@ var (
 )
 
 func init() {
+	initializeSetupMetricSeries()
 	crmetrics.Registry.MustRegister(setupDuration, setupAttempts, projectionPhaseDuration, setupObserverLastSuccess, setupObserverHealthy, setupInflight)
+}
+
+// initializeSetupMetricSeries exposes a zero-valued baseline for every bounded
+// setup label combination from the first scrape. Without it, increase() cannot
+// calculate the first completion when the series begins at its first increment.
+func initializeSetupMetricSeries() {
+	for _, class := range setupServiceClasses {
+		for _, operation := range setupOperations {
+			for _, clock := range setupClocks {
+				setupDuration.WithLabelValues(class, operation, clock)
+			}
+			for _, outcome := range setupOutcomes {
+				setupAttempts.WithLabelValues(class, operation, outcome)
+			}
+		}
+	}
 }
 
 type setupInflightEntry struct {
@@ -94,7 +127,7 @@ func (c *setupInflightCollector) replaceProject(project string, entitlements []s
 		if setup == nil || setup.RequestedAt.IsZero() || setup.FirstCompletedAt != nil {
 			continue
 		}
-		entries = append(entries, setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: "initial", blocker: firstIncompleteSetupStage(setup.Stages), requestedAt: setup.RequestedAt.Time})
+		entries = append(entries, setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: setupOperationInitial, blocker: firstIncompleteSetupStage(setup.Stages), requestedAt: setup.RequestedAt.Time})
 	}
 	c.mu.Lock()
 	c.projects[project] = entries
@@ -110,15 +143,15 @@ func (c *setupInflightCollector) removeProject(project string) {
 func setupServiceClass(service string) string {
 	switch {
 	case strings.Contains(service, "compute"):
-		return "compute"
+		return setupClassCompute
 	case strings.Contains(service, "network"):
-		return "networking"
+		return setupClassNetworking
 	case strings.Contains(service, "dns"):
-		return "dns"
+		return setupClassDNS
 	case strings.Contains(service, "storage"):
-		return "storage"
+		return setupClassStorage
 	default:
-		return "other"
+		return setupClassOther
 	}
 }
 
@@ -127,23 +160,24 @@ func observeSetupSuccess(entitlement *servicesv1alpha1.ServiceEntitlement, compl
 	if setup == nil || setup.RequestedAt.IsZero() {
 		return
 	}
-	class, operation := setupServiceClass(entitlement.Spec.ServiceRef.Name), "initial"
+	class, operation := setupServiceClass(entitlement.Spec.ServiceRef.Name), setupOperationInitial
 	duration := completedAt.Sub(setup.RequestedAt.Time).Seconds()
 	if duration < 0 {
 		return
 	}
-	setupDuration.WithLabelValues(class, operation, "user").Observe(duration)
+	setupDuration.WithLabelValues(class, operation, setupClockUser).Observe(duration)
 	if setup.AuthorizedAt != nil {
 		if d := completedAt.Sub(setup.AuthorizedAt.Time).Seconds(); d >= 0 {
-			setupDuration.WithLabelValues(class, operation, "platform").Observe(d)
+			setupDuration.WithLabelValues(class, operation, setupClockPlatform).Observe(d)
 		}
 	}
-	setupAttempts.WithLabelValues(class, operation, "succeeded").Inc()
+	setupAttempts.WithLabelValues(class, operation, setupOutcomeSucceeded).Inc()
 }
 
 func setupMetricSeriesBudget() int {
-	const serviceClasses, operations, clocks, outcomes = 5, 1, 2, 1
 	const projectionPhases, blockingStages = 7, 5
+	serviceClasses, operations := len(setupServiceClasses), len(setupOperations)
+	clocks, outcomes := len(setupClocks), len(setupOutcomes)
 	setupBuckets := len(setupDurationBuckets) + 3 // explicit buckets plus +Inf, sum, and count
 	projectionBuckets := len(projectionDurationBuckets) + 3
 	return serviceClasses*operations*clocks*setupBuckets + serviceClasses*operations*outcomes + projectionPhases*projectionBuckets + serviceClasses*operations*blockingStages*3 + 2
