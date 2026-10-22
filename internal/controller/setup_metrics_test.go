@@ -2,10 +2,42 @@
 
 package controller
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestSetupInflightCollectorRemovesProject(t *testing.T) {
+	collector := newSetupInflightCollector()
+	collector.projects["removed"] = []setupInflightEntry{{class: "compute", operation: "initial", blocker: "Projection", requestedAt: time.Now()}}
+	collector.projects["retained"] = []setupInflightEntry{{class: "networking", operation: "initial", blocker: "Dependencies", requestedAt: time.Now()}}
+
+	collector.removeProject("removed")
+
+	if _, ok := collector.projects["removed"]; ok {
+		t.Fatal("removed project still contributes setup in-flight metrics")
+	}
+	if _, ok := collector.projects["retained"]; !ok {
+		t.Fatal("removing one project deleted another project's setup metrics")
+	}
+}
+
+func TestSetupDurationBucketsCoverLongRunningSetup(t *testing.T) {
+	want := []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
+	if len(setupDurationBuckets) != len(want) {
+		t.Fatalf("setup duration buckets = %v, want %v", setupDurationBuckets, want)
+	}
+	for i := range want {
+		if setupDurationBuckets[i] != want[i] {
+			t.Fatalf("setup duration buckets = %v, want %v", setupDurationBuckets, want)
+		}
+	}
+}
 
 func TestSetupMetricSeriesBudget(t *testing.T) {
-	if got := setupMetricSeriesBudget(); got >= 20_000 {
+	if got := setupMetricSeriesBudget(); got != 377 {
+		t.Fatalf("setup metrics add %d series, want 377", got)
+	} else if got >= 20_000 {
 		t.Fatalf("setup metrics add %d series, want fewer than 20,000", got)
 	}
 }

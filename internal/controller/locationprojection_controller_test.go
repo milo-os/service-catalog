@@ -4,9 +4,11 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -16,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -61,7 +64,7 @@ func projectionRootClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(projectionScheme()).WithObjects(objs...).Build()
 }
 
-func projectionConsumerClient(objs ...client.Object) client.Client {
+func projectionConsumerClient(objs ...client.Object) client.WithWatch {
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)
 	legacyBinding := &unstructured.Unstructured{}
@@ -343,6 +346,43 @@ func TestLocationProjectionReconciler_RecordsSetupCompletion(t *testing.T) {
 	}
 }
 
+func TestLocationProjectionReconcilerRecordsCompletionOnlyAfterStatusPersists(t *testing.T) {
+	requestedAt := metav1.NewTime(time.Date(2026, 10, 21, 19, 48, 0, 0, time.UTC))
+	entitlement := activeProjectionEntitlement()
+	entitlement.CreationTimestamp = requestedAt
+	for _, typ := range []string{servicesv1alpha1.ConditionTypeReady, servicesv1alpha1.ConditionTypeDependenciesSatisfied, servicesv1alpha1.ConditionTypeProvisioned} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{Type: typ, Status: metav1.ConditionTrue, Reason: "Complete"})
+	}
+	root := projectionRootClient(publishedProjectionConfig(projectionClass), availableAt(projectionLocation, true), platformLocation(projectionLocation, true, projectionClass))
+	base := projectionConsumerClient(entitlement)
+	patchErr := errors.New("injected status patch failure")
+	consumer := interceptor.NewClient(base, interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if _, ok := obj.(*servicesv1alpha1.ServiceEntitlement); ok && subResource == "status" {
+				return patchErr
+			}
+			return c.Status().Patch(ctx, obj, patch, opts...)
+		},
+	})
+	completed := setupAttempts.WithLabelValues("compute", "initial", "succeeded")
+	var beforeMetric dto.Metric
+	if err := completed.Write(&beforeMetric); err != nil {
+		t.Fatal(err)
+	}
+	before := beforeMetric.GetCounter().GetValue()
+
+	if _, err := reconcileProjection(t, root, consumer); !errors.Is(err, patchErr) {
+		t.Fatalf("reconcile error = %v, want %v", err, patchErr)
+	}
+	var afterMetric dto.Metric
+	if err := completed.Write(&afterMetric); err != nil {
+		t.Fatal(err)
+	}
+	if after := afterMetric.GetCounter().GetValue(); after != before {
+		t.Fatalf("completion counter changed from %v to %v before setup status persisted", before, after)
+	}
+}
+
 func TestLocationProjectionReconciler_AggregatesDependencyChainInOnePass(t *testing.T) {
 	services := []*servicesv1alpha1.Service{
 		setupService("compute", "compute.miloapis.com", "networking"),
@@ -561,6 +601,10 @@ func TestProjectionRootDispatcherUnionsUpdateTargetsAndFansOutLocations(t *testi
 }
 
 func TestLocationProjectionReconcilerDropsDisengagedProjectFromIndex(t *testing.T) {
+	setupInflight.mu.Lock()
+	setupInflight.projects[projectionProject] = []setupInflightEntry{{class: "compute", operation: "initial", blocker: "Projection", requestedAt: time.Now()}}
+	setupInflight.mu.Unlock()
+	t.Cleanup(func() { setupInflight.removeProject(projectionProject) })
 	index := newProjectionProjectIndex()
 	index.Replace(projectionProject, []string{projectionService})
 	r := &LocationProjectionReconciler{rootClient: projectionRootClient(), Manager: newTestManager(), projects: index}
@@ -570,6 +614,12 @@ func TestLocationProjectionReconcilerDropsDisengagedProjectFromIndex(t *testing.
 	}
 	if got := index.Projects(); len(got) != 0 {
 		t.Fatalf("stale projects = %#v, want none", got)
+	}
+	setupInflight.mu.RLock()
+	_, metricsRetained := setupInflight.projects[projectionProject]
+	setupInflight.mu.RUnlock()
+	if metricsRetained {
+		t.Fatal("disengaged project retained setup in-flight metrics")
 	}
 }
 
@@ -587,6 +637,10 @@ func TestLocationProjectionReconcilerDropsUnavailableProjectBeforeScanning(t *te
 		}()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			setupInflight.mu.Lock()
+			setupInflight.projects[projectionProject] = []setupInflightEntry{{class: "compute", operation: "initial", blocker: "Projection", requestedAt: time.Now()}}
+			setupInflight.mu.Unlock()
+			t.Cleanup(func() { setupInflight.removeProject(projectionProject) })
 			index := newProjectionProjectIndex()
 			index.Replace(projectionProject, []string{projectionService})
 			stale := platformLocation(projectionLocation, true, projectionClass)
@@ -602,6 +656,12 @@ func TestLocationProjectionReconcilerDropsUnavailableProjectBeforeScanning(t *te
 			}
 			if got := index.Projects(); len(got) != 0 {
 				t.Fatalf("stale projects = %#v, want none", got)
+			}
+			setupInflight.mu.RLock()
+			_, metricsRetained := setupInflight.projects[projectionProject]
+			setupInflight.mu.RUnlock()
+			if metricsRetained {
+				t.Fatal("unavailable project retained setup in-flight metrics")
 			}
 			if _, ok := projectedLocation(t, consumer, projectionLocation); !ok {
 				t.Fatal("unavailable project was scanned and its existing projection was mutated")

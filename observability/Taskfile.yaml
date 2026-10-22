@@ -16,7 +16,7 @@ tasks:
       - jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json"
 
   verify:
-    desc: Verify the generated dashboard is current and avoids generic empty states
+    desc: Verify generated dashboard content and semantic empty states
     cmds:
       - |
         set -eu
@@ -25,7 +25,4 @@ tasks:
         jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "$output"
         diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json" "$output"
         jq empty "$output"
-        if grep -q '"No data"' "$output"; then
-          echo 'dashboard must use a semantic empty-state message instead of "No data"' >&2
-          exit 1
-        fi
+        python3 verify_dashboard.py "$output"

@@ -160,6 +160,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 		if r.projects != nil {
 			r.projects.Remove(string(consumerProject))
 		}
+		setupInflight.removeProject(string(consumerProject))
 		logger.V(1).Info("project is absent or terminating; skipping location projection")
 		return ctrl.Result{}, nil
 	}
@@ -170,6 +171,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 			if r.projects != nil {
 				r.projects.Remove(string(consumerProject))
 			}
+			setupInflight.removeProject(string(consumerProject))
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
@@ -389,6 +391,7 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 	// compute -> networking -> IPAM chain could therefore require three passes.
 	for _, entitlement := range dependencyFirstEntitlements(entitlements, servicesByName, entitlementsByService) {
 		before := entitlement.DeepCopy()
+		var newlyCompletedAt time.Time
 		if entitlement.Status.Setup == nil {
 			requestedAt := entitlement.CreationTimestamp
 			if entitlement.Spec.ProviderActivation != nil && !entitlement.Spec.ProviderActivation.RequestedAt.IsZero() {
@@ -452,8 +455,8 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 		if complete && setup.FirstCompletedAt == nil {
 			condition := apimeta.FindStatusCondition(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete)
 			t := condition.LastTransitionTime
-			observeSetupSuccess(entitlement, t.Time)
 			setup.FirstCompletedAt = &t
+			newlyCompletedAt = t.Time
 		}
 
 		if reflect.DeepEqual(before.Status, entitlement.Status) {
@@ -461,6 +464,9 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 		}
 		if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before)); err != nil {
 			return fmt.Errorf("patch setup status for ServiceEntitlement %q: %w", entitlement.Name, err)
+		}
+		if !newlyCompletedAt.IsZero() {
+			observeSetupSuccess(entitlement, newlyCompletedAt)
 		}
 	}
 	setupInflight.replaceProject(project, entitlements)

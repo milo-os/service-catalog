@@ -13,12 +13,14 @@ import (
 )
 
 var (
-	setupDuration            = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_setup_duration_seconds", Help: "Elapsed time from the original accepted request to successful catalog setup.", Buckets: []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600}}, []string{"service_class", "operation", "clock"})
-	setupAttempts            = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "service_catalog_setup_attempts_total", Help: "Terminal service setup attempts observed by the aggregate writer."}, []string{"service_class", "operation", "outcome"})
-	projectionPhaseDuration  = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_projection_phase_duration_seconds", Help: "Time spent in bounded projection reconciliation phases.", Buckets: prometheus.ExponentialBuckets(0.005, 2, 12)}, []string{"phase"})
-	setupObserverLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{Name: "service_catalog_setup_observer_last_success_timestamp_seconds", Help: "Unix timestamp of the last successful setup aggregation pass."})
-	setupObserverHealthy     = prometheus.NewGauge(prometheus.GaugeOpts{Name: "service_catalog_setup_observer_healthy", Help: "Whether required setup source caches are synchronized on this projection owner."})
-	setupInflight            = newSetupInflightCollector()
+	setupDurationBuckets      = []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
+	setupDuration             = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_setup_duration_seconds", Help: "Elapsed time from the original accepted request to successful catalog setup.", Buckets: setupDurationBuckets}, []string{"service_class", "operation", "clock"})
+	setupAttempts             = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "service_catalog_setup_attempts_total", Help: "Terminal service setup attempts observed by the aggregate writer."}, []string{"service_class", "operation", "outcome"})
+	projectionDurationBuckets = prometheus.ExponentialBuckets(0.005, 2, 12)
+	projectionPhaseDuration   = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_projection_phase_duration_seconds", Help: "Time spent in bounded projection reconciliation phases.", Buckets: projectionDurationBuckets}, []string{"phase"})
+	setupObserverLastSuccess  = prometheus.NewGauge(prometheus.GaugeOpts{Name: "service_catalog_setup_observer_last_success_timestamp_seconds", Help: "Unix timestamp of the last successful setup aggregation pass."})
+	setupObserverHealthy      = prometheus.NewGauge(prometheus.GaugeOpts{Name: "service_catalog_setup_observer_healthy", Help: "Whether required setup source caches are synchronized on this projection owner."})
+	setupInflight             = newSetupInflightCollector()
 )
 
 func init() {
@@ -99,6 +101,12 @@ func (c *setupInflightCollector) replaceProject(project string, entitlements []s
 	c.mu.Unlock()
 }
 
+func (c *setupInflightCollector) removeProject(project string) {
+	c.mu.Lock()
+	delete(c.projects, project)
+	c.mu.Unlock()
+}
+
 func setupServiceClass(service string) string {
 	switch {
 	case strings.Contains(service, "compute"):
@@ -135,6 +143,8 @@ func observeSetupSuccess(entitlement *servicesv1alpha1.ServiceEntitlement, compl
 
 func setupMetricSeriesBudget() int {
 	const serviceClasses, operations, clocks, outcomes = 5, 1, 2, 1
-	const setupBuckets, projectionPhases, projectionBuckets, blockingStages = 14, 7, 14, 5
+	const projectionPhases, blockingStages = 7, 5
+	setupBuckets := len(setupDurationBuckets) + 3 // explicit buckets plus +Inf, sum, and count
+	projectionBuckets := len(projectionDurationBuckets) + 3
 	return serviceClasses*operations*clocks*setupBuckets + serviceClasses*operations*outcomes + projectionPhases*projectionBuckets + serviceClasses*operations*blockingStages*3 + 2
 }
