@@ -34,18 +34,22 @@ wait_seconds=$((SETUP_BUDGET_SECONDS * 3))
 # long ago.
 "$(dirname "$0")/delete-entitlements.sh" "$@" >/dev/null
 
+# Milliseconds since the epoch. `date +%s%3N` is GNU-only: macOS's date prints
+# a literal "3N", and the arithmetic below then fails.
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'; }
+
 results="$(mktemp -d)"
 trap 'rm -rf "${results}"' EXIT
 
 enable() {
   local project="$1"
   local start end
-  start="$(date +%s%3N)"
+  start="$(now_ms)"
   kubectl --kubeconfig "${kubeconfig}" --context "${project}" create -f entitlement.yaml >/dev/null
   if kubectl --kubeconfig "${kubeconfig}" --context "${project}" wait \
     serviceentitlement/e2e-concurrent-enablement \
     --for=condition=SetupComplete --timeout="${wait_seconds}s" >/dev/null; then
-    end="$(date +%s%3N)"
+    end="$(now_ms)"
     echo "$((end - start))" >"${results}/${project}"
   else
     echo "timeout" >"${results}/${project}"
