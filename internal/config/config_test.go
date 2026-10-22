@@ -3,10 +3,14 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 )
 
 // decodeConfig decodes a ServicesOperator YAML doc through the SAME path
@@ -102,4 +106,61 @@ func TestServicesOperator_LegacyLocationSourceRejected(t *testing.T) {
 	if err := tryDecodeConfig(baseConfigYAML + "locationSource: networking.datumapis.com/v1alpha\n"); err == nil {
 		t.Fatal("strict decoding must reject the removed locationSource field")
 	}
+}
+
+// A kubeconfig loaded directly must not inherit client-go's default 5 QPS /
+// burst 10 limiter. The operator reaches Milo this way in every deployed
+// environment, and that limiter held an activation's status writes for seconds.
+func TestRestConfig_KubeconfigPathDisablesClientThrottling(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+current-context: milo
+clusters:
+- name: milo
+  cluster:
+    server: https://milo.example.com
+users:
+- name: operator
+  user:
+    token: test
+contexts:
+- name: milo
+  context: {cluster: milo, user: operator}
+`
+	if err := os.WriteFile(path, []byte(kubeconfig), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	cfg, err := (&ServicesOperator{KubeconfigPath: path}).RestConfig()
+	if err != nil {
+		t.Fatalf("RestConfig: %v", err)
+	}
+	if cfg.QPS >= 0 {
+		t.Fatalf("QPS = %v, want a negative QPS so client-go builds no rate limiter", cfg.QPS)
+	}
+
+	// The limiter client-go would build from this config is what actually
+	// throttles; check it rather than trusting the field.
+	restClient, err := rest.UnversionedRESTClientFor(withNegotiatedSerializer(cfg))
+	if err != nil {
+		t.Fatalf("build REST client: %v", err)
+	}
+	if limiter := restClient.GetRateLimiter(); limiter != nil {
+		t.Fatalf("REST client has rate limiter %T (QPS %v), want none", limiter, limiter.QPS())
+	}
+}
+
+func TestDisableDefaultClientThrottling_KeepsExplicitQPS(t *testing.T) {
+	cfg := &rest.Config{QPS: 50, Burst: 100}
+	disableDefaultClientThrottling(cfg)
+	if cfg.QPS != 50 || cfg.Burst != 100 {
+		t.Fatalf("explicit QPS/Burst changed to %v/%v", cfg.QPS, cfg.Burst)
+	}
+}
+
+func withNegotiatedSerializer(cfg *rest.Config) *rest.Config {
+	cfg = rest.CopyConfig(cfg)
+	cfg.NegotiatedSerializer = clientgoscheme.Codecs.WithoutConversion()
+	return cfg
 }

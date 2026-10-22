@@ -58,11 +58,33 @@ type ServicesOperator struct {
 // RestConfig returns the *rest.Config used to connect to the Milo API server.
 // When KubeconfigPath is empty it falls back to the standard
 // controller-runtime config resolution (in-cluster / $KUBECONFIG).
+//
+// Either way the config has no client-side rate limiter, leaving the API
+// server's priority and fairness to protect it. ctrl.GetConfig already turns
+// the limiter off. A kubeconfig loaded directly does not, and client-go then
+// holds every client to 5 requests per second with a burst of 10. Clients are
+// built per kind per project, so one activation's status writes to its
+// handful of ServiceEntitlements queued on that limit for most of the time
+// setup took.
 func (c *ServicesOperator) RestConfig() (*rest.Config, error) {
 	if c.KubeconfigPath == "" {
 		return ctrl.GetConfig()
 	}
-	return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	cfg, err := clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+	disableDefaultClientThrottling(cfg)
+	return cfg, nil
+}
+
+// disableDefaultClientThrottling turns off client-go's default rate limiter the
+// way ctrl.GetConfig does. A QPS of 0 means "use the default"; -1 means "no
+// limiter". A QPS or limiter already set is kept.
+func disableDefaultClientThrottling(cfg *rest.Config) {
+	if cfg.QPS == 0 && cfg.RateLimiter == nil {
+		cfg.QPS = -1
+	}
 }
 
 // +k8s:deepcopy-gen=true
