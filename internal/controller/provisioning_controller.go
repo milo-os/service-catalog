@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -94,8 +95,9 @@ const (
 
 	// maxLedgerMessageBytes matches the schema's MaxLength for a ledger entry's
 	// message. A declaration that installs many objects collects one note per
-	// object and can exceed the limit. The API server refuses an over-long
-	// message, which loses the whole ledger write.
+	// object, and a failure message embeds the API server's own error; either
+	// can exceed the limit. The API server refuses an over-long message, which
+	// loses the whole ledger write, so writeStatus truncates every entry.
 	maxLedgerMessageBytes = 1024
 
 	// authorizationCaveat explains the gap to the consumer, on every installed
@@ -491,7 +493,12 @@ func truncateMessage(message string, limit int) string {
 		return message
 	}
 	const ellipsis = "..."
-	return message[:limit-len(ellipsis)] + ellipsis
+	cut := limit - len(ellipsis)
+	// Never split a multi-byte character: the result must stay valid UTF-8.
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return message[:cut] + ellipsis
 }
 
 // prune deletes objects this declaration previously installed that it no longer
@@ -696,6 +703,9 @@ func (r *ProvisioningReconciler) writeStatus(
 	before := entitlement.DeepCopy()
 
 	sort.Slice(ledger, func(i, j int) bool { return ledger[i].Name < ledger[j].Name })
+	for i := range ledger {
+		ledger[i].Message = truncateMessage(ledger[i].Message, maxLedgerMessageBytes)
+	}
 	entitlement.Status.ProvisionedResources = ledger
 
 	status := metav1.ConditionTrue
@@ -822,5 +832,5 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: provisioningMaxConcurrentReconciles,
 		}).
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }
