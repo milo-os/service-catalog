@@ -33,6 +33,7 @@ import (
 	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	milowebhook "go.miloapis.com/milo/pkg/webhook"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/internal/clientmetrics"
 	"go.miloapis.com/service-catalog/internal/config"
 	"go.miloapis.com/service-catalog/internal/controller"
 	serviceswebhooks "go.miloapis.com/service-catalog/internal/webhook/v1alpha1"
@@ -104,6 +105,9 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Before any client exists, so every request is measured.
+	clientmetrics.Register()
 
 	controllerOpts := ctrlconfig.Controller{CacheSyncTimeout: cacheSyncTimeout}
 
