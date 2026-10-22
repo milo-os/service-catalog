@@ -85,6 +85,14 @@ throttle_expression = throttle["targets"][0]["expr"]
 if "absent(rest_client_rate_limiter_duration_seconds_bucket" not in throttle_expression or "* -1" not in throttle_expression:
     fail("missing client-throttle telemetry must render unavailable rather than zero")
 
+for title in ("Client throttle wait p95", "Request time spent throttled"):
+    if "service_catalog_client_rate_limit" not in require_panel(title)["targets"][0]["expr"]:
+        fail(f"{title!r} must tell an unlimited client apart from missing rate-limiter telemetry")
+
+limit = require_panel("Client rate limit")["targets"][0]["expr"]
+if "absent(service_catalog_client_rate_limit" not in limit or "* -1" not in limit:
+    fail("missing client rate-limit telemetry must render unavailable rather than unlimited")
+
 for title in ("API round-trip p95 by verb and scope", "Client throttle wait p95 by verb and scope"):
     no_value = require_panel(title)["fieldConfig"]["defaults"]["noValue"]
     if "No requests in range" not in no_value or "not exported yet" not in no_value:

@@ -1427,6 +1427,76 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
+         "description": "Sustained requests per second (qps) and burst size each of the controller's API clients may send before client-go makes it wait (one client per resource kind per project). A limit near the request rate below caps setup speed; client-go defaults to 5 qps with a burst of 10 when nothing sets a limit. No client limit leaves throttling to the API server.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "mappings": [
+                  {
+                     "options": {
+                        "-1": {
+                           "color": "purple",
+                           "text": "Not exported yet"
+                        },
+                        "0": {
+                           "color": "green",
+                           "text": "No client limit"
+                        }
+                     },
+                     "type": "value"
+                  }
+               ],
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 55
+         },
+         "id": 22,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(max by (limit) (service_catalog_client_rate_limit{job=\"services-system/services-controller-manager\"})) or label_replace(absent(service_catalog_client_rate_limit{job=\"services-system/services-controller-manager\",limit=\"qps\"}) * -1, \"limit\", \"qps\", \"\", \"\")",
+               "legendFormat": "{{limit}}"
+            }
+         ],
+         "title": "Client rate limit",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
          "description": "Controller-wide Kubernetes API round-trip latency, excluding time waiting on the client rate limiter. High values mean the API servers are slow. Not exported yet means the deployed release does not register client-go latency metrics.",
          "fieldConfig": {
             "defaults": {
@@ -1491,11 +1561,11 @@
          },
          "gridPos": {
             "h": 5,
-            "w": 6,
-            "x": 0,
+            "w": 5,
+            "x": 4,
             "y": 55
          },
-         "id": 22,
+         "id": 23,
          "options": {
             "colorMode": "background",
             "graphMode": "area",
@@ -1525,7 +1595,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Controller-wide time requests wait for a client-side rate-limit token before being sent. High values mean the controller is throttling itself, not that the API is slow. Not exported yet must not be read as zero wait.",
+         "description": "Controller-wide time requests wait for a client-side rate-limit token before being sent. High values mean the controller is throttling itself, not that the API is slow. No client limit means requests never wait here. Not exported yet must not be read as zero wait.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1537,6 +1607,10 @@
                         "-1": {
                            "color": "purple",
                            "text": "Not exported yet"
+                        },
+                        "-2": {
+                           "color": "green",
+                           "text": "No client limit"
                         }
                      },
                      "type": "value"
@@ -1589,11 +1663,11 @@
          },
          "gridPos": {
             "h": 5,
-            "w": 6,
-            "x": 6,
+            "w": 5,
+            "x": 9,
             "y": 55
          },
-         "id": 23,
+         "id": 24,
          "options": {
             "colorMode": "background",
             "graphMode": "area",
@@ -1611,7 +1685,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"})) * -1)",
+               "expr": "(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))) or ((max(service_catalog_client_rate_limit{job=\"services-system/services-controller-manager\",limit=\"qps\"}) == 0) - 2) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"})) * -1)",
                "legendFormat": "p95"
             }
          ],
@@ -1635,6 +1709,10 @@
                         "-1": {
                            "color": "purple",
                            "text": "Not exported yet"
+                        },
+                        "-2": {
+                           "color": "green",
+                           "text": "No client limit"
                         }
                      },
                      "type": "value"
@@ -1644,7 +1722,7 @@
                         "match": "null",
                         "result": {
                            "color": "text",
-                           "text": "No request observations"
+                           "text": "No throttle observations"
                         }
                      },
                      "type": "special"
@@ -1654,7 +1732,7 @@
                         "match": "nan",
                         "result": {
                            "color": "text",
-                           "text": "No request observations"
+                           "text": "No throttle observations"
                         }
                      },
                      "type": "special"
@@ -1687,11 +1765,11 @@
          },
          "gridPos": {
             "h": 5,
-            "w": 6,
-            "x": 12,
+            "w": 5,
+            "x": 14,
             "y": 55
          },
-         "id": 24,
+         "id": 25,
          "options": {
             "colorMode": "background",
             "graphMode": "area",
@@ -1709,7 +1787,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "(sum(rate(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])) / clamp_min(sum(rate(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])) + sum(rate(rest_client_request_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])), 1e-9)) or (absent(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}) * -1)",
+               "expr": "(sum(rate(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])) / clamp_min(sum(rate(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])) + sum(rate(rest_client_request_duration_seconds_sum{job=\"services-system/services-controller-manager\"}[$__rate_interval])), 1e-9)) or ((max(service_catalog_client_rate_limit{job=\"services-system/services-controller-manager\",limit=\"qps\"}) == 0) - 2) or (absent(rest_client_rate_limiter_duration_seconds_sum{job=\"services-system/services-controller-manager\"}) * -1)",
                "legendFormat": "throttled"
             }
          ],
@@ -1721,7 +1799,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Kubernetes API responses rejected by server-side throttling (API priority and fairness).",
+         "description": "Kubernetes API responses rejected by server-side throttling (API priority and fairness). client-go retries these after the server's Retry-After delay; see Throttled and retried requests by verb.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1751,11 +1829,11 @@
          },
          "gridPos": {
             "h": 5,
-            "w": 6,
-            "x": 18,
+            "w": 5,
+            "x": 19,
             "y": 55
          },
-         "id": 25,
+         "id": 26,
          "options": {
             "colorMode": "background",
             "graphMode": "area",
@@ -1809,7 +1887,7 @@
             "x": 0,
             "y": 60
          },
-         "id": 26,
+         "id": 27,
          "options": {
             "legend": {
                "calcs": [
@@ -1845,7 +1923,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb.",
+         "description": "Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb. Empty when Client rate limit shows No client limit, because requests then never wait on the client.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -1859,7 +1937,7 @@
                      "mode": "none"
                   }
                },
-               "noValue": "No requests in range, or client-go rate-limiter metrics not exported yet",
+               "noValue": "No requests in range, no client limit, or client-go rate-limiter metrics not exported yet",
                "unit": "s"
             }
          },
@@ -1869,7 +1947,7 @@
             "x": 12,
             "y": 60
          },
-         "id": 27,
+         "id": 28,
          "options": {
             "legend": {
                "calcs": [
@@ -1925,11 +2003,11 @@
          },
          "gridPos": {
             "h": 7,
-            "w": 24,
+            "w": 12,
             "x": 0,
             "y": 68
          },
-         "id": 28,
+         "id": 29,
          "options": {
             "legend": {
                "calcs": [
@@ -1961,6 +2039,74 @@
          "type": "timeseries"
       },
       {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Requests the API server throttled (HTTP 429) and requests client-go retried, by HTTP verb. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit. Retries after 5xx or connection errors point at an unhealthy API server rather than throttling.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No 429 responses or client retries in range",
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 68
+         },
+         "id": 30,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (method) (rate(rest_client_requests_total{job=\"services-system/services-controller-manager\",code=\"429\"}[$__rate_interval]))",
+               "legendFormat": "429 {{method}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (code, verb) (rate(rest_client_request_retries_total{job=\"services-system/services-controller-manager\"}[$__rate_interval]))",
+               "legendFormat": "retried after {{code}} {{verb}}"
+            }
+         ],
+         "title": "Throttled and retried requests by verb",
+         "type": "timeseries"
+      },
+      {
          "collapsed": false,
          "gridPos": {
             "h": 1,
@@ -1968,7 +2114,7 @@
             "x": 0,
             "y": 75
          },
-         "id": 29,
+         "id": 31,
          "title": "Leadership, restarts and reconnection",
          "type": "row"
       },
@@ -2011,7 +2157,7 @@
             "x": 0,
             "y": 76
          },
-         "id": 30,
+         "id": 32,
          "options": {
             "colorMode": "background",
             "graphMode": "none",
@@ -2075,7 +2221,7 @@
             "x": 4,
             "y": 76
          },
-         "id": 31,
+         "id": 33,
          "options": {
             "colorMode": "background",
             "graphMode": "none",
@@ -2139,7 +2285,7 @@
             "x": 8,
             "y": 76
          },
-         "id": 32,
+         "id": 34,
          "options": {
             "colorMode": "background",
             "graphMode": "none",
@@ -2237,7 +2383,7 @@
             "x": 12,
             "y": 76
          },
-         "id": 33,
+         "id": 35,
          "options": {
             "colorMode": "background",
             "graphMode": "area",
@@ -2335,7 +2481,7 @@
             "x": 16,
             "y": 76
          },
-         "id": 34,
+         "id": 36,
          "options": {
             "colorMode": "background",
             "graphMode": "none",
@@ -2433,7 +2579,7 @@
             "x": 20,
             "y": 76
          },
-         "id": 35,
+         "id": 37,
          "options": {
             "colorMode": "background",
             "graphMode": "none",
@@ -2487,7 +2633,7 @@
             "x": 0,
             "y": 81
          },
-         "id": 36,
+         "id": 38,
          "options": {
             "legend": {
                "calcs": [
@@ -2547,7 +2693,7 @@
             "x": 12,
             "y": 81
          },
-         "id": 37,
+         "id": 39,
          "options": {
             "legend": {
                "calcs": [ ],
@@ -2583,7 +2729,7 @@
             "x": 0,
             "y": 89
          },
-         "id": 38,
+         "id": 40,
          "panels": [
             {
                "datasource": {
@@ -2658,7 +2804,7 @@
                   "x": 0,
                   "y": 90
                },
-               "id": 39,
+               "id": 41,
                "options": {
                   "colorMode": "background",
                   "graphMode": "area",
@@ -2722,7 +2868,7 @@
                   "x": 8,
                   "y": 90
                },
-               "id": 40,
+               "id": 42,
                "options": {
                   "colorMode": "background",
                   "graphMode": "area",
@@ -2786,7 +2932,7 @@
                   "x": 16,
                   "y": 90
                },
-               "id": 41,
+               "id": 43,
                "options": {
                   "colorMode": "background",
                   "graphMode": "area",
@@ -2823,7 +2969,7 @@
             "x": 0,
             "y": 90
          },
-         "id": 42,
+         "id": 44,
          "panels": [
             {
                "datasource": {
@@ -2864,7 +3010,7 @@
                   "x": 0,
                   "y": 91
                },
-               "id": 43,
+               "id": 45,
                "options": {
                   "colorMode": "background",
                   "graphMode": "none",
@@ -2962,7 +3108,7 @@
                   "x": 12,
                   "y": 91
                },
-               "id": 44,
+               "id": 46,
                "options": {
                   "colorMode": "background",
                   "graphMode": "area",
@@ -3016,7 +3162,7 @@
                   "x": 0,
                   "y": 96
                },
-               "id": 45,
+               "id": 47,
                "options": {
                   "legend": {
                      "calcs": [
