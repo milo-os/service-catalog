@@ -14,9 +14,11 @@ require (
 	go.miloapis.com/milo v0.36.3-0.20261013234308-e25b0132272f
 	golang.org/x/term v0.42.0
 	k8s.io/api v0.35.0
+	k8s.io/apiextensions-apiserver v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/cli-runtime v0.33.1
 	k8s.io/client-go v0.35.0
+	k8s.io/kube-openapi v0.0.0-20260304202019-5b3e3fdb0acf
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/multicluster-runtime v0.23.3
@@ -90,7 +92,7 @@ require (
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
@@ -102,11 +104,9 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.35.0 // indirect
 	k8s.io/apiserver v0.35.0 // indirect
 	k8s.io/component-base v0.35.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/kube-openapi v0.0.0-20260304202019-5b3e3fdb0acf // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/kustomize/api v0.19.0 // indirect
