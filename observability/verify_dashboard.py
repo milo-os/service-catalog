@@ -88,6 +88,8 @@ if "absent(rest_client_rate_limiter_duration_seconds_bucket" not in throttle_exp
 for title in ("Client throttle wait p95", "Request time spent throttled"):
     if "service_catalog_client_rate_limit" not in require_panel(title)["targets"][0]["expr"]:
         fail(f"{title!r} must tell an unlimited client apart from missing rate-limiter telemetry")
+    if "and on() absent(service_catalog_client_rate_limit" not in require_panel(title)["targets"][0]["expr"]:
+        fail(f"{title!r} must not read as not exported while the rate limit is exported but no request has been throttled yet")
 
 limit = require_panel("Client rate limit")["targets"][0]["expr"]
 if "absent(service_catalog_client_rate_limit" not in limit or "* -1" not in limit:
