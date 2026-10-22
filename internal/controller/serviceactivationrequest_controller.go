@@ -402,5 +402,5 @@ func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Ma
 				},
 			},
 		)).
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }

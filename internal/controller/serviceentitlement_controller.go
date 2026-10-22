@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,6 +55,18 @@ const pendingApprovalRequeueInterval = 2 * time.Minute
 // ServiceConsumer — gated by the provider's own deprovisioning finalizer — is
 // gone, so this only paces the wait; it does not drive teardown itself.
 const providerTeardownRequeueInterval = 10 * time.Second
+
+// serviceEntitlementMaxConcurrentReconciles is how many entitlements this
+// controller authorizes at once. Each step of a dependency chain waits on this
+// queue, so a single worker made every project's setup wait behind every other
+// project's.
+//
+// Parallel reconciles stay isolated. Each one writes its own entitlement under
+// resourceVersion, a ServiceConsumer named by service and consumer project,
+// and ResourceGrants named by service, project and limit. A shared dependency
+// entitlement is created once: the losing parent gets AlreadyExists and leaves
+// it to the winner. Five matches the other project fan-out controllers.
+const serviceEntitlementMaxConcurrentReconciles = 5
 
 // dependencyOfLabel records which parent entitlement pulled a dependency
 // entitlement in. Set at create time and never rewritten, it's the provenance
@@ -835,5 +848,8 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceToServiceEntitlements),
 			serviceEnrollmentPredicate(),
 		)).
-		Complete(r)
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: serviceEntitlementMaxConcurrentReconciles,
+		}).
+		Complete(requeueOnConflict(r))
 }

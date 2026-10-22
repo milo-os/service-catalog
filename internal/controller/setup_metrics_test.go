@@ -93,7 +93,9 @@ func TestSetupInflightExcludesUnfinishableAttemptsAndApprovalWaits(t *testing.T)
 		return e
 	}
 	entitlements := []servicesv1alpha1.ServiceEntitlement{
-		attempt("rejected", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected }),
+		attempt("rejected", func(e *servicesv1alpha1.ServiceEntitlement) {
+			e.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+		}),
 		attempt("deleting", func(e *servicesv1alpha1.ServiceEntitlement) { e.DeletionTimestamp = &old }),
 		attempt("backfilled", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Setup.Backfilled = true }),
 		attempt("awaiting-approval", func(e *servicesv1alpha1.ServiceEntitlement) {

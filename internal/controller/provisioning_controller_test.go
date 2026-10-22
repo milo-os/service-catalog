@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -1074,5 +1075,50 @@ func TestLedgerMessageIsTruncatedToTheSchemaLimit(t *testing.T) {
 	}
 	if got := truncateMessage("short", maxLedgerMessageBytes); got != "short" {
 		t.Errorf("a message inside the limit was rewritten: %q", got)
+	}
+}
+
+// A failed install embeds the API server's error, which has no length bound.
+// An over-long ledger message makes the API server refuse the whole status
+// write, hiding the failure and retrying it with backoff.
+func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
+	longCause := strings.Repeat("admission webhook denied the request; ", 60)
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				return apierrors.NewBadRequest(longCause)
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	ledger := getEntitlement(t, consumer).Status.ProvisionedResources
+	if len(ledger) != 1 {
+		t.Fatalf("ledger = %+v, want one entry", ledger)
+	}
+	if ledger[0].State != servicesv1alpha1.ProvisionedResourceStateFailed {
+		t.Errorf("state = %q, want %q", ledger[0].State, servicesv1alpha1.ProvisionedResourceStateFailed)
+	}
+	if got := len(ledger[0].Message); got > maxLedgerMessageBytes {
+		t.Errorf("failure message is %d bytes, above the %d byte schema limit", got, maxLedgerMessageBytes)
+	}
+	if !strings.HasPrefix(ledger[0].Message, provServiceName) && !strings.Contains(ledger[0].Message, "could not install") {
+		t.Errorf("truncation lost the start of the message: %q", ledger[0].Message[:80])
+	}
+}
+
+func TestLedgerMessageTruncationKeepsCharactersWhole(t *testing.T) {
+	message := truncateMessage(strings.Repeat("é", maxLedgerMessageBytes), maxLedgerMessageBytes)
+	if len(message) > maxLedgerMessageBytes {
+		t.Errorf("truncated message is %d bytes, above %d", len(message), maxLedgerMessageBytes)
+	}
+	if !utf8.ValidString(message) {
+		t.Errorf("truncation split a multi-byte character")
 	}
 }

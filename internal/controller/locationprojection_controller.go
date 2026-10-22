@@ -1221,5 +1221,5 @@ func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, r
 	return builder.WithOptions(controller.TypedOptions[mcreconcile.Request]{
 		MaxConcurrentReconciles: locationProjectionMaxConcurrentReconciles,
 	}).
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }

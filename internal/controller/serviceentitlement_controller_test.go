@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1280,5 +1282,99 @@ func TestServiceEntitlementReconciler_DependencyCycleConverges(t *testing.T) {
 	}
 	if direct.Status.Origin != servicesv1alpha1.EntitlementOriginDirect {
 		t.Errorf("direct entitlement origin = %q, want Direct", direct.Status.Origin)
+	}
+}
+
+// barrierCreateClient holds every create of one named object until two callers
+// have arrived, so a test can force two reconciles past their NotFound check
+// and into Create at the same time.
+type barrierCreateClient struct {
+	client.Client
+	name    string
+	arrived chan struct{}
+}
+
+func (c *barrierCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if obj.GetName() == c.name {
+		c.arrived <- struct{}{}
+		deadline := time.After(2 * time.Second)
+		for len(c.arrived) < cap(c.arrived) {
+			select {
+			case <-deadline:
+				return c.Client.Create(ctx, obj, opts...)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+// Two parents that share a dependency can now be authorized concurrently. Both
+// may try to create the dependency entitlement at once; exactly one must
+// exist afterwards, owned consistently by one parent, and neither parent may
+// fail on anything but a retryable conflict.
+func TestServiceEntitlementReconcilerSharesADependencyUnderConcurrency(t *testing.T) {
+	compute := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	networking := newPublishedService("networking", "networking.miloapis.com", testProviderProject, "", testDepServiceSlug)
+	storage := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	rootClient := newServiceRootClient(compute, networking, storage)
+
+	consumerClient := &barrierCreateClient{
+		Client:  newAdmissionFakeClient(rootClient, newEntitlement(testServiceSlug, testServiceSlug), newEntitlement("networking", "networking")),
+		name:    testDepServiceSlug,
+		arrived: make(chan struct{}, 2),
+	}
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, newFakeClient())
+	r := requeueOnConflict[mcreconcile.Request](&ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, parent := range []string{testServiceSlug, "networking"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				res, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, name))
+				if err != nil {
+					errs <- fmt.Errorf("reconcile %s: %w", name, err)
+					return
+				}
+				if res.RequeueAfter == 0 && i > 2 {
+					return
+				}
+			}
+		}(parent)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if got := len(consumerClient.arrived); got != 2 {
+		t.Fatalf("parents that reached the dependency Create together = %d, want 2", got)
+	}
+
+	var list servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(context.Background(), &list); err != nil {
+		t.Fatal(err)
+	}
+	var shared []servicesv1alpha1.ServiceEntitlement
+	for _, e := range list.Items {
+		if e.Spec.ServiceRef.Name == testDepServiceSlug {
+			shared = append(shared, e)
+		}
+	}
+	if len(shared) != 1 {
+		t.Fatalf("dependency entitlements = %d, want exactly 1", len(shared))
+	}
+	dep := shared[0]
+	owner := dep.Labels[dependencyOfLabel]
+	if owner != testServiceSlug && owner != "networking" {
+		t.Errorf("dependency-of label = %q, want one of the parents", owner)
+	}
+	if dep.Status.DependencyOf != owner {
+		t.Errorf("status.dependencyOf = %q, disagrees with label %q", dep.Status.DependencyOf, owner)
 	}
 }
