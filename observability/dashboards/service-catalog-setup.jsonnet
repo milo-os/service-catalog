@@ -265,16 +265,16 @@ local panels = [
     [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 6, x: 18, y: 55 },
     'Kubernetes API responses rejected by server-side throttling (API priority and fairness).', [], 'area'),
   timePanel(
-    'API round-trip p95 by verb and host',
-    [prom('histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{verb}} {{host}}')],
+    'API round-trip p95 by verb and scope',
+    [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 0, y: 60 },
-    'Controller-wide p95 API round-trip latency by HTTP verb and API host. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.',
+    'Controller-wide p95 API round-trip latency by scope (root is the platform API, project is any project control plane) and HTTP verb. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.',
     noValue=clientMetricsPending + ': client-go latency metrics are not registered by this release'),
   timePanel(
-    'Client throttle wait p95 by verb and host',
-    [prom('histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{verb}} {{host}}')],
+    'Client throttle wait p95 by verb and scope',
+    [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 12, y: 60 },
-    'Controller-wide p95 wait for a client-side rate-limit token by HTTP verb and API host.',
+    'Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb.',
     noValue=clientMetricsPending + ': client-go rate-limiter metrics are not registered by this release'),
   timePanel(
     'Kubernetes API request rate by response code',

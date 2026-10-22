@@ -1763,7 +1763,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Controller-wide p95 API round-trip latency by HTTP verb and API host. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.",
+         "description": "Controller-wide p95 API round-trip latency by scope (root is the platform API, project is any project control plane) and HTTP verb. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -1811,11 +1811,11 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_request_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))",
-               "legendFormat": "{{verb}} {{host}}"
+               "expr": "histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_request_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))",
+               "legendFormat": "{{scope}} {{verb}}"
             }
          ],
-         "title": "API round-trip p95 by verb and host",
+         "title": "API round-trip p95 by verb and scope",
          "type": "timeseries"
       },
       {
@@ -1823,7 +1823,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Controller-wide p95 wait for a client-side rate-limit token by HTTP verb and API host.",
+         "description": "Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -1871,11 +1871,11 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "histogram_quantile(0.95, sum by (le, verb, host) (rate(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))",
-               "legendFormat": "{{verb}} {{host}}"
+               "expr": "histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_rate_limiter_duration_seconds_bucket{job=\"services-system/services-controller-manager\"}[$__rate_interval])))",
+               "legendFormat": "{{scope}} {{verb}}"
             }
          ],
-         "title": "Client throttle wait p95 by verb and host",
+         "title": "Client throttle wait p95 by verb and scope",
          "type": "timeseries"
       },
       {

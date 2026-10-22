@@ -85,7 +85,7 @@ throttle_expression = throttle["targets"][0]["expr"]
 if "absent(rest_client_rate_limiter_duration_seconds_bucket" not in throttle_expression or "* -1" not in throttle_expression:
     fail("missing client-throttle telemetry must render unavailable rather than zero")
 
-for title in ("API round-trip p95 by verb and host", "Client throttle wait p95 by verb and host"):
+for title in ("API round-trip p95 by verb and scope", "Client throttle wait p95 by verb and scope"):
     no_value = require_panel(title)["fieldConfig"]["defaults"]["noValue"]
     if "not registered" not in no_value:
         fail(f"{title!r} must explain that client-go metrics are missing rather than idle")
