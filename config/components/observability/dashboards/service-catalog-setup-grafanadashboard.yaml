@@ -3,13 +3,13 @@ kind: GrafanaDashboard
 metadata:
   name: service-catalog-setup-dashboard
   labels:
-    dashboards: grafana
+    dashboards: vm-grafana
 spec:
   folder: "Platform / Services"
   allowCrossNamespaceImport: true
   instanceSelector:
     matchLabels:
-      dashboards: grafana
+      dashboards: vm-grafana
   resyncPeriod: 30s
   configMapRef:
     name: service-catalog-setup-dashboard
