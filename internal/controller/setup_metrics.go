@@ -22,6 +22,15 @@ const (
 	setupClockUser        = "user"
 	setupClockPlatform    = "platform"
 	setupOutcomeSucceeded = "succeeded"
+
+	// setupOverdueAfter is the initial setup objective, measured from
+	// authorization.
+	setupOverdueAfter = time.Minute
+	// setupStalledAfter separates setup that is slow from setup that is stuck.
+	// An attempt still unfinished an hour after authorization is waiting on
+	// something retries will not fix, such as a service with no available
+	// locations, so it is reported apart from work that is merely slow.
+	setupStalledAfter = time.Hour
 )
 
 var (
@@ -69,9 +78,9 @@ type setupInflightEntry struct {
 }
 
 type setupInflightCollector struct {
-	mu                        sync.RWMutex
-	projects                  map[string][]setupInflightEntry
-	inflight, oldest, overdue *prometheus.Desc
+	mu                                 sync.RWMutex
+	projects                           map[string][]setupInflightEntry
+	inflight, oldest, overdue, stalled *prometheus.Desc
 }
 
 func newSetupInflightCollector() *setupInflightCollector {
@@ -81,6 +90,7 @@ func newSetupInflightCollector() *setupInflightCollector {
 		inflight: prometheus.NewDesc("service_catalog_setup_inflight", "Unfinished persisted setup attempts.", labels, nil),
 		oldest:   prometheus.NewDesc("service_catalog_setup_oldest_inflight_seconds", "Age of the oldest unfinished persisted setup attempt.", labels, nil),
 		overdue:  prometheus.NewDesc("service_catalog_setup_overdue", "Unfinished setup attempts more than 60 seconds past authorization, the initial objective.", labels, nil),
+		stalled:  prometheus.NewDesc("service_catalog_setup_stalled", "Unfinished setup attempts more than one hour past authorization, which are stuck rather than slow.", labels, nil),
 	}
 }
 
@@ -88,14 +98,15 @@ func (c *setupInflightCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.inflight
 	ch <- c.oldest
 	ch <- c.overdue
+	ch <- c.stalled
 }
 
 func (c *setupInflightCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	type aggregate struct {
-		count, overdue int
-		oldest         float64
+		count, overdue, stalled int
+		oldest                  float64
 	}
 	values := make(map[[3]string]aggregate)
 	now := time.Now()
@@ -110,8 +121,14 @@ func (c *setupInflightCollector) Collect(ch chan<- prometheus.Metric) {
 			if age > value.oldest {
 				value.oldest = age
 			}
-			if !entry.authorizedAt.IsZero() && now.Sub(entry.authorizedAt).Seconds() > 60 {
-				value.overdue++
+			if !entry.authorizedAt.IsZero() {
+				sinceAuthorized := now.Sub(entry.authorizedAt)
+				if sinceAuthorized > setupOverdueAfter {
+					value.overdue++
+				}
+				if sinceAuthorized > setupStalledAfter {
+					value.stalled++
+				}
 			}
 			values[key] = value
 		}
@@ -120,6 +137,7 @@ func (c *setupInflightCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.inflight, prometheus.GaugeValue, float64(value.count), labels[:]...)
 		ch <- prometheus.MustNewConstMetric(c.oldest, prometheus.GaugeValue, value.oldest, labels[:]...)
 		ch <- prometheus.MustNewConstMetric(c.overdue, prometheus.GaugeValue, float64(value.overdue), labels[:]...)
+		ch <- prometheus.MustNewConstMetric(c.stalled, prometheus.GaugeValue, float64(value.stalled), labels[:]...)
 	}
 }
 
@@ -192,5 +210,5 @@ func setupMetricSeriesBudget() int {
 	clocks, outcomes := len(setupClocks), len(setupOutcomes)
 	setupBuckets := len(setupDurationBuckets) + 3 // explicit buckets plus +Inf, sum, and count
 	projectionBuckets := len(projectionDurationBuckets) + 3
-	return serviceClasses*operations*clocks*setupBuckets + serviceClasses*operations*outcomes + projectionPhases*projectionBuckets + serviceClasses*operations*blockingStages*3 + 2
+	return serviceClasses*operations*clocks*setupBuckets + serviceClasses*operations*outcomes + projectionPhases*projectionBuckets + serviceClasses*operations*blockingStages*4 + 2
 }
