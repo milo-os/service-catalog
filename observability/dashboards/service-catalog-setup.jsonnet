@@ -67,7 +67,7 @@ local statPanel(title, expr, legend, unit, thresholds, gridPos,
   + stat.standardOptions.thresholds.withMode('absolute')
   + stat.standardOptions.thresholds.withSteps(steps(thresholds));
 
-local timePanel(title, targets, unit, gridPos, description, stacking='none') =
+local timePanel(title, targets, unit, gridPos, description, stacking='none', legendCalcs=['lastNotNull', 'max']) =
   timeSeries.new(title)
   + pos(gridPos.h, gridPos.w, gridPos.x, gridPos.y)
   + timeSeries.panelOptions.withDescription(description)
@@ -86,7 +86,7 @@ local timePanel(title, targets, unit, gridPos, description, stacking='none') =
   + timeSeries.options.tooltip.withSort('desc')
   + timeSeries.options.legend.withDisplayMode('table')
   + timeSeries.options.legend.withPlacement('right')
-  + timeSeries.options.legend.withCalcs(['last', 'max'])
+  + timeSeries.options.legend.withCalcs(legendCalcs)
   + timeSeries.options.legend.withSortBy('Max')
   + timeSeries.options.legend.withSortDesc(true);
 
@@ -158,7 +158,7 @@ local panels = [
     'Unfinished attempts by blocking stage over time',
     [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
     'short', { h: 8, w: 24, x: 0, y: 20 },
-    'Unfinished attempts grouped by the first incomplete stage over the selected range. The legend uses the final sample, so stages that have drained do not look current. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal'),
+    'Unfinished attempts grouped by the first incomplete stage over the selected range. The legend reports only the range maximum because a disappeared stage has no trustworthy current sample. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal', ['max']),
 
   section('Stage breakdown', 300, 28),
   timePanel(
@@ -231,42 +231,42 @@ local panels = [
     'Sum of leader-election status across replicas for each manager name. Each active election should remain at exactly one.'),
   ]),
 
-  collapsedSection('Controller-wide API and throttling', 700, 70, [
+  collapsedSection('Controller-wide API and throttling', 700, 58, [
   statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{%s})) * -1)' % [job, job], 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 8, x: 0, y: 71 },
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 8, x: 0, y: 59 },
     'Controller-wide time spent waiting for client-side rate-limit tokens. Telemetry unavailable means the deployed client does not expose this histogram; it must not be interpreted as zero wait.', telemetryMappings('No throttle observations'), 'area'),
   statPanel('HTTP 429 rate', 'sum(rate(rest_client_requests_total{%s,code="429"}[$__rate_interval])) or vector(0)' % job, '429/s', 'reqps',
-    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 8, x: 8, y: 71 },
+    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 8, x: 8, y: 59 },
     'Controller-wide Kubernetes API responses rejected for server-side throttling. Client metrics cannot attribute traffic to a specific reconciler.', [], 'area'),
   statPanel('API request p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(-1)' % job, 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 8, x: 16, y: 71 },
+    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 8, x: 16, y: 59 },
     'Controller-wide Kubernetes REST round-trip latency. This excludes client rate-limiter wait and cannot be attributed to a specific reconciler. -1 means the histogram is unavailable on the deployed release.', telemetryMappings('No request observations'), 'area'),
   timePanel(
     'Kubernetes API request rate by response code',
     [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
-    'reqps', { h: 8, w: 12, x: 0, y: 76 },
+    'reqps', { h: 8, w: 12, x: 0, y: 64 },
     'Controller-wide REST traffic grouped by bounded HTTP response code. Correlation with setup delay is indirect because client metrics have no reconciler label.', 'normal'),
   timePanel(
     'Kubernetes API request latency by method',
     [prom('(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) * -1, "verb", "telemetry unavailable", "", "")' % [job, job], '{{verb}}')],
-    's', { h: 8, w: 12, x: 12, y: 76 },
+    's', { h: 8, w: 12, x: 12, y: 64 },
     'Controller-wide p95 REST round-trip latency grouped by method label (`verb`). Client-side limiter waits are shown separately.'),
   ]),
 
-  collapsedSection('Rollout and version', 800, 84, [
+  collapsedSection('Rollout and version', 800, 59, [
   statPanel('Controller restarts', 'sum(increase(kube_pod_container_status_restarts_total{%s}[$__range])) or vector(0)' % controllerPods, 'restarts', 'short',
-    [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 8, x: 0, y: 85 },
+    [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 8, x: 0, y: 60 },
     'Container restarts during the selected range. Leadership loss intentionally terminates the process, so correlate restarts with election changes.', [], 'area'),
   statPanel('Ready controller pods', 'sum(kube_pod_status_ready{namespace="services-system",pod=~"services-controller-manager-.*",condition="true"}) or vector(0)', 'ready', 'short',
-    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 8, y: 85 },
+    [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 8, y: 60 },
     'Ready service-catalog controller-manager pods.'),
   statPanel('Process age (youngest)', 'min(time() - process_start_time_seconds{%s}) or vector(-1)' % job, 'age', 's',
-    [['purple', null], ['red', 0], ['yellow', 300], ['green', 1800]], { h: 5, w: 8, x: 16, y: 85 },
+    [['purple', null], ['red', 0], ['yellow', 300], ['green', 1800]], { h: 5, w: 8, x: 16, y: 60 },
     'Age of the youngest scraped controller process. A reset identifies rollout or restart timing.', telemetryMappings('Not reported'), 'area'),
   timePanel(
     'Replica count by image over selected range',
     [prom('(count by (image) (kube_pod_container_info{%s})) or label_replace(absent(count by (image) (kube_pod_container_info{%s})) * 0, "image", "not observed", "", "")' % [controllerPods, controllerPods], '{{image}}')],
-    'short', { h: 8, w: 24, x: 0, y: 90 },
+    'short', { h: 8, w: 24, x: 0, y: 65 },
     'Replica count by immutable image reference over the selected range. Historical image series remain visible to show rollout transitions.'),
   ]),
 ];

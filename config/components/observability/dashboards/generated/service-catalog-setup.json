@@ -420,7 +420,7 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
+                  "lastNotNull",
                   "max"
                ],
                "displayMode": "table",
@@ -758,7 +758,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Unfinished attempts grouped by the first incomplete stage over the selected range. The legend uses the final sample, so stages that have drained do not look current. -1 means coverage is unavailable; a healthy empty observer reports zero.",
+         "description": "Unfinished attempts grouped by the first incomplete stage over the selected range. The legend reports only the range maximum because a disappeared stage has no trustworthy current sample. -1 means coverage is unavailable; a healthy empty observer reports zero.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -786,7 +786,6 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
                   "max"
                ],
                "displayMode": "table",
@@ -858,7 +857,7 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
+                  "lastNotNull",
                   "max"
                ],
                "displayMode": "table",
@@ -918,7 +917,7 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
+                  "lastNotNull",
                   "max"
                ],
                "displayMode": "table",
@@ -1246,7 +1245,7 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
+                  "lastNotNull",
                   "max"
                ],
                "displayMode": "table",
@@ -1322,7 +1321,7 @@
          "options": {
             "legend": {
                "calcs": [
-                  "last",
+                  "lastNotNull",
                   "max"
                ],
                "displayMode": "table",
@@ -1920,7 +1919,7 @@
                "options": {
                   "legend": {
                      "calcs": [
-                        "last",
+                        "lastNotNull",
                         "max"
                      ],
                      "displayMode": "table",
@@ -1957,7 +1956,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 70
+            "y": 58
          },
          "id": 31,
          "panels": [
@@ -2032,7 +2031,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 0,
-                  "y": 71
+                  "y": 59
                },
                "id": 32,
                "options": {
@@ -2096,7 +2095,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 8,
-                  "y": 71
+                  "y": 59
                },
                "id": 33,
                "options": {
@@ -2194,7 +2193,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 16,
-                  "y": 71
+                  "y": 59
                },
                "id": 34,
                "options": {
@@ -2248,13 +2247,13 @@
                   "h": 8,
                   "w": 12,
                   "x": 0,
-                  "y": 76
+                  "y": 64
                },
                "id": 35,
                "options": {
                   "legend": {
                      "calcs": [
-                        "last",
+                        "lastNotNull",
                         "max"
                      ],
                      "displayMode": "table",
@@ -2308,13 +2307,13 @@
                   "h": 8,
                   "w": 12,
                   "x": 12,
-                  "y": 76
+                  "y": 64
                },
                "id": 36,
                "options": {
                   "legend": {
                      "calcs": [
-                        "last",
+                        "lastNotNull",
                         "max"
                      ],
                      "displayMode": "table",
@@ -2351,7 +2350,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 84
+            "y": 59
          },
          "id": 37,
          "panels": [
@@ -2392,7 +2391,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 0,
-                  "y": 85
+                  "y": 60
                },
                "id": 38,
                "options": {
@@ -2456,7 +2455,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 8,
-                  "y": 85
+                  "y": 60
                },
                "id": 39,
                "options": {
@@ -2554,7 +2553,7 @@
                   "h": 5,
                   "w": 8,
                   "x": 16,
-                  "y": 85
+                  "y": 60
                },
                "id": 40,
                "options": {
@@ -2608,13 +2607,13 @@
                   "h": 8,
                   "w": 24,
                   "x": 0,
-                  "y": 90
+                  "y": 65
                },
                "id": 41,
                "options": {
                   "legend": {
                      "calcs": [
-                        "last",
+                        "lastNotNull",
                         "max"
                      ],
                      "displayMode": "table",

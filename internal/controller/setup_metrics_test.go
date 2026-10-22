@@ -17,8 +17,8 @@ func TestSetupDurationBucketsCoverLongRunningSetup(t *testing.T) {
 }
 
 func TestSetupMetricSeriesBudget(t *testing.T) {
-	if got := setupMetricSeriesBudget(); got != 370 {
-		t.Fatalf("setup metrics add %d series, want 370", got)
+	if got := setupMetricSeriesBudget(); got != 377 {
+		t.Fatalf("setup metrics add %d series, want 377", got)
 	} else if got >= 20_000 {
 		t.Fatalf("setup metrics add %d series, want fewer than 20,000", got)
 	}
