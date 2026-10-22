@@ -19,6 +19,7 @@ local job = 'job="services-system/services-controller-manager"';
 local controllerPods = 'namespace="services-system",container="manager",pod=~"services-controller-manager-.*"';
 local projectionQueue = job + ',name=~"location-(binding|projection)"';
 local projectionController = job + ',controller=~"location-(binding|projection)"';
+local unfinishedByStage = '(sum by (blocking_stage) (service_catalog_setup_inflight)) and on() (max(service_catalog_setup_observer_healthy) == 1)';
 
 local prom(expr, legend='') =
   prometheus.new(ds, expr)
@@ -42,12 +43,11 @@ local observerMappings = [
 ];
 
 // A setup aggregate is zero only when the observer is healthy. A missing or
-// unhealthy observer produces -1 so an empty cache cannot look healthy.
+// unhealthy observer produces -1 so an empty or stale cache cannot look healthy.
 local observedAggregate(expr) =
-  '(%s) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)' % expr;
+  '((%s) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)' % expr;
 
-local completedAggregate(expr) =
-  '(%s) or (absent(service_catalog_setup_observer_healthy) * -1) or vector(0)' % expr;
+local completedAggregate(expr) = observedAggregate(expr);
 
 local statPanel(title, expr, legend, unit, thresholds, gridPos,
                 description, mappings=[], graphMode='none') =
@@ -86,7 +86,7 @@ local timePanel(title, targets, unit, gridPos, description, stacking='none') =
   + timeSeries.options.tooltip.withSort('desc')
   + timeSeries.options.legend.withDisplayMode('table')
   + timeSeries.options.legend.withPlacement('right')
-  + timeSeries.options.legend.withCalcs(['lastNotNull', 'max'])
+  + timeSeries.options.legend.withCalcs(['last', 'max'])
   + timeSeries.options.legend.withSortBy('Max')
   + timeSeries.options.legend.withSortDesc(true);
 
@@ -95,6 +95,13 @@ local section(title, id, y) =
   + row.withId(id)
   + pos(1, 24, 0, y)
   + row.withCollapsed(false);
+
+local collapsedSection(title, id, y, panels) =
+  row.new(title)
+  + row.withId(id)
+  + pos(1, 24, 0, y)
+  + row.withCollapsed(true)
+  + row.withPanels(panels);
 
 local datasourceVar =
   var.datasource.new('datasource', 'prometheus')
@@ -107,17 +114,17 @@ local panels = [
   section('Customer outcomes', 100, 0),
   statPanel(
     'User setup p95',
-    'histogram_quantile(0.95, sum by (le) (rate(service_catalog_setup_duration_seconds_bucket{clock="user"}[$__rate_interval]))) or vector(-1)',
+    'histogram_quantile(0.95, sum by (le) (increase(service_catalog_setup_duration_seconds_bucket{clock="user"}[$__range]))) or vector(-1)',
     'user p95', 's', [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]],
     { h: 5, w: 6, x: 0, y: 1 },
-    'Request acceptance to first successful SetupComplete. -1 means the telemetry is not deployed or no successful setup exists in the rate window.',
+    'Request acceptance to first successful SetupComplete for completions in the selected range. -1 means the telemetry is not deployed or no successful setup exists in the range.',
     telemetryMappings('No completed setups'), 'area'),
   statPanel(
     'Platform setup p95',
-    'histogram_quantile(0.95, sum by (le) (rate(service_catalog_setup_duration_seconds_bucket{clock="platform"}[$__rate_interval]))) or vector(-1)',
+    'histogram_quantile(0.95, sum by (le) (increase(service_catalog_setup_duration_seconds_bucket{clock="platform"}[$__range]))) or vector(-1)',
     'platform p95', 's', [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]],
     { h: 5, w: 6, x: 6, y: 1 },
-    'Authorization to first successful SetupComplete. External approval time is excluded. -1 means no observation is available.',
+    'Authorization to first successful SetupComplete for completions in the selected range. External approval time is excluded. -1 means no observation is available.',
     telemetryMappings('No completed setups'), 'area'),
   statPanel(
     'Completed setups',
@@ -133,7 +140,7 @@ local panels = [
     'Fraction of discovered service-catalog controller targets that VictoriaMetrics is scraping successfully.', [], 'area'),
   timePanel(
     'Setup latency by service class and clock',
-    [prom('histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval]))) or label_replace(label_replace(vector(-1), "service_class", "none", "", ""), "clock", "no observations", "", "")', 'p95 {{service_class}} / {{clock}}')],
+    [prom('(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) or (label_replace(label_replace(absent(histogram_quantile(0.95, sum by (le, service_class, clock) (rate(service_catalog_setup_duration_seconds_bucket[$__rate_interval])))) * -1, "service_class", "none", "", ""), "clock", "no observations", "", ""))', 'p95 {{service_class}} / {{clock}}')],
     's', { h: 8, w: 24, x: 0, y: 6 },
     'End-to-end p95. The -1 fallback keeps the panel explicit before telemetry rollout or during an idle range; use Observer health before interpreting it.'),
 
@@ -148,22 +155,22 @@ local panels = [
     [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]], { h: 5, w: 8, x: 16, y: 15 },
     'Age of the oldest unfinished persisted setup attempt.', telemetryMappings()),
   timePanel(
-    'Unfinished attempts by blocking stage',
-    [prom('sum by (blocking_stage) (service_catalog_setup_inflight) or label_replace(((max(service_catalog_setup_observer_healthy) == 1) * 0), "blocking_stage", "none", "", "") or label_replace((((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")', '{{blocking_stage}}')],
+    'Unfinished attempts by blocking stage over time',
+    [prom('(%s) or label_replace((absent(%s) * (max(service_catalog_setup_observer_healthy) == 1)) * 0, "blocking_stage", "none", "", "") or label_replace(absent(%s) * (((max(service_catalog_setup_observer_healthy) == 0) * -1) or (absent(service_catalog_setup_observer_healthy) * -1)), "blocking_stage", "telemetry unavailable", "", "")' % [unfinishedByStage, unfinishedByStage, unfinishedByStage], '{{blocking_stage}}')],
     'short', { h: 8, w: 24, x: 0, y: 20 },
-    'Current unfinished attempts grouped by the first incomplete stage. -1 means coverage is unavailable, while a healthy empty observer reports a zero series.', 'normal'),
+    'Unfinished attempts grouped by the first incomplete stage over the selected range. The legend uses the final sample, so stages that have drained do not look current. -1 means coverage is unavailable; a healthy empty observer reports zero.', 'normal'),
 
   section('Stage breakdown', 300, 28),
   timePanel(
     'Projection phase p95',
-    [prom('histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval]))) or label_replace(vector(-1), "phase", "no observations", "", "")', '{{phase}}')],
+    [prom('(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, phase) (rate(service_catalog_projection_phase_duration_seconds_bucket[$__rate_interval])))) * -1, "phase", "no observations", "", "")', '{{phase}}')],
     's', { h: 8, w: 12, x: 0, y: 29 },
     'Execution time for bounded projection phases. This does not include workqueue delay.'),
   timePanel(
     'Setup completion volume by class',
-    [prom('sum by (service_class, clock) (increase(service_catalog_setup_duration_seconds_count[$__interval])) or label_replace(label_replace(vector(0), "service_class", "none", "", ""), "clock", "no completions", "", "")', '{{service_class}} / {{clock}}')],
+    [prom('(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) or label_replace(absent(sum by (service_class) (increase(service_catalog_setup_attempts_total{outcome="succeeded"}[$__interval]))) * 0, "service_class", "none", "", "")', '{{service_class}}')],
     'short', { h: 8, w: 12, x: 12, y: 29 },
-    'Successful setup observations per interval. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.', 'normal'),
+    'Successful setup attempts per interval and service class. Each completion is counted once. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.', 'normal'),
 
   section('Controller capacity and queueing', 400, 37),
   statPanel('Projection queue depth', 'sum(workqueue_depth{%s}) or vector(0)' % projectionQueue, 'queued', 'short',
@@ -207,7 +214,7 @@ local panels = [
     [['red', null], ['yellow', 1], ['green', 2]], { h: 5, w: 8, x: 16, y: 52 },
     'Number of service-catalog controller targets currently scraped as up. This proves scrape reachability, not cache completeness.', [], 'area'),
 
-  section('Leadership', 600, 57),
+  collapsedSection('Leadership', 600, 57, [
   statPanel('Projection leaders', 'sum(leader_election_master_status{%s,name=~"(consumer|project)-projection[.]services[.]miloapis[.]com"}) or vector(-1)' % job, 'leaders', 'short',
     [['purple', null], ['red', 0], ['green', 1], ['red', 2]], { h: 5, w: 8, x: 0, y: 58 },
     'Exactly one replica should own the projection lease after rollout. -1 means this release has not exposed the distinct projection election.', telemetryMappings('Not reported')),
@@ -219,32 +226,34 @@ local panels = [
     'Replicas holding any service-catalog manager election. Separate primary and projection managers may intentionally land on different pods.', [], 'area'),
   timePanel(
     'Election ownership by manager',
-    [prom('sum by (name) (leader_election_master_status{%s}) or label_replace(vector(-1), "name", "not reported", "", "")' % job, '{{name}}')],
+    [prom('(sum by (name) (leader_election_master_status{%s})) or label_replace(absent(sum by (name) (leader_election_master_status{%s})) * -1, "name", "not reported", "", "")' % [job, job], '{{name}}')],
     'short', { h: 7, w: 24, x: 0, y: 63 },
     'Sum of leader-election status across replicas for each manager name. Each active election should remain at exactly one.'),
+  ]),
 
-  section('API and throttling', 700, 70),
-  statPanel('Client throttle wait p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(0)' % job, 'p95', 's',
-    [['green', null], ['yellow', 0.1], ['red', 1]], { h: 5, w: 8, x: 0, y: 71 },
-    'Time spent waiting for client-side rate-limit tokens. Zero means no waits were observed in the rate window.', [], 'area'),
+  collapsedSection('Controller-wide API and throttling', 700, 70, [
+  statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{%s})) * -1)' % [job, job], 'p95', 's',
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 8, x: 0, y: 71 },
+    'Controller-wide time spent waiting for client-side rate-limit tokens. Telemetry unavailable means the deployed client does not expose this histogram; it must not be interpreted as zero wait.', telemetryMappings('No throttle observations'), 'area'),
   statPanel('HTTP 429 rate', 'sum(rate(rest_client_requests_total{%s,code="429"}[$__rate_interval])) or vector(0)' % job, '429/s', 'reqps',
     [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 8, x: 8, y: 71 },
-    'Kubernetes API responses rejected for server-side throttling.', [], 'area'),
+    'Controller-wide Kubernetes API responses rejected for server-side throttling. Client metrics cannot attribute traffic to a specific reconciler.', [], 'area'),
   statPanel('API request p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or vector(-1)' % job, 'p95', 's',
     [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 8, x: 16, y: 71 },
-    'Kubernetes REST round-trip latency. This excludes client rate-limiter wait. -1 means the histogram is unavailable on the deployed release.', telemetryMappings('No request observations'), 'area'),
+    'Controller-wide Kubernetes REST round-trip latency. This excludes client rate-limiter wait and cannot be attributed to a specific reconciler. -1 means the histogram is unavailable on the deployed release.', telemetryMappings('No request observations'), 'area'),
   timePanel(
     'Kubernetes API request rate by response code',
-    [prom('sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval])) or label_replace(vector(0), "code", "none", "", "")' % job, '{{code}}')],
+    [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
     'reqps', { h: 8, w: 12, x: 0, y: 76 },
-    'Controller REST traffic grouped by bounded HTTP response code. Use this to correlate retries and 429s with setup delay.', 'normal'),
+    'Controller-wide REST traffic grouped by bounded HTTP response code. Correlation with setup delay is indirect because client metrics have no reconciler label.', 'normal'),
   timePanel(
     'Kubernetes API request latency by method',
-    [prom('histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or label_replace(vector(-1), "verb", "telemetry unavailable", "", "")' % job, '{{verb}}')],
+    [prom('(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) or label_replace(absent(histogram_quantile(0.95, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))) * -1, "verb", "telemetry unavailable", "", "")' % [job, job], '{{verb}}')],
     's', { h: 8, w: 12, x: 12, y: 76 },
-    'P95 REST round-trip latency grouped by method label (`verb`). Client-side limiter waits are shown separately.'),
+    'Controller-wide p95 REST round-trip latency grouped by method label (`verb`). Client-side limiter waits are shown separately.'),
+  ]),
 
-  section('Rollout and version', 800, 84),
+  collapsedSection('Rollout and version', 800, 84, [
   statPanel('Controller restarts', 'sum(increase(kube_pod_container_status_restarts_total{%s}[$__range])) or vector(0)' % controllerPods, 'restarts', 'short',
     [['green', null], ['yellow', 1], ['red', 3]], { h: 5, w: 8, x: 0, y: 85 },
     'Container restarts during the selected range. Leadership loss intentionally terminates the process, so correlate restarts with election changes.', [], 'area'),
@@ -255,10 +264,11 @@ local panels = [
     [['purple', null], ['red', 0], ['yellow', 300], ['green', 1800]], { h: 5, w: 8, x: 16, y: 85 },
     'Age of the youngest scraped controller process. A reset identifies rollout or restart timing.', telemetryMappings('Not reported'), 'area'),
   timePanel(
-    'Running replicas by image',
-    [prom('count by (image) (kube_pod_container_info{%s}) or label_replace(vector(0), "image", "not observed", "", "")' % controllerPods, '{{image}}')],
+    'Replica count by image over selected range',
+    [prom('(count by (image) (kube_pod_container_info{%s})) or label_replace(absent(count by (image) (kube_pod_container_info{%s})) * 0, "image", "not observed", "", "")' % [controllerPods, controllerPods], '{{image}}')],
     'short', { h: 8, w: 24, x: 0, y: 90 },
-    'Current replica count by immutable image reference. Mixed series identify a rollout in progress.'),
+    'Replica count by immutable image reference over the selected range. Historical image series remain visible to show rollout transitions.'),
+  ]),
 ];
 
 g.dashboard.new('Service Catalog Setup')
@@ -272,7 +282,7 @@ g.dashboard.new('Service Catalog Setup')
 + g.dashboard.time.withFrom('now-6h')
 + g.dashboard.time.withTo('now')
 + g.dashboard.withLinks([
-  { icon: 'external link', includeVars: true, keepTime: true, targetBlank: true, title: 'Runbook', tooltip: 'Diagnose service setup stalls', type: 'link', url: 'https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md' },
+  { icon: 'external link', includeVars: false, keepTime: false, targetBlank: true, title: 'Runbook', tooltip: 'Diagnose service setup stalls', type: 'link', url: 'https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md' },
   { icon: 'dashboard', includeVars: true, keepTime: true, targetBlank: false, title: 'Milo API latency', tooltip: 'Control-plane API latency and dependencies', type: 'link', url: '/d/milo-api-latency' },
 ])
 + g.dashboard.withVariables([datasourceVar])
