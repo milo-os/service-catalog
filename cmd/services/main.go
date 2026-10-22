@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -17,14 +16,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -217,8 +214,8 @@ func main() {
 	}
 
 	// ServiceEntitlement and ServiceConsumer live in project virtual control
-	// planes. We need a multicluster manager backed by the Milo provider so
-	// reconcilers run inside every engaged project's cluster context.
+	// planes. Admission needs a multicluster manager backed by the Milo
+	// provider to resolve the project a request targets on every replica.
 	// The provider runs on its own manager rather than on mgr, so that
 	// project discovery and cluster engagement are not leader-gated; see
 	// newDiscoveryManager. It doubles as the multicluster manager's local
@@ -260,15 +257,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.ServiceEntitlementReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
+	// mcMgr engages every project on every replica so admission can resolve
+	// them, which also means anything registered on it runs on every replica.
+	// The controllers that write to project planes run on electedMcMgr
+	// instead, which only the lease holder starts; see
+	// newElectedMulticlusterManager. Under e2esingle the deployment is a
+	// single replica and the provider resolves every project to one cluster,
+	// so mcMgr serves both roles.
+	electedMcMgr := mcMgr
+	if !enableSingleClusterForE2ETests {
+		electedMcMgr, err = newElectedMulticlusterManager(cfg, controllerOpts, ctrl.Options{
+			LeaderElection:          enableLeaderElection,
+			LeaderElectionNamespace: leaderElectionNamespace,
+			LeaseDuration:           &leaseDuration,
+			RenewDeadline:           &renewDeadline,
+			RetryPeriod:             &retryPeriod,
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to create elected project controller manager")
+			os.Exit(1)
+		}
+	}
+
+	if err = (&controller.ServiceEntitlementReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceEntitlement")
 		os.Exit(1)
 	}
-	if err = (&controller.ServiceActivationRequestReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
+	if err = (&controller.ServiceActivationRequestReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceActivationRequest")
 		os.Exit(1)
 	}
-	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(mcMgr); err != nil {
+	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
 		os.Exit(1)
 	}
@@ -279,11 +298,11 @@ func main() {
 	// Provisioning runs on the all-projects manager because each reconcile
 	// reaches two project planes: the consumer's and the provider's source
 	// project. The consumer-scoped manager below is narrower.
-	if err = (&controller.ProvisioningReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
+	if err = (&controller.ProvisioningReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Provisioning")
 		os.Exit(1)
 	}
-	// Location projection runs either on the all-projects manager
+	// Location projection runs either on the elected all-projects manager
 	// (today's default) or, when consumer-scoped projection is enabled, on a
 	// dedicated multicluster manager whose membership is driven by the consumer
 	// provider — only consumer projects with an active ServiceConsumer for one
@@ -443,82 +462,13 @@ func main() {
 		setupLog.Info("consumer-scoped projection enabled",
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
 	} else {
-		if enableSingleClusterForE2ETests {
-			if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
-				os.Exit(1)
-			}
-			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
-				os.Exit(1)
-			}
-		} else {
-			// Admission discovery stays on mcMgr on every replica. Projection
-			// gets a second Milo provider and manager. With --leader-elect, its
-			// caches and mutation workers start only on the holder of this
-			// distinct lease; single-replica development and e2e retain the
-			// configured no-election behavior.
-			// The Milo provider registers a projectcontrolplane controller on
-			// each manager that hosts it. This second instance is intentional:
-			// it is isolated behind the projection lease, but controller-runtime
-			// otherwise rejects its duplicate metrics label process-wide.
-			projectionControllerOpts := controllerOpts
-			projectionControllerOpts.SkipNameValidation = ptr.To(true)
-			projectionLocalMgr, err := ctrl.NewManager(cfg, ctrl.Options{
-				Scheme:                  scheme,
-				Controller:              projectionControllerOpts,
-				Metrics:                 metricsserver.Options{BindAddress: "0"},
-				LeaderElection:          enableLeaderElection,
-				LeaderElectionID:        "project-projection.services.miloapis.com",
-				LeaderElectionNamespace: leaderElectionNamespace,
-				LeaseDuration:           &leaseDuration,
-				RenewDeadline:           &renewDeadline,
-				RetryPeriod:             &retryPeriod,
-			})
-			if err != nil {
-				setupLog.Error(err, "unable to create elected projection manager")
-				os.Exit(1)
-			}
-			projectionProvider, err := miloprovider.New(projectionLocalMgr, miloprovider.Options{
-				InternalServiceDiscovery: false,
-				ProjectRestConfig:        cfg,
-				ClusterOptions:           []cluster.Option{func(o *cluster.Options) { o.Scheme = scheme }},
-			})
-			if err != nil {
-				setupLog.Error(err, "unable to create elected projection provider")
-				os.Exit(1)
-			}
-			projectionMcMgr, err := mcmanager.WithMultiCluster(projectionLocalMgr, miloprovider.WithoutAutoStart(projectionProvider))
-			if err != nil {
-				setupLog.Error(err, "unable to create elected projection multicluster manager")
-				os.Exit(1)
-			}
-			if err := projectionLocalMgr.Add(manager.RunnableFunc(func(runCtx context.Context) error {
-				return projectionProvider.Start(runCtx, projectionMcMgr)
-			})); err != nil {
-				setupLog.Error(err, "unable to add elected projection provider")
-				os.Exit(1)
-			}
-			if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
-				os.Exit(1)
-			}
-			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
-				os.Exit(1)
-			}
-			go func() {
-				// controller-runtime returns from Start when this manager loses
-				// project-projection.services.miloapis.com. Exit the process so the
-				// pod restarts as one unit, including admission, instead of leaving a
-				// partially running replica whose projection ownership has changed.
-				// The deployment Role grants resource-wide CRUD on coordination
-				// Leases, so this lease is covered alongside the primary manager's.
-				if err := projectionMcMgr.Start(ctx); err != nil {
-					setupLog.Error(err, "elected projection manager failed")
-					os.Exit(1)
-				}
-			}()
+		if err = (&controller.LocationProjectionReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
+			os.Exit(1)
+		}
+		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
+			os.Exit(1)
 		}
 	}
 
@@ -597,6 +547,21 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+	if !enableSingleClusterForE2ETests {
+		go func() {
+			// controller-runtime returns from Start when this manager loses
+			// its lease. Exit the process so the pod restarts as one unit,
+			// including admission, instead of leaving a replica that still
+			// serves webhooks but has silently stopped reconciling — or whose
+			// workers are still draining while the new holder starts.
+			// The deployment Role grants resource-wide CRUD on coordination
+			// Leases, so this lease is covered alongside the primary manager's.
+			if err := electedMcMgr.Start(ctx); err != nil {
+				setupLog.Error(err, "elected project controller manager failed")
+				os.Exit(1)
+			}
+		}()
+	}
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctx); err != nil {
