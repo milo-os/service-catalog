@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,6 +45,18 @@ const (
 	// may get when nothing else changed, so a dead fan-out stays detectable
 	// without patching on every five-minute resync.
 	provisioningHeartbeatInterval = time.Hour
+
+	// provisioningMaxConcurrentReconciles is how many entitlements this
+	// controller provisions at once. A reconcile spends most of its time on API
+	// round-trips to one consumer project; running them serially lets a slow or
+	// rate-limited project hold up unrelated projects behind it.
+	//
+	// Five matches the other project fan-out controllers and keeps the extra API
+	// pressure modest. Parallel reconciles remain isolated: every status patch
+	// targets its triggering entitlement, while object pruning is restricted by
+	// that entitlement's name and controller owner UID. Server-side apply makes
+	// repeated writes atomic and idempotent.
+	provisioningMaxConcurrentReconciles = 5
 
 	// provisioningFieldManager identifies writes this reconciler makes, to
 	// installed objects and to the entitlement's provisioning status. It
@@ -802,5 +815,8 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 					return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
 				}),
 		)).
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: provisioningMaxConcurrentReconciles,
+		}).
 		Complete(r)
 }

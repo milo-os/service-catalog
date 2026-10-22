@@ -343,6 +343,132 @@ func TestLocationProjectionReconciler_RecordsSetupCompletion(t *testing.T) {
 	}
 }
 
+func TestLocationProjectionReconciler_AggregatesDependencyChainInOnePass(t *testing.T) {
+	services := []*servicesv1alpha1.Service{
+		setupService("compute", "compute.miloapis.com", "networking"),
+		setupService("networking", "networking.miloapis.com", "ipam"),
+		setupService("ipam", "ipam.miloapis.com"),
+	}
+	// Deliberately put parents before dependencies, the order that previously
+	// required one controller event per level to converge.
+	entitlements := []servicesv1alpha1.ServiceEntitlement{
+		*setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionTrue, "Complete"),
+		*setupEntitlement("networking", "networking.miloapis.com", metav1.ConditionTrue, "Complete"),
+		*setupEntitlement("ipam", "ipam.miloapis.com", metav1.ConditionTrue, "Complete"),
+	}
+	rootObjects := make([]client.Object, 0, len(services))
+	for _, service := range services {
+		rootObjects = append(rootObjects, service)
+	}
+	consumerObjects := make([]client.Object, 0, len(entitlements))
+	stages := make(map[string]setupProjectionStage, len(entitlements))
+	for i := range entitlements {
+		consumerObjects = append(consumerObjects, entitlements[i].DeepCopy())
+		stages[entitlements[i].Spec.ServiceRef.Name] = setupProjectionStage{complete: true, reason: "ProjectionConverged"}
+	}
+
+	r := &LocationProjectionReconciler{rootClient: projectionRootClient(rootObjects...)}
+	consumer := projectionConsumerClient(consumerObjects...)
+	if err := r.aggregateSetup(context.Background(), projectionProject, consumer, entitlements, stages); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ipam", "networking", "compute"} {
+		var got servicesv1alpha1.ServiceEntitlement
+		if err := consumer.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !apimeta.IsStatusConditionTrue(got.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete) {
+			t.Errorf("%s SetupComplete = %#v, want True", name,
+				apimeta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete))
+		}
+	}
+}
+
+func TestTransitiveDependenciesCompleteReportsBlockingState(t *testing.T) {
+	services := map[string]*servicesv1alpha1.Service{}
+	for _, service := range []*servicesv1alpha1.Service{
+		setupService("compute", "compute.miloapis.com", "networking"),
+		setupService("networking", "networking.miloapis.com", "ipam"),
+		setupService("ipam", "ipam.miloapis.com"),
+	} {
+		services[service.Name] = service
+		services[service.Spec.ServiceName] = service
+	}
+
+	tests := []struct {
+		name       string
+		leafStatus metav1.ConditionStatus
+		leafReason string
+		removeLeaf bool
+		wantReason string
+	}{
+		{name: "false dependency", leafStatus: metav1.ConditionFalse, leafReason: "EnrollmentFailed", wantReason: "EnrollmentFailed"},
+		{name: "unknown dependency", leafStatus: metav1.ConditionUnknown, leafReason: "DiscoveryPending", wantReason: "DiscoveryPending"},
+		{name: "missing dependency", leafStatus: metav1.ConditionTrue, leafReason: "Complete", removeLeaf: true, wantReason: "DependencyEntitlementMissing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compute := setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionTrue, "Complete")
+			networking := setupEntitlement("networking", "networking.miloapis.com", metav1.ConditionTrue, "Complete")
+			ipam := setupEntitlement("ipam", "ipam.miloapis.com", tt.leafStatus, tt.leafReason)
+			entitlements := map[string]*servicesv1alpha1.ServiceEntitlement{
+				"compute": compute, "compute.miloapis.com": compute,
+				"networking": networking, "networking.miloapis.com": networking,
+				"ipam": ipam, "ipam.miloapis.com": ipam,
+			}
+			if tt.removeLeaf {
+				delete(entitlements, "ipam")
+				delete(entitlements, "ipam.miloapis.com")
+			}
+			complete, reason := transitiveDependenciesComplete(compute, services, entitlements, map[string]bool{})
+			if complete || reason != tt.wantReason {
+				t.Fatalf("complete, reason = %t, %q; want false, %q", complete, reason, tt.wantReason)
+			}
+		})
+	}
+
+	services["ipam"].Spec.Dependencies = []servicesv1alpha1.ServiceDependency{{ServiceRef: servicesv1alpha1.ServiceRef{Name: "compute"}}}
+	compute := setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionTrue, "Complete")
+	networking := setupEntitlement("networking", "networking.miloapis.com", metav1.ConditionTrue, "Complete")
+	ipam := setupEntitlement("ipam", "ipam.miloapis.com", metav1.ConditionTrue, "Complete")
+	entitlements := map[string]*servicesv1alpha1.ServiceEntitlement{"compute": compute, "networking": networking, "ipam": ipam}
+	if complete, reason := transitiveDependenciesComplete(compute, services, entitlements, map[string]bool{}); complete || reason != "DependencyCycle" {
+		t.Fatalf("cycle complete, reason = %t, %q; want false, DependencyCycle", complete, reason)
+	}
+}
+
+func setupService(name, canonical string, dependencies ...string) *servicesv1alpha1.Service {
+	service := &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       servicesv1alpha1.ServiceSpec{ServiceName: canonical},
+	}
+	for _, dependency := range dependencies {
+		service.Spec.Dependencies = append(service.Spec.Dependencies, servicesv1alpha1.ServiceDependency{
+			ServiceRef: servicesv1alpha1.ServiceRef{Name: dependency},
+		})
+	}
+	return service
+}
+
+func setupEntitlement(name, canonical string, dependencyStatus metav1.ConditionStatus, dependencyReason string) *servicesv1alpha1.ServiceEntitlement {
+	entitlement := &servicesv1alpha1.ServiceEntitlement{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       servicesv1alpha1.ServiceEntitlementSpec{ServiceRef: servicesv1alpha1.ServiceRef{Name: name}},
+		Status: servicesv1alpha1.ServiceEntitlementStatus{
+			Phase:       servicesv1alpha1.EntitlementPhaseActive,
+			ServiceName: canonical,
+		},
+	}
+	for _, condition := range []metav1.Condition{
+		{Type: servicesv1alpha1.ConditionTypeReady, Status: metav1.ConditionTrue, Reason: "Complete"},
+		{Type: servicesv1alpha1.ConditionTypeDependenciesSatisfied, Status: dependencyStatus, Reason: dependencyReason},
+		{Type: servicesv1alpha1.ConditionTypeProvisioned, Status: metav1.ConditionTrue, Reason: "Complete"},
+	} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, condition)
+	}
+	return entitlement
+}
+
 func TestProjectionProjectIndex(t *testing.T) {
 	index := newProjectionProjectIndex()
 	index.Replace("a", []string{"compute"})

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -85,6 +87,29 @@ func provConsumerClient(objs ...client.Object) client.Client {
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		Build()
+}
+
+// blockingApplyClient holds the first object apply so a test can prove several
+// projects enter the write path together. Each project gets its own client,
+// matching the isolation provided by the multicluster manager in production.
+type blockingApplyClient struct {
+	client.Client
+	project string
+	entered chan<- string
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingApplyClient) Apply(
+	ctx context.Context,
+	obj runtime.ApplyConfiguration,
+	opts ...client.ApplyOption,
+) error {
+	c.once.Do(func() {
+		c.entered <- c.project
+		<-c.release
+	})
+	return c.Client.Apply(ctx, obj, opts...)
 }
 
 func provEntitlementObj(phase servicesv1alpha1.EntitlementPhase) *servicesv1alpha1.ServiceEntitlement {
@@ -346,6 +371,92 @@ func TestProvisioningRetriesDisengagedTerminatingProject(t *testing.T) {
 	})
 	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
 		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+// Reconciles for distinct projects must not share mutable state. The controller
+// runs several workers so an API round-trip in one project cannot block every
+// project behind it; this test holds all object writes until every project has
+// reached the write path, then verifies each result kept its own owner.
+func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) {
+	const projectCount = provisioningMaxConcurrentReconciles
+
+	rootObjects := []client.Object{provConfig(ipClassRef("tenant-endpoint-ipv6"))}
+	entered := make(chan string, projectCount)
+	release := make(chan struct{})
+	consumers := make(map[string]client.Client, projectCount)
+	managed := make(map[string]client.Client, projectCount)
+	wantUID := make(map[string]types.UID, projectCount)
+
+	for i := range projectCount {
+		project := fmt.Sprintf("consumer-proj-%d", i)
+		rootObjects = append(rootObjects, &resourcemanagerv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: project},
+		})
+		uid := types.UID(project + "-entitlement")
+		entitlement := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
+		entitlement.UID = uid
+		consumer := provConsumerClient(entitlement)
+		consumers[project] = consumer
+		wantUID[project] = uid
+		managed[project] = &blockingApplyClient{
+			Client:  consumer,
+			project: project,
+			entered: entered,
+			release: release,
+		}
+	}
+
+	root := provClient(rootObjects...)
+	r := newProvReconciler(root, managed)
+	errCh := make(chan error, projectCount)
+	var wg sync.WaitGroup
+	for project := range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+				ClusterName: multicluster.ClusterName(project),
+			})
+			errCh <- err
+		}()
+	}
+
+	seen := make(map[string]struct{}, projectCount)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for len(seen) < projectCount {
+		select {
+		case project := <-entered:
+			seen[project] = struct{}{}
+		case <-timer.C:
+			close(release)
+			wg.Wait()
+			t.Fatalf("only %d of %d projects reached the apply path concurrently", len(seen), projectCount)
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent reconcile: %v", err)
+		}
+	}
+
+	for project, consumer := range consumers {
+		items := listClasses(t, consumer).Items
+		if len(items) != 1 {
+			t.Fatalf("project %q installed %d objects, want 1", project, len(items))
+		}
+		if !ownedBy(items[0].GetOwnerReferences(), wantUID[project]) {
+			t.Errorf("project %q object has another project's owner: %+v", project, items[0].GetOwnerReferences())
+		}
+		entry := getEntitlement(t, consumer).Status.ProvisionedResources
+		if len(entry) != 1 || entry[0].State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+			t.Errorf("project %q ledger did not converge: %+v", project, entry)
+		}
 	}
 }
 

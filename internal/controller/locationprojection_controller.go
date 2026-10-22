@@ -381,8 +381,13 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 			entitlementsByService[entitlement.Status.ServiceName] = entitlement
 		}
 	}
-	for i := range entitlements {
-		entitlement := &entitlements[i]
+	// SetupComplete is itself an input to each parent's dependency stage. Walk
+	// dependencies before their parents so the in-memory status written below
+	// is immediately visible to every ancestor in the same reconcile. Without
+	// this ordering, a parent that happened to be returned first by LIST waited
+	// for its child's status update to enqueue another controller pass; a
+	// compute -> networking -> IPAM chain could therefore require three passes.
+	for _, entitlement := range dependencyFirstEntitlements(entitlements, servicesByName, entitlementsByService) {
 		before := entitlement.DeepCopy()
 		if entitlement.Status.Setup == nil {
 			requestedAt := entitlement.CreationTimestamp
@@ -461,6 +466,51 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 	setupInflight.replaceProject(project, entitlements)
 	setupObserverLastSuccess.SetToCurrentTime()
 	return nil
+}
+
+// dependencyFirstEntitlements returns each entitlement after all dependency
+// entitlements reachable from its Service. Cycles are deliberately not an
+// error here: transitiveDependenciesComplete detects them and records
+// DependencyCycle, while the traversal state merely guarantees termination.
+func dependencyFirstEntitlements(
+	entitlements []servicesv1alpha1.ServiceEntitlement,
+	services map[string]*servicesv1alpha1.Service,
+	entitlementsByService map[string]*servicesv1alpha1.ServiceEntitlement,
+) []*servicesv1alpha1.ServiceEntitlement {
+	const (
+		visiting = 1
+		visited  = 2
+	)
+	state := make(map[*servicesv1alpha1.ServiceEntitlement]uint8, len(entitlements))
+	ordered := make([]*servicesv1alpha1.ServiceEntitlement, 0, len(entitlements))
+
+	var visit func(*servicesv1alpha1.ServiceEntitlement)
+	visit = func(entitlement *servicesv1alpha1.ServiceEntitlement) {
+		if entitlement == nil || state[entitlement] == visited {
+			return
+		}
+		if state[entitlement] == visiting {
+			return
+		}
+		state[entitlement] = visiting
+
+		service := services[entitlement.Spec.ServiceRef.Name]
+		if service == nil && entitlement.Status.ServiceName != "" {
+			service = services[entitlement.Status.ServiceName]
+		}
+		if service != nil {
+			for _, dependency := range service.Spec.Dependencies {
+				visit(entitlementsByService[dependency.ServiceRef.Name])
+			}
+		}
+
+		state[entitlement] = visited
+		ordered = append(ordered, entitlement)
+	}
+	for i := range entitlements {
+		visit(&entitlements[i])
+	}
+	return ordered
 }
 
 func transitiveDependenciesComplete(
@@ -1089,6 +1139,11 @@ func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects 
 // (WithEngageWithProviderClusters), mirroring ServiceEntitlementReconciler —
 // via Watches rather than For, so events collapse onto one project-keyed
 // request (see locationProjectionRequestName).
+//
+// Setup-only status updates are intentionally not filtered from this watch.
+// Dependency-first aggregation normally makes their follow-up pass a no-op,
+// but the event is the recovery trigger if the process stops after patching a
+// dependency and before patching its parent.
 //
 // Root ServiceAvailability, ServiceConfiguration, and canonical Location
 // informer events are translated by projectionRootDispatcher into the same
