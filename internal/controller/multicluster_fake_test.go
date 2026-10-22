@@ -64,7 +64,7 @@ func (c *testCluster) GetFieldIndexer() client.FieldIndexer            { return 
 func (c *testCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
 func (c *testCluster) GetEventRecorder(string) events.EventRecorder    { return nil }
 func (c *testCluster) GetRESTMapper() meta.RESTMapper                  { return nil }
-func (c *testCluster) GetAPIReader() client.Reader                     { return nil }
+func (c *testCluster) GetAPIReader() client.Reader                     { return c.client }
 func (c *testCluster) Start(context.Context) error                     { return nil }
 
 // testManager implements mcmanager.Manager. GetCluster looks up a named

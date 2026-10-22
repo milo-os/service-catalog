@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1113,7 +1114,11 @@ func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
-				return apierrors.NewBadRequest(longCause)
+				// Forbidden passes through to status; an internal error would be
+				// replaced by a short generic message and never reach the limit.
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+					"tenant-endpoint-ipv6", errors.New(longCause))
 			},
 		}).
 		Build()
@@ -1144,5 +1149,193 @@ func TestLedgerMessageTruncationKeepsCharactersWhole(t *testing.T) {
 	}
 	if !utf8.ValidString(message) {
 		t.Errorf("truncation split a multi-byte character")
+	}
+}
+
+// existingClass is an IPClass already in the consumer project before
+// provisioning reaches it, created by whoever the metadata says.
+func existingClass(name string, mutate func(*unstructured.Unstructured)) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(ipClassGVK)
+	u.SetName(name)
+	_ = unstructured.SetNestedMap(u.Object, map[string]any{"policy": "customer-owned"}, "spec")
+	if mutate != nil {
+		mutate(u)
+	}
+	return u
+}
+
+func getClass(t *testing.T, c client.Client, name string) *unstructured.Unstructured {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(ipClassGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, u); err != nil {
+		t.Fatalf("get class %q: %v", name, err)
+	}
+	return u
+}
+
+func assertUntouched(t *testing.T, got *unstructured.Unstructured) {
+	t.Helper()
+	if ownedBy(got.GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the entitlement took ownership of an object it did not install: %+v", got.GetOwnerReferences())
+	}
+	if got.GetLabels()[labelEntitlementName] == provEntitlement {
+		t.Errorf("an object the entitlement did not install was labelled as its own: %+v", got.GetLabels())
+	}
+	if policy, _, _ := unstructured.NestedString(got.Object, "spec", "policy"); policy != "customer-owned" {
+		t.Errorf("an object the entitlement did not install was rewritten: %+v", got.Object["spec"])
+	}
+	if _, found, _ := unstructured.NestedMap(got.Object, "spec", "source"); found {
+		t.Errorf("an object the entitlement did not install received the declared spec: %+v", got.Object["spec"])
+	}
+}
+
+// A name the customer already uses is theirs. Enabling a service must not
+// rewrite that object, and disabling it must not delete it.
+func TestProvisioningLeavesAnExistingUnmanagedObjectUnchanged(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6"), ipClassRef("tenant-vpc-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	assertUntouched(t, getClass(t, consumer, "tenant-endpoint-ipv6"))
+	// The declaration's other objects still install.
+	if !ownedBy(getClass(t, consumer, "tenant-vpc-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the declaration's free name was not installed")
+	}
+
+	ent := getEntitlement(t, consumer)
+	entry := ent.Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
+		entry.Reason != reasonObjectExists || entry.ObjectCount != 1 {
+		t.Fatalf("expected Unprovisionable/ObjectExists with one object installed, got %+v", entry)
+	}
+	want := `IPClass "tenant-endpoint-ipv6" already exists in this project and was not installed by the platform, so it was left unchanged.`
+	if entry.Message != want {
+		t.Errorf("ledger message = %q, want %q", entry.Message, want)
+	}
+	cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != servicesv1alpha1.ReasonNotProvisioned {
+		t.Errorf("expected Provisioned=False/NotProvisioned, got %+v", cond)
+	}
+
+	// Disabling the service removes what it installed and nothing else.
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement phase: %v", err)
+	}
+	provReconcile(t, r)
+	list := listClasses(t, consumer)
+	if len(list.Items) != 1 || list.Items[0].GetName() != "tenant-endpoint-ipv6" {
+		t.Fatalf("teardown should remove only the installed class, left %d", len(list.Items))
+	}
+	assertUntouched(t, &list.Items[0])
+}
+
+// Two services that declare the same name do not trade the object between
+// them on every resync: the first to install it keeps it.
+func TestProvisioningDoesNotTakeOverAnotherEntitlementsObject(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+			u.SetLabels(map[string]string{
+				labelManagedBy:           labelManagedByValue,
+				labelEntitlementName:     "compute",
+				labelProvisionedResource: "address-classes",
+			})
+			isController := true
+			u.SetOwnerReferences([]metav1.OwnerReference{{
+				APIVersion: servicesv1alpha1.GroupVersion.String(),
+				Kind:       "ServiceEntitlement",
+				Name:       "compute",
+				UID:        "ent-compute-uid",
+				Controller: &isController,
+			}})
+		}),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	got := getClass(t, consumer, "tenant-endpoint-ipv6")
+	assertUntouched(t, got)
+	if !ownedBy(got.GetOwnerReferences(), "ent-compute-uid") || got.GetLabels()[labelEntitlementName] != "compute" {
+		t.Errorf("the other entitlement lost its object: %+v %+v", got.GetOwnerReferences(), got.GetLabels())
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.Reason != reasonObjectExists || !strings.Contains(entry.Message, "for another service") {
+		t.Errorf("expected ObjectExists naming another service, got %+v", entry)
+	}
+}
+
+// What this entitlement installed is still its to update.
+func TestProvisioningUpdatesAnObjectThisEntitlementInstalled(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) {
+		sc.Spec.Provisioning.Resources[0].Objects = []servicesv1alpha1.ProvisionedObject{provObject(`{
+			"apiVersion": "ipam.miloapis.com/v1alpha1",
+			"kind": "IPClass",
+			"metadata": {"name": "tenant-endpoint-ipv6"},
+			"spec": {"source": {"project": "moved", "name": "tenant-endpoint-ipv6"}}
+		}`)}
+	})
+	provReconcile(t, r)
+
+	source, _, _ := unstructured.NestedMap(getClass(t, consumer, "tenant-endpoint-ipv6").Object, "spec", "source")
+	if source["project"] != "moved" {
+		t.Errorf("an object the entitlement installed was not updated: %+v", source)
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != "" {
+		t.Errorf("expected a clean install, got %+v", entry)
+	}
+}
+
+// An object older than its entitlement was someone else's before an earlier
+// version of the controller took it over. It is reported, not released.
+func TestProvisioningReportsAnObjectTakenOverInThePast(t *testing.T) {
+	enabledAt := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	ent := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
+	ent.CreationTimestamp = enabledAt
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(ent, existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+		u.SetCreationTimestamp(metav1.NewTime(enabledAt.Add(-24 * time.Hour)))
+		u.SetLabels(map[string]string{
+			labelManagedBy:           labelManagedByValue,
+			labelEntitlementName:     provEntitlement,
+			labelProvisionedResource: "address-classes",
+		})
+		isController := true
+		u.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: servicesv1alpha1.GroupVersion.String(),
+			Kind:       "ServiceEntitlement",
+			Name:       provEntitlement,
+			UID:        provEntitlementUID,
+			Controller: &isController,
+		}})
+	}))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if !ownedBy(getClass(t, consumer, "tenant-endpoint-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("ownership of a previously adopted object changed silently")
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != reasonObjectAdopted ||
+		!strings.Contains(entry.Message, "disabling the service will delete it") {
+		t.Errorf("expected Installed/ObjectAdopted with a warning, got %+v", entry)
 	}
 }

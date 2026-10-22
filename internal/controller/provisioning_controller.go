@@ -87,6 +87,18 @@ const (
 	reasonKindNotServed  = "KindNotServed"
 	reasonApplyFailed    = "ApplyFailed"
 
+	// reasonObjectExists marks a declaration with at least one object whose
+	// name is already taken in the project by something the platform did not
+	// install for this entitlement. That object is left exactly as it is; the
+	// declaration's other objects still install.
+	reasonObjectExists = "ObjectExists"
+
+	// reasonObjectAdopted marks a declaration that manages an object which
+	// existed before this entitlement did. Earlier versions of this controller
+	// took such objects over. They are reported rather than released, because
+	// releasing them would itself be an ownership change nobody asked for.
+	reasonObjectAdopted = "ObjectAdopted"
+
 	// reasonStatusNotApplied marks a declaration whose objects are installed
 	// but whose declared status did not reach at least one of them. The state
 	// stays Installed, because delivery succeeded and only the status is
@@ -174,6 +186,10 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
+	// Whether a name is already taken decides whether the platform may write
+	// to it at all, so it is read live: a lagging cache would hand a customer's
+	// object to the apply that follows.
+	consumerReader := consumerCluster.GetAPIReader()
 
 	var entitlement servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(ctx, req.NamespacedName, &entitlement); err != nil {
@@ -242,7 +258,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	for i := range sc.Spec.Provisioning.Resources {
 		decl := &sc.Spec.Provisioning.Resources[i]
 		ledger = append(ledger, r.reconcileResource(
-			ctx, consumerClient, &entitlement, serviceName, decl, installed[decl.Name]))
+			ctx, consumerClient, consumerReader, &entitlement, serviceName, decl, installed[decl.Name]))
 	}
 
 	// Objects installed by a declaration that is no longer there. The
@@ -267,6 +283,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 func (r *ProvisioningReconciler) reconcileResource(
 	ctx context.Context,
 	consumerClient client.Client,
+	consumerReader client.Reader,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
@@ -299,12 +316,24 @@ func (r *ProvisioningReconciler) reconcileResource(
 		objects = append(objects, obj)
 	}
 
-	var statusNotes []string
+	var statusNotes, adoptedNotes, conflicts []string
 	desired := make(map[schema.GroupVersionKind]map[string]struct{}, len(objects))
 	for _, obj := range objects {
-		note, err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl.Name, obj)
-		if note != "" {
-			statusNotes = append(statusNotes, note)
+		result, err := r.upsert(ctx, consumerClient, consumerReader, entitlement, serviceName, decl.Name, obj)
+		if result.statusNote != "" {
+			statusNotes = append(statusNotes, result.statusNote)
+		}
+		if result.adoptedNote != "" {
+			adoptedNotes = append(adoptedNotes, result.adoptedNote)
+		}
+		var exists *objectExistsError
+		if errors.As(err, &exists) {
+			// Not a reason to abandon the declaration: the object is left
+			// alone and kept out of desired, and pruning cannot reach it
+			// because it carries neither this entitlement's labels nor its
+			// owner reference.
+			conflicts = append(conflicts, exists.Error())
+			continue
 		}
 		if err != nil {
 			if apimeta.IsNoMatchError(err) {
@@ -317,8 +346,10 @@ func (r *ProvisioningReconciler) reconcileResource(
 			}
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not install %s %q: %v",
-				serviceName, obj.GVK.Kind, obj.Name, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not install %s %q: %s",
+				serviceName, obj.GVK.Kind, obj.Name,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", obj.GVK.Kind, "name", obj.Name),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 		if desired[obj.GVK] == nil {
@@ -335,15 +366,29 @@ func (r *ProvisioningReconciler) reconcileResource(
 		if err := r.prune(ctx, consumerClient, entitlement, gvk, decl.Name, desired[gvk]); err != nil {
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v",
-				serviceName, gvk.Kind, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not remove withdrawn %s objects: %s",
+				serviceName, gvk.Kind,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", gvk.Kind),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 	}
 
 	entry.Kinds = kindRefs(kindsOf(objects))
+	entry.ObjectCount = int32(len(objects) - len(conflicts))
+
+	// A name the project already uses will not free itself on a retry, so the
+	// declaration is Unprovisionable until the customer renames or removes
+	// their object, or the provider renames the declared one. The next resync
+	// installs it once the name is free.
+	if len(conflicts) > 0 {
+		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
+		entry.Reason = reasonObjectExists
+		entry.Message = truncateMessage(strings.Join(conflicts, " "), maxLedgerMessageBytes)
+		return entry
+	}
+
 	entry.State = servicesv1alpha1.ProvisionedResourceStateInstalled
-	entry.ObjectCount = int32(len(objects))
 
 	// AUTHORIZATION GAP: reported, not closed.
 	//
@@ -373,11 +418,89 @@ func (r *ProvisioningReconciler) reconcileResource(
 		entry.Reason = reasonStatusNotApplied
 		entry.Message = truncateMessage(strings.Join(statusNotes, " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
 	}
+
+	// Adoption outranks a missing status: disabling the service deletes these
+	// objects, and the customer created them.
+	if len(adoptedNotes) > 0 {
+		entry.Reason = reasonObjectAdopted
+		entry.Message = truncateMessage(
+			strings.Join(append(adoptedNotes, statusNotes...), " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
+	}
 	return entry
+}
+
+// objectExistsError reports a declared object whose name is already taken in
+// the consumer project by an object this entitlement did not install.
+type objectExistsError struct {
+	kind, name string
+	// owner says who holds the name, for the consumer reading the ledger.
+	owner string
+}
+
+func (e *objectExistsError) Error() string {
+	return fmt.Sprintf("%s %q already exists in this project and %s, so it was left unchanged.",
+		e.kind, e.name, e.owner)
+}
+
+// upsertResult carries what upsert has to tell the ledger about an object that
+// did install.
+type upsertResult struct {
+	// statusNote is set when the object installed but its declared status did
+	// not.
+	statusNote string
+	// adoptedNote is set when the object predates this entitlement.
+	adoptedNote string
+}
+
+// claimExisting decides whether the platform may write to an object that
+// already holds the declared name.
+//
+// It may only when this entitlement installed it. The controller owner
+// reference is the authority, because garbage collection acts on it: an object
+// controlled by anything else, including an earlier entitlement of the same
+// name, is not this one's to change. The labels are the fallback for an object
+// with no controller at all, which can only be this entitlement's if someone
+// removed the owner reference afterwards.
+func claimExisting(
+	existing *unstructured.Unstructured,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	declName string,
+	obj provisioning.Object,
+) error {
+	labels := existing.GetLabels()
+	if ref := metav1.GetControllerOf(existing); ref != nil {
+		if ref.UID == entitlement.UID {
+			return nil
+		}
+		owner := "is managed by something other than the platform"
+		if ref.Kind == "ServiceEntitlement" {
+			owner = "was installed by the platform for another service"
+			if ref.Name == entitlement.Name {
+				owner = "belongs to an earlier enablement of this service that is still being removed"
+			}
+		}
+		return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner}
+	}
+	if labels[labelManagedBy] == labelManagedByValue &&
+		labels[labelEntitlementName] == entitlement.Name &&
+		labels[labelProvisionedResource] == declName {
+		return nil
+	}
+	owner := "was not installed by the platform"
+	if labels[labelManagedBy] == labelManagedByValue {
+		owner = "was installed by the platform for another service"
+	}
+	return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner}
 }
 
 // upsert writes one declared object into the consumer project, and its declared
 // status alongside it.
+//
+// It writes only to a name that is free or that this entitlement already
+// holds. An object someone else created under the declared name is left
+// untouched and reported as an *objectExistsError: the forced apply below would
+// otherwise rewrite it, label it, and hand it to the entitlement, so disabling
+// the service would delete the customer's object.
 //
 // The apply is server-side and forced, so the fields the declaration states are
 // the fields the object has: a consumer edit to any of them is reverted, and a
@@ -385,17 +508,44 @@ func (r *ProvisioningReconciler) reconcileResource(
 // provisioning labels and the owner reference — it adds here, not in the
 // declaration, which is why a provider cannot author either.
 //
-// The returned note is non-empty when the object installed but its declared
-// status did not. The object is usable by everything that does not read its
-// status, so upsert reports that rather than failing.
+// The result's status note is non-empty when the object installed but its
+// declared status did not. The object is usable by everything that does not
+// read its status, so upsert reports that rather than failing.
 func (r *ProvisioningReconciler) upsert(
 	ctx context.Context,
 	consumerClient client.Client,
+	consumerReader client.Reader,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	declName string,
 	obj provisioning.Object,
-) (string, error) {
+) (upsertResult, error) {
+	var result upsertResult
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(obj.GVK)
+	switch err := consumerReader.Get(ctx, client.ObjectKey{Name: obj.Name}, existing); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return result, err
+	default:
+		if err := claimExisting(existing, entitlement, declName, obj); err != nil {
+			return result, err
+		}
+		// Nothing this entitlement installed can be older than it, so an
+		// older object was someone else's before an earlier version of this
+		// controller took it over. Releasing it here would be another silent
+		// ownership change, so it stays managed and the ledger says so.
+		created := existing.GetCreationTimestamp()
+		if created.Before(&entitlement.CreationTimestamp) {
+			log.FromContext(ctx).Info("provisioned object predates its entitlement and was adopted",
+				"kind", obj.GVK.Kind, "name", obj.Name)
+			result.adoptedNote = fmt.Sprintf(
+				"%s %q existed before %s was enabled and was taken over by the platform; disabling the service will delete it.",
+				obj.GVK.Kind, obj.Name, serviceName)
+		}
+	}
+
 	u := obj.Unstructured()
 
 	l := u.GetLabels()
@@ -413,7 +563,7 @@ func (r *ProvisioningReconciler) upsert(
 	// only teardown path that does not depend on the project purger, which does
 	// not delete cluster-scoped resources.
 	if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
-		return "", fmt.Errorf("set controller reference: %w", err)
+		return result, fmt.Errorf("set controller reference: %w", err)
 	}
 
 	// This apply carries status so a kind with no status subresource, where
@@ -421,10 +571,11 @@ func (r *ProvisioningReconciler) upsert(
 	// one drops status here, and upsertStatus writes it.
 	if err := consumerClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
 		client.FieldOwner(provisioningFieldManager), client.ForceOwnership); err != nil {
-		return "", err
+		return result, err
 	}
 
-	return r.upsertStatus(ctx, consumerClient, serviceName, obj), nil
+	result.statusNote = r.upsertStatus(ctx, consumerClient, serviceName, obj)
+	return result, nil
 }
 
 // upsertStatus applies the status a declaration states to the installed
@@ -481,8 +632,9 @@ func (r *ProvisioningReconciler) upsertStatus(
 			"%s declares a status for %s %q, but another controller in this project manages it, so the declared status was not applied.",
 			serviceName, obj.GVK.Kind, obj.Name)
 	default:
-		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %v.",
-			serviceName, obj.GVK.Kind, obj.Name, err)
+		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %s.",
+			serviceName, obj.GVK.Kind, obj.Name,
+			customerErrorReason(ctx, err, "kind", obj.GVK.Kind, "name", obj.Name, "subresource", "status"))
 	}
 }
 

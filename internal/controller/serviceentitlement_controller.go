@@ -485,14 +485,22 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 		cond.Reason = servicesv1alpha1.ReasonNoDependencies
 		cond.Message = "This service doesn't depend on any other service."
 	case len(failed) > 0:
+		// Project members read this condition, so an internal error is named
+		// once in general terms and logged in full, not copied here.
 		reasons := make([]string, 0, len(errs))
-		for _, err := range errs {
-			reasons = append(reasons, err.Error())
+		seen := make(map[string]struct{}, len(errs))
+		for i, err := range errs {
+			reason := customerErrorReason(ctx, err, "entitlement", parent.Name, "dependency", failed[i])
+			if _, dup := seen[reason]; dup {
+				continue
+			}
+			seen[reason] = struct{}{}
+			reasons = append(reasons, reason)
 		}
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = servicesv1alpha1.ReasonDependencyEnrollmentFailed
-		cond.Message = fmt.Sprintf("Couldn't enable %s: %s",
-			strings.Join(failed, ", "), strings.Join(reasons, "; "))
+		cond.Message = truncateMessage(fmt.Sprintf("Couldn't enable %s: %s",
+			strings.Join(failed, ", "), strings.Join(reasons, "; ")), maxLedgerMessageBytes)
 	}
 
 	before := parent.DeepCopy()
