@@ -41,7 +41,7 @@ contexts:
 		t.Fatalf("write kubeconfig: %v", err)
 	}
 
-	cfg, err := miloRestConfig(&config.ServicesOperator{KubeconfigPath: path})
+	cfg, err := miloRestConfig(&config.ServicesOperator{KubeconfigPath: path}, defaultKubeAPIQPS, defaultKubeAPIBurst)
 	if err != nil {
 		t.Fatalf("miloRestConfig: %v", err)
 	}
@@ -57,6 +57,9 @@ contexts:
 		want = float64(limiter.QPS())
 	}
 
+	if want != float64(defaultKubeAPIQPS) {
+		t.Fatalf("client QPS = %v, want the --kube-api-qps default %v", want, defaultKubeAPIQPS)
+	}
 	if got := reportedQPS(t); got != want {
 		t.Fatalf("reported client QPS = %v, want %v (the limit client-go builds from the returned config)", got, want)
 	}
