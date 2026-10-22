@@ -346,8 +346,10 @@ func (r *ProvisioningReconciler) reconcileResource(
 			}
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not install %s %q: %v",
-				serviceName, obj.GVK.Kind, obj.Name, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not install %s %q: %s",
+				serviceName, obj.GVK.Kind, obj.Name,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", obj.GVK.Kind, "name", obj.Name),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 		if desired[obj.GVK] == nil {
@@ -364,8 +366,10 @@ func (r *ProvisioningReconciler) reconcileResource(
 		if err := r.prune(ctx, consumerClient, entitlement, gvk, decl.Name, desired[gvk]); err != nil {
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v",
-				serviceName, gvk.Kind, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not remove withdrawn %s objects: %s",
+				serviceName, gvk.Kind,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", gvk.Kind),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 	}
@@ -628,8 +632,9 @@ func (r *ProvisioningReconciler) upsertStatus(
 			"%s declares a status for %s %q, but another controller in this project manages it, so the declared status was not applied.",
 			serviceName, obj.GVK.Kind, obj.Name)
 	default:
-		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %v.",
-			serviceName, obj.GVK.Kind, obj.Name, err)
+		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %s.",
+			serviceName, obj.GVK.Kind, obj.Name,
+			customerErrorReason(ctx, err, "kind", obj.GVK.Kind, "name", obj.Name, "subresource", "status"))
 	}
 }
 

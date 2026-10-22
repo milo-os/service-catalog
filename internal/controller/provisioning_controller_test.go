@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1113,7 +1114,11 @@ func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
-				return apierrors.NewBadRequest(longCause)
+				// Forbidden passes through to status; an internal error would be
+				// replaced by a short generic message and never reach the limit.
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+					"tenant-endpoint-ipv6", errors.New(longCause))
 			},
 		}).
 		Build()
