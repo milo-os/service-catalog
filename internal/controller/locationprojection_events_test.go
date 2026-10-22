@@ -16,11 +16,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -930,5 +936,94 @@ func TestProjectionRootDispatcherTargetsServiceSpecEdits(t *testing.T) {
 	}
 	if !projectionRelevantRootUpdate(&servicesv1alpha1.ServiceAvailability{}, &servicesv1alpha1.ServiceAvailability{}) {
 		t.Error("updates to other root kinds must always dispatch")
+	}
+}
+
+// syncSignalingCache reports when the dispatcher has registered its handlers:
+// Start waits for cache sync only after every AddEventHandler call.
+type syncSignalingCache struct {
+	*informertest.FakeInformers
+	synced chan struct{}
+}
+
+func (c *syncSignalingCache) WaitForCacheSync(ctx context.Context) bool {
+	close(c.synced)
+	return c.FakeInformers.WaitForCacheSync(ctx)
+}
+
+// rootCacheManager serves only the cache, which is all Start reads.
+type rootCacheManager struct {
+	manager.Manager
+	cache cache.Cache
+}
+
+func (m *rootCacheManager) GetCache() cache.Cache { return m.cache }
+
+// Start must register the Service informer with the spec filter. Without the
+// registration, Service edits never reach a pass; without the filter, every
+// Service status write would.
+func TestProjectionRootDispatcherStartWiresServiceUpdates(t *testing.T) {
+	scheme := testScheme()
+	location := &unstructured.Unstructured{}
+	location.SetGroupVersionKind(LocationGVK)
+	serviceInformer := &controllertest.FakeInformer{Synced: true}
+	informers := &informertest.FakeInformers{
+		Scheme: scheme,
+		InformersByGVK: map[schema.GroupVersionKind]toolscache.SharedIndexInformer{
+			servicesv1alpha1.GroupVersion.WithKind("Service"):              serviceInformer,
+			servicesv1alpha1.GroupVersion.WithKind("ServiceAvailability"):  &controllertest.FakeInformer{Synced: true},
+			servicesv1alpha1.GroupVersion.WithKind("ServiceConfiguration"): &controllertest.FakeInformer{Synced: true},
+			LocationGVK: &controllertest.FakeInformer{Synced: true},
+		},
+	}
+	rootCache := &syncSignalingCache{FakeInformers: informers, synced: make(chan struct{})}
+
+	index := newProjectionProjectIndex()
+	index.Replace("consumer", []string{"networking.miloapis.com"})
+	events := make(chan event.TypedGenericEvent[mcreconcile.Request], 4)
+	dispatcher := &projectionRootDispatcher{
+		rootMgr: &rootCacheManager{cache: rootCache},
+		gvk:     LocationGVK,
+		index:   index,
+		events:  events,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- dispatcher.Start(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	}()
+	select {
+	case <-rootCache.synced:
+	case err := <-done:
+		t.Fatalf("Start returned before registering handlers: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not register handlers")
+	}
+
+	service := setupService("networking", "networking.miloapis.com")
+	statusOnly := service.DeepCopy()
+	statusOnly.Status.ObservedGeneration++
+	serviceInformer.Update(service, statusOnly)
+	if len(events) != 0 {
+		t.Fatal("a Service status write dispatched a pass")
+	}
+
+	edited := service.DeepCopy()
+	edited.Spec.Dependencies = append(edited.Spec.Dependencies, servicesv1alpha1.ServiceDependency{
+		ServiceRef: servicesv1alpha1.ServiceRef{Name: "ipam"},
+	})
+	serviceInformer.Update(service, edited)
+	select {
+	case got := <-events:
+		if project := string(got.Object.ClusterName); project != "consumer" {
+			t.Errorf("Service edit dispatched to %q, want consumer", project)
+		}
+	default:
+		t.Fatal("a Service dependency edit dispatched no pass")
 	}
 }
