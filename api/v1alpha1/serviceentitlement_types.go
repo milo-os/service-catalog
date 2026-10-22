@@ -199,8 +199,10 @@ const (
 
 	// ProvisionedResourceStateUnprovisionable indicates delivery cannot succeed
 	// as declared and a retry will not help: this project's control plane does
-	// not serve the kind, or the declaration does not resolve into a write. It is
-	// reported rather than skipped, because the consumer has to be told.
+	// not serve the kind, the declaration does not resolve into a write, or an
+	// object it declares has a name this project already uses for an object the
+	// platform did not install. That object is left unchanged. It is reported
+	// rather than skipped, because the consumer has to be told.
 	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
 )
 
