@@ -31,9 +31,9 @@ const (
 
 	// suspendedConditionFieldManager is the field manager both writers of the
 	// Suspended condition — this reconciler and ServiceEntitlementReconciler
-	// — pass to client.FieldOwner on their merge patch, mirroring the
-	// pattern Milo's own ProjectSuspensionPropagatorController uses for the
-	// Project's Suspended condition.
+	// — write it under: a merge patch on ServiceConsumer, mirroring Milo's own
+	// ProjectSuspensionPropagatorController, and server-side apply on
+	// ServiceEntitlement.
 	suspendedConditionFieldManager = "services-suspended-condition"
 )
 
@@ -103,19 +103,14 @@ func patchConsumerSuspendedCondition(ctx context.Context, providerClient client.
 }
 
 // patchEntitlementSuspendedCondition is patchConsumerSuspendedCondition's
-// counterpart for the ServiceEntitlement side of the propagation.
+// counterpart for the ServiceEntitlement side of the propagation. An
+// entitlement's conditions have several concurrent writers, so it applies only
+// the Suspended condition under suspendedConditionOwner.
 func patchEntitlementSuspendedCondition(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, suspension projectSuspension) error {
 	before := entitlement.DeepCopy()
 	apimeta.SetStatusCondition(&entitlement.Status.Conditions, suspendedCondition(suspension, entitlement.Generation))
-	if conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, ConditionTypeSuspended) {
-		return nil
-	}
-	// Unlike ServiceConsumer, an entitlement's conditions have several
-	// concurrent writers; the lock stops a stale copy erasing theirs.
-	if err := consumerClient.Status().Patch(ctx, entitlement,
-		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
-		client.FieldOwner(suspendedConditionFieldManager)); err != nil {
-		return fmt.Errorf("failed to patch ServiceEntitlement status: %w", err)
+	if err := applyEntitlementStatus(ctx, consumerClient, suspendedConditionOwner, before, entitlement); err != nil {
+		return fmt.Errorf("failed to apply ServiceEntitlement Suspended condition: %w", err)
 	}
 	return nil
 }

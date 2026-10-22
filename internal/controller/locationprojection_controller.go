@@ -472,13 +472,8 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 		if reflect.DeepEqual(before.Status, entitlement.Status) {
 			continue
 		}
-		// status.conditions is shared with the entitlement and provisioning
-		// controllers, and a merge patch replaces the whole list. Without the
-		// resourceVersion precondition, a pass working from a cached copy that
-		// predates another controller's write would erase that write.
-		if err := consumerClient.Status().Patch(ctx, entitlement,
-			client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("patch setup status for ServiceEntitlement %q: %w", entitlement.Name, err)
+		if err := applyEntitlementStatus(ctx, consumerClient, setupStatusOwner, before, entitlement); err != nil {
+			return fmt.Errorf("apply setup status for ServiceEntitlement %q: %w", entitlement.Name, err)
 		}
 		if !newlyCompletedAt.IsZero() {
 			observeSetupSuccess(entitlement, newlyCompletedAt)

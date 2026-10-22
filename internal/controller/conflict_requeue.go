@@ -20,8 +20,10 @@ const conflictRequeueDelay = 250 * time.Millisecond
 // conflictRequeueReconciler runs a pass again shortly when it failed only
 // because another writer updated the object first.
 //
-// Several controllers write the same ServiceEntitlement status, so conflicts
-// are routine while setup is in flight. Returned as errors, they feed the
+// ServiceEntitlement status is server-side applied and never conflicts, but
+// finalizer updates, ServiceConsumer and activation request status, and the
+// one-time status ownership migration still use optimistic locking, and those
+// race routinely while setup is in flight. Returned as errors, they feed the
 // workqueue's per-item exponential backoff, and a busy project quickly waits
 // seconds between passes. A conflict carries no failure to back off from: the
 // newer object already exists and its update event re-enqueues the item too.

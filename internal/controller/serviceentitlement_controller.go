@@ -73,11 +73,6 @@ const serviceEntitlementMaxConcurrentReconciles = 5
 // status.origin and status.dependencyOf are derived from.
 const dependencyOfLabel = "services.miloapis.com/dependency-of"
 
-// dependenciesConditionFieldManager owns the DependenciesSatisfied condition,
-// which is patched separately from the main status Update so it doesn't race
-// the Ready/phase write that precedes dependency enrollment.
-const dependenciesConditionFieldManager = "service-entitlement-dependencies"
-
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
 // reconciler reads the referenced Service from the root cluster, resolves the
@@ -299,7 +294,15 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 		return fmt.Errorf("failed to apply Suspended condition on ServiceEntitlement: %w", err)
 	}
 
-	original := entitlement.Status.DeepCopy()
+	return applyEntitlementReadyStatus(ctx, consumerClient, entitlement, phase, reason, message, canonicalServiceName)
+}
+
+// applyEntitlementReadyStatus writes the entitlement's authorization outcome:
+// entitlementReadyOwner's fields. Both the entitlement reconciler and the
+// ServiceConsumer reconciler write through here, so they always apply the same
+// complete set and never drop a field the other one wrote.
+func applyEntitlementReadyStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
+	before := entitlement.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
 	entitlement.Status.Phase = phase
@@ -321,22 +324,15 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 		entitlement.Status.EntitledAt = &now
 	}
 
-	cond := metav1.Condition{
+	apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
 		Type:               ConditionTypeReady,
-		Status:             metav1.ConditionFalse,
+		Status:             readyStatusForEntitlementPhase(phase),
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: entitlement.Generation,
-	}
-	if phase == servicesv1alpha1.EntitlementPhaseActive {
-		cond.Status = metav1.ConditionTrue
-	}
-	apimeta.SetStatusCondition(&entitlement.Status.Conditions, cond)
+	})
 
-	if equalEntitlementStatus(original, &entitlement.Status) {
-		return nil
-	}
-	if err := consumerClient.Status().Update(ctx, entitlement); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, entitlementReadyOwner, before, entitlement); err != nil {
 		return fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
 	}
 	return nil
@@ -344,22 +340,6 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
 	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "", projectSuspension{})
-}
-
-func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {
-	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf || a.ServiceName != b.ServiceName {
-		return false
-	}
-	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {
-		return false
-	}
-	if a.ObservedGeneration != b.ObservedGeneration {
-		return false
-	}
-	if !conditionsEqual(a.Conditions, b.Conditions, ConditionTypeReady) {
-		return false
-	}
-	return true
 }
 
 // ensureDependencies walks Service.spec.dependencies and creates a derived
@@ -472,11 +452,9 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 // stampDependencyOrigin records on status that this entitlement is held open
 // by a parent, which is what delete protection and parent teardown key on.
 //
-// Patched, not updated: the entitlement's own reconcile writes the whole
-// status independently, and an optimistically-locked update loses that race
-// often enough to matter. The same derivation runs in setEntitlementStatus
-// from the label, so a status write that lands after this one restores it
-// rather than reverting it to Direct.
+// Applied under its own field manager: the dependency's own reconcile writes
+// the same two fields through applyEntitlementReadyStatus, deriving them from
+// the same label, so the two writes agree whichever lands first.
 func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context, consumerClient client.Client, dep *servicesv1alpha1.ServiceEntitlement, parentName string) error {
 	if dep.Status.Origin == servicesv1alpha1.EntitlementOriginDependency && dep.Status.DependencyOf == parentName {
 		return nil
@@ -484,7 +462,7 @@ func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context
 	before := dep.DeepCopy()
 	dep.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
 	dep.Status.DependencyOf = parentName
-	if err := consumerClient.Status().Patch(ctx, dep, client.MergeFrom(before)); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, dependencyOriginOwner, before, dep); err != nil {
 		return fmt.Errorf("failed to stamp dependency origin on %q: %w", dep.Name, err)
 	}
 	return nil
@@ -519,15 +497,7 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 
 	before := parent.DeepCopy()
 	apimeta.SetStatusCondition(&parent.Status.Conditions, cond)
-	if conditionsEqual(before.Status.Conditions, parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied) {
-		return nil
-	}
-	// Locked for the same reason as the provisioning and setup writers: the
-	// merge patch carries the whole conditions list, so a stale copy would
-	// otherwise erase their concurrent writes.
-	if err := consumerClient.Status().Patch(ctx, parent,
-		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
-		client.FieldOwner(dependenciesConditionFieldManager)); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, dependenciesConditionOwner, before, parent); err != nil {
 		return fmt.Errorf("failed to patch DependenciesSatisfied condition: %w", err)
 	}
 	return nil

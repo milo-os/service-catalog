@@ -118,6 +118,7 @@ func (m *testManager) Engage(context.Context, multicluster.ClusterName, cluster.
 func newFakeClient(objs ...client.Object) client.Client {
 	base := fake.NewClientBuilder().
 		WithScheme(testScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(
 			&servicesv1alpha1.ServiceActivationRequest{},
