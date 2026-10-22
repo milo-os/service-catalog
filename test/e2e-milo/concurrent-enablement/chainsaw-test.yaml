@@ -1,0 +1,96 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: concurrent-enablement
+spec:
+  description: |
+    Enabling a service in several projects at once must not make any one of
+    them wait for the others.
+
+    In staging, enabling one service in three projects at the same time took
+    8-15s per project against roughly 4s for one project alone. The target is
+    under 1s per project either way. This suite measures both shapes against
+    real, separately routed project control planes, and fails if any project's
+    setup exceeds the budget.
+
+    "Setup" means the time from creating the ServiceEntitlement to observing
+    SetupComplete=True on it: access authorized, dependencies enrolled,
+    declared objects installed in the project, and service locations
+    projected. measure-setup.sh times this from the client, at millisecond
+    resolution, and prints each project's server-side setup record next to it.
+
+    The budget is SETUP_BUDGET_SECONDS below, one value for both steps. It is
+    deliberately generous: it is set so that current main passes reliably on a
+    shared CI runner, and it exists to catch a regression and to be tightened
+    as setup gets faster. Lower it in the same change that makes setup faster,
+    and take it to 1 when that is the number CI shows. Each run prints the
+    measured times, so the CI logs say how much headroom is left.
+
+    The single-project step runs first so the two numbers come from the same
+    environment, minutes apart. It is the baseline the concurrent one is read
+    against; the suite does not assert a ratio between them, because at
+    sub-second times a ratio is mostly noise.
+
+    The suite has three projects of its own (see hack/e2e-milo/up.sh), so it
+    neither depends on nor disturbs the isolation suites' claims about the
+    consumer projects.
+
+  steps:
+    - name: publish-service
+      cluster: root
+      try:
+        - apply:
+            file: 01-publish-service.yaml
+        - assert:
+            timeout: 30s
+            resource:
+              apiVersion: services.miloapis.com/v1alpha1
+              kind: Service
+              metadata:
+                name: e2e-concurrent-enablement
+              spec:
+                phase: Published
+
+    - name: enable-in-one-project
+      description: |
+        The baseline: one project, nothing else being set up. The entitlement
+        is removed afterwards so the concurrent step starts every project from
+        the same state.
+      try:
+        - script:
+            timeout: 3m
+            env:
+              - name: SETUP_BUDGET_SECONDS
+                value: "30"
+            content: |
+              set -e
+              ./measure-setup.sh "one project" e2e-enablement-1
+              kubectl --kubeconfig ../.kubeconfig --context e2e-enablement-1 \
+                delete serviceentitlement/e2e-concurrent-enablement --wait --timeout=60s
+      catch:
+        - script:
+            content: ./describe-entitlements.sh e2e-enablement-1
+      finally:
+        - script:
+            content: ./delete-entitlements.sh e2e-enablement-1
+
+    - name: enable-in-three-projects-at-once
+      description: |
+        The staging shape: three projects enable the same service within
+        milliseconds of each other. Every one of them is held to the budget,
+        not their average, because the slowest is the one somebody waited on.
+      try:
+        - script:
+            timeout: 5m
+            env:
+              - name: SETUP_BUDGET_SECONDS
+                value: "30"
+            content: |
+              ./measure-setup.sh "three projects at once" \
+                e2e-enablement-1 e2e-enablement-2 e2e-enablement-3
+      catch:
+        - script:
+            content: ./describe-entitlements.sh e2e-enablement-1 e2e-enablement-2 e2e-enablement-3
+      finally:
+        - script:
+            content: ./delete-entitlements.sh e2e-enablement-1 e2e-enablement-2 e2e-enablement-3

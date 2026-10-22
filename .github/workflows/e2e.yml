@@ -124,6 +124,12 @@ jobs:
       - name: Run multi-project E2E tests
         run: task --yes e2e-milo
 
+      # The concurrent-enablement suite enforces a time budget, and a budget
+      # that passes once and fails on the next run is worse than none. Repeat
+      # it so a flaky budget shows up here rather than on someone else's PR.
+      - name: Repeat the concurrent enablement timing suite
+        run: task --yes e2e-milo:timing REPEAT=5
+
       - name: Dump operator logs on failure
         if: failure()
         run: |
