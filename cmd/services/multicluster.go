@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
@@ -93,10 +92,6 @@ const electedLeaseID = "project-projection.services.miloapis.com"
 // leaderElection carries only the leader-election fields; everything else is
 // fixed.
 func newElectedMulticlusterManager(cfg *rest.Config, controllerOpts ctrlconfig.Controller, leaderElection ctrl.Options) (mcmanager.Manager, error) {
-	// The Milo provider registers a projectcontrolplane controller on each
-	// manager that hosts it, and this is the second one in the process.
-	// controller-runtime otherwise rejects its duplicate metrics label.
-	controllerOpts.SkipNameValidation = ptr.To(true)
 	localMgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                  scheme,
 		Controller:              controllerOpts,
@@ -111,7 +106,7 @@ func newElectedMulticlusterManager(cfg *rest.Config, controllerOpts ctrlconfig.C
 	if err != nil {
 		return nil, err
 	}
-	provider, err := miloprovider.New(localMgr, miloprovider.Options{
+	provider, err := newMiloProvider(localMgr, miloprovider.Options{
 		InternalServiceDiscovery: false,
 		ProjectRestConfig:        cfg,
 		ClusterOptions:           []cluster.Option{func(o *cluster.Options) { o.Scheme = scheme }},
