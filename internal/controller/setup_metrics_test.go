@@ -59,8 +59,8 @@ func TestSetupDurationBucketsCoverLongRunningSetup(t *testing.T) {
 }
 
 func TestSetupMetricSeriesBudget(t *testing.T) {
-	if got := setupMetricSeriesBudget(); got != 377 {
-		t.Fatalf("setup metrics add %d series, want 377", got)
+	if got := setupMetricSeriesBudget(); got != 402 {
+		t.Fatalf("setup metrics add %d series, want 402", got)
 	} else if got >= 20_000 {
 		t.Fatalf("setup metrics add %d series, want fewer than 20,000", got)
 	}
@@ -102,6 +102,10 @@ func TestSetupInflightExcludesUnfinishableAttemptsAndApprovalWaits(t *testing.T)
 			e.Status.Phase = servicesv1alpha1.EntitlementPhasePendingApproval
 		}),
 		attempt("authorized", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Setup.AuthorizedAt = &old }),
+		attempt("authorized-recently", func(e *servicesv1alpha1.ServiceEntitlement) {
+			recent := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+			e.Status.Setup.AuthorizedAt = &recent
+		}),
 	}
 
 	collector := newSetupInflightCollector()
@@ -118,10 +122,13 @@ func TestSetupInflightExcludesUnfinishableAttemptsAndApprovalWaits(t *testing.T)
 			totals[family.GetName()] += metric.GetGauge().GetValue()
 		}
 	}
-	if got := totals["service_catalog_setup_inflight"]; got != 2 {
-		t.Errorf("in-flight setups = %v, want 2 (awaiting approval and authorized)", got)
+	if got := totals["service_catalog_setup_inflight"]; got != 3 {
+		t.Errorf("in-flight setups = %v, want 3 (awaiting approval and both authorized)", got)
 	}
-	if got := totals["service_catalog_setup_overdue"]; got != 1 {
-		t.Errorf("overdue setups = %v, want 1 (approval waits are not overdue)", got)
+	if got := totals["service_catalog_setup_overdue"]; got != 2 {
+		t.Errorf("overdue setups = %v, want 2 (approval waits are not overdue)", got)
+	}
+	if got := totals["service_catalog_setup_stalled"]; got != 1 {
+		t.Errorf("stalled setups = %v, want 1 (only the attempt authorized an hour ago)", got)
 	}
 }
