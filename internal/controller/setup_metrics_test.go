@@ -5,7 +5,28 @@ package controller
 import (
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+func TestSetupMetricSeriesAreInitialized(t *testing.T) {
+	registry := prometheus.NewPedanticRegistry()
+	registry.MustRegister(setupDuration, setupAttempts)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int, 2)
+	for _, family := range families {
+		counts[family.GetName()] = len(family.Metric)
+	}
+	if got, want := counts["service_catalog_setup_duration_seconds"], len(setupServiceClasses)*len(setupOperations)*len(setupClocks); got != want {
+		t.Fatalf("initialized setup duration label combinations = %d, want %d", got, want)
+	}
+	if got, want := counts["service_catalog_setup_attempts_total"], len(setupServiceClasses)*len(setupOperations)*len(setupOutcomes); got != want {
+		t.Fatalf("initialized setup attempt label combinations = %d, want %d", got, want)
+	}
+}
 
 func TestSetupInflightCollectorRemovesProject(t *testing.T) {
 	collector := newSetupInflightCollector()

@@ -671,6 +671,11 @@ func TestLocationProjectionReconcilerDropsUnavailableProjectBeforeScanning(t *te
 }
 
 func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
+	setupInflight.mu.Lock()
+	setupInflight.projects[projectionProject] = []setupInflightEntry{{class: "compute", operation: "initial", blocker: "Projection", requestedAt: time.Now()}}
+	setupInflight.mu.Unlock()
+	t.Cleanup(func() { setupInflight.removeProject(projectionProject) })
+
 	managedLocation := platformLocation(projectionLocation, true, projectionClass)
 	managedLocation.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
 	unmanagedLocation := platformLocation("unmanaged", true, projectionClass)
@@ -686,6 +691,12 @@ func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
 	if err := (ProjectionTeardown{}).TeardownConsumer(context.Background(), projectionProject, c, nil); err != nil {
 		t.Fatal(err)
 	}
+	setupInflight.mu.RLock()
+	_, metricsRetained := setupInflight.projects[projectionProject]
+	setupInflight.mu.RUnlock()
+	if metricsRetained {
+		t.Fatal("project disengage hook retained setup in-flight metrics")
+	}
 	if _, ok := projectedLocation(t, c, projectionLocation); ok {
 		t.Error("managed Location was not deleted")
 	}
@@ -700,5 +711,29 @@ func TestProjectionTeardownDeletesOnlyManagedSharedProjections(t *testing.T) {
 	}
 	if _, ok := mirroredAvailability(t, c, unmanagedAvailability.Name); !ok {
 		t.Error("unmanaged ServiceAvailability was deleted")
+	}
+}
+
+func TestProjectionTeardownClearsSetupMetricsWhenResourceCleanupFails(t *testing.T) {
+	setupInflight.mu.Lock()
+	setupInflight.projects[projectionProject] = []setupInflightEntry{{class: "compute", operation: "initial", blocker: "Projection", requestedAt: time.Now()}}
+	setupInflight.mu.Unlock()
+	t.Cleanup(func() { setupInflight.removeProject(projectionProject) })
+
+	cleanupErr := errors.New("injected projection cleanup failure")
+	c := interceptor.NewClient(projectionConsumerClient(), interceptor.Funcs{
+		DeleteAllOf: func(context.Context, client.WithWatch, client.Object, ...client.DeleteAllOfOption) error {
+			return cleanupErr
+		},
+	})
+	if err := (ProjectionTeardown{}).TeardownConsumer(context.Background(), projectionProject, c, nil); !errors.Is(err, cleanupErr) {
+		t.Fatalf("teardown error = %v, want %v", err, cleanupErr)
+	}
+
+	setupInflight.mu.RLock()
+	_, metricsRetained := setupInflight.projects[projectionProject]
+	setupInflight.mu.RUnlock()
+	if metricsRetained {
+		t.Fatal("failed project disengage cleanup retained setup in-flight metrics")
 	}
 }

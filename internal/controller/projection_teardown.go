@@ -26,6 +26,11 @@ func (ProjectionTeardown) TeardownConsumer(
 	c client.Client,
 	_ []string,
 ) error {
+	// Disengagement can be the final lifecycle callback for a project, so clear
+	// its observer state here rather than waiting for a reconcile that may never
+	// arrive.
+	setupInflight.removeProject(consumerProject)
+
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)
 	legacyBinding := &unstructured.Unstructured{}

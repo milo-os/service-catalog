@@ -6,7 +6,7 @@ It covers customer-visible setup latency, unfinished work, projection queue
 capacity, observer health, leader ownership, Kubernetes API pressure, and
 rollout state.
 
-Install `jsonnet` and `jb`, then run:
+Install Python 3 (available as `python3`), `jsonnet`, and `jb`, then run:
 
 ```sh
 task observability:install
