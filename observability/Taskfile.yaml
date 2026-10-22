@@ -26,3 +26,15 @@ tasks:
         diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json" "$output"
         jq empty "$output"
         python3 verify_dashboard.py "$output"
+
+  test-alerts:
+    desc: Unit test the setup alert rules with promtool
+    cmds:
+      - |
+        set -eu
+        workdir="$(mktemp -d)"
+        trap 'rm -rf "$workdir"' EXIT
+        python3 alerts/extract_rules.py "{{.ROOT_DIR}}/config/components/observability/alerts/service-catalog-setup-alerts.yaml" "$workdir/rules.json"
+        cp alerts/service-catalog-setup-alerts.test.yaml "$workdir/"
+        promtool check rules "$workdir/rules.json"
+        promtool test rules "$workdir/service-catalog-setup-alerts.test.yaml"

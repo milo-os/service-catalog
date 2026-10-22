@@ -1,0 +1,222 @@
+# Unit tests for config/components/observability/alerts. Run them with
+# `task observability:test-alerts`, which writes the rule groups from the
+# PrometheusRule to rules.json in a temporary directory beside a copy of this file.
+rule_files:
+  - rules.json
+
+evaluation_interval: 1m
+
+tests:
+  # Twelve compute activations in 30 minutes, two of them between 15s and 30s:
+  # p95 lands above 15s and the alert fires after its 5m hold.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="10"}'
+        values: '0+0x10 0+1x10 10+0x30'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="15"}'
+        values: '0+0x10 0+1x10 10+0x30'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="30"}'
+        values: '0+0x10 0+1x10 10+0x5 12+0x25'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="+Inf"}'
+        values: '0+0x10 0+1x10 10+0x5 12+0x25'
+      - series: 'service_catalog_setup_duration_seconds_count{service_class="compute",operation="initial",clock="platform"}'
+        values: '0+0x10 0+1x10 10+0x5 12+0x25'
+      # The user clock includes approval wait and must not trigger the alert.
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="dns",operation="initial",clock="user",le="15"}'
+        values: '0+0x50'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="dns",operation="initial",clock="user",le="+Inf"}'
+        values: '0+1x50'
+      - series: 'service_catalog_setup_duration_seconds_count{service_class="dns",operation="initial",clock="user"}'
+        values: '0+1x50'
+    alert_rule_test:
+      - eval_time: 27m
+        alertname: ServiceActivationSlow
+        exp_alerts: []
+      - eval_time: 34m
+        alertname: ServiceActivationSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+              service_class: compute
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "compute service activation p95 is over 15 seconds"
+              description: "Over the last 30 minutes, 95% of compute activations finished within 25.5s of authorization, above the 15-second target. Check the setup dashboard for client throttling, API latency, and the slowest setup stage."
+
+  # Fast activations, and a single slow one in a quiet window, stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="15"}'
+        values: '0+1x40'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="compute",operation="initial",clock="platform",le="+Inf"}'
+        values: '0+1x40'
+      - series: 'service_catalog_setup_duration_seconds_count{service_class="compute",operation="initial",clock="platform"}'
+        values: '0+1x40'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="storage",operation="initial",clock="platform",le="15"}'
+        values: '0+0x40'
+      - series: 'service_catalog_setup_duration_seconds_bucket{service_class="storage",operation="initial",clock="platform",le="+Inf"}'
+        values: '0+0x10 1+0x30'
+      - series: 'service_catalog_setup_duration_seconds_count{service_class="storage",operation="initial",clock="platform"}'
+        values: '0+0x10 1+0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ServiceActivationSlow
+        exp_alerts: []
+
+  # Two compute activations are overdue at Projection and one of them has
+  # stalled: one is reported overdue, one stalled.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_overdue{service_class="compute",operation="initial",blocking_stage="Projection"}'
+        values: '2x30'
+      - series: 'service_catalog_setup_stalled{service_class="compute",operation="initial",blocking_stage="Projection"}'
+        values: '1x30'
+      - series: 'service_catalog_setup_observer_healthy{pod="services-controller-manager-a"}'
+        values: '1x30'
+      - series: 'service_catalog_setup_observer_healthy{pod="services-controller-manager-b"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ServiceActivationOverdue
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: ServiceActivationOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+              service_class: compute
+              blocking_stage: Projection
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "1 compute activation(s) unfinished more than a minute after authorization"
+              description: "1 compute activation(s) have waited more than a minute past authorization at the Projection stage. The ServiceEntitlement setup status names the stage and reason."
+      - eval_time: 14m
+        alertname: ServiceActivationStalled
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ServiceActivationStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+              service_class: compute
+              blocking_stage: Projection
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "1 compute activation(s) stalled at the Projection stage"
+              description: "1 compute activation(s) are still unfinished more than an hour after authorization, blocked at the Projection stage. Retries will not fix these. Find them with the ServiceEntitlement setup status and resolve the blocker, for example a missing ServiceConfiguration."
+      - eval_time: 16m
+        alertname: ServiceCatalogSetupObserverDown
+        exp_alerts: []
+
+  # Releases before the stalled gauge export only the overdue gauge; every
+  # overdue attempt counts as overdue.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_overdue{service_class="dns",operation="initial",blocking_stage="Dependencies"}'
+        values: '3x10'
+      - series: 'service_catalog_setup_observer_healthy'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceActivationOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+              service_class: dns
+              blocking_stage: Dependencies
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "3 dns activation(s) unfinished more than a minute after authorization"
+              description: "3 dns activation(s) have waited more than a minute past authorization at the Dependencies stage. The ServiceEntitlement setup status names the stage and reason."
+
+  # While no pod has a synced observer, the in-flight gauges are not trusted,
+  # and the observer alert fires after 10 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_overdue{service_class="compute",operation="initial",blocking_stage="Projection"}'
+        values: '2x20'
+      - series: 'service_catalog_setup_observer_healthy{pod="services-controller-manager-a"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ServiceCatalogSetupObserverDown
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ServiceCatalogSetupObserverDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: service-catalog
+              team: platform
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "Service activation is not being processed"
+              description: "No services-controller-manager pod has reported a healthy setup observer for 10 minutes, so no service activation can complete. Check the operator pods for restarts, leader election, and Milo API connectivity."
+      - eval_time: 11m
+        alertname: ServiceActivationOverdue
+        exp_alerts: []
+
+  # No operator metrics at all also counts as down.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="unrelated"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ServiceCatalogSetupObserverDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: service-catalog
+              team: platform
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "Service activation is not being processed"
+              description: "No services-controller-manager pod has reported a healthy setup observer for 10 minutes, so no service activation can complete. Check the operator pods for restarts, leader election, and Milo API connectivity."
+
+  # Half the requests wait over a second on the client rate limiter, which
+  # fires once that has lasted 15 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="project",le="0.005"}'
+        values: '0+10x40'
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="project",le="1"}'
+        values: '0+10x40'
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="project",le="2"}'
+        values: '0+100x40'
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="project",le="+Inf"}'
+        values: '0+100x40'
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="root",le="0.005"}'
+        values: '0+100x40'
+      - series: 'rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager",verb="GET",host="milo",scope="root",le="+Inf"}'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: ServiceCatalogClientThrottled
+        exp_alerts: []
+      - eval_time: 26m
+        alertname: ServiceCatalogClientThrottled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+            exp_annotations:
+              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "The services operator is throttling its own Milo API requests"
+              description: "95% of the operator's Milo API requests waited up to 2s on its client-side rate limiter over the last 10 minutes. Raise --kube-api-qps and --kube-api-burst, or find what is driving the extra requests."

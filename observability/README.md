@@ -20,3 +20,20 @@ The generated dashboard is committed so the observability Kustomize component
 can be consumed without a Jsonnet toolchain. Empty results use semantic states
 such as `Telemetry unavailable`, `No observations`, and `No completed setups`;
 panels must not use Grafana's generic `No data` message.
+
+## Alerts
+
+`config/components/observability/alerts` ships a `PrometheusRule` with the
+setup alerts, so any environment that includes the observability component
+gets them alongside the dashboard:
+
+| Alert | Fires when | Severity |
+| --- | --- | --- |
+| `ServiceActivationSlow` | p95 activation time over 30 minutes, measured from authorization, exceeds 15 seconds (at least 3 completions) | warning |
+| `ServiceActivationOverdue` | An activation is more than a minute past authorization but not yet stalled | warning |
+| `ServiceActivationStalled` | An activation is more than an hour past authorization | warning |
+| `ServiceCatalogSetupObserverDown` | No operator pod has a synced setup observer for 10 minutes, so no activation can complete | critical |
+| `ServiceCatalogClientThrottled` | p95 wait on the operator's client-side rate limiter exceeds 250ms for 15 minutes | warning |
+
+Install `promtool` and run `task observability:test-alerts` to unit test the
+rules.

@@ -1,0 +1,109 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: service-catalog-setup
+spec:
+  groups:
+    - name: service-catalog-setup
+      rules:
+        # Activation time is measured on the platform clock, from authorization
+        # to setup complete, so time spent waiting on a human approval never
+        # pages. The bucket boundary at 15s makes the quantile exact at the
+        # threshold. A few completions are required so that one slow activation
+        # in a quiet window does not fire on its own.
+        - alert: ServiceActivationSlow
+          expr: |
+            (
+              histogram_quantile(0.95, sum by (service_class, le) (rate(service_catalog_setup_duration_seconds_bucket{clock="platform"}[30m])))
+              > 15
+            )
+            and on (service_class)
+            (sum by (service_class) (increase(service_catalog_setup_duration_seconds_count{clock="platform"}[30m])) >= 3)
+          for: 5m
+          labels:
+            severity: warning
+            service: service-catalog
+            team: platform
+          annotations:
+            runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+            dashboard_url: "/d/service-catalog-setup"
+            summary: "{{ $labels.service_class }} service activation p95 is over 15 seconds"
+            description: "Over the last 30 minutes, 95% of {{ $labels.service_class }} activations finished within {{ $value | humanizeDuration }} of authorization, above the 15-second target. Check the setup dashboard for client throttling, API latency, and the slowest setup stage."
+
+        # The completion histogram only records setups that finish, so an
+        # activation that is stuck never reaches it. These gauges cover
+        # unfinished work: overdue is more than a minute past authorization,
+        # stalled is more than an hour. This alert reports work that is overdue
+        # but not yet stalled, which is the slow-right-now case.
+        - alert: ServiceActivationOverdue
+          expr: |
+            (
+              sum by (service_class, blocking_stage) (service_catalog_setup_overdue)
+              - (sum by (service_class, blocking_stage) (service_catalog_setup_stalled) or sum by (service_class, blocking_stage) (service_catalog_setup_overdue) * 0)
+            ) > 0
+            and on () (max(service_catalog_setup_observer_healthy) == 1)
+          for: 5m
+          labels:
+            severity: warning
+            service: service-catalog
+            team: platform
+          annotations:
+            runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+            dashboard_url: "/d/service-catalog-setup"
+            summary: "{{ $value }} {{ $labels.service_class }} activation(s) unfinished more than a minute after authorization"
+            description: "{{ $value }} {{ $labels.service_class }} activation(s) have waited more than a minute past authorization at the {{ $labels.blocking_stage }} stage. The ServiceEntitlement setup status names the stage and reason."
+
+        # A setup unfinished an hour after authorization is waiting on something
+        # retries will not fix, such as a service with no ServiceConfiguration or
+        # no available locations.
+        - alert: ServiceActivationStalled
+          expr: |
+            sum by (service_class, blocking_stage) (service_catalog_setup_stalled) > 0
+            and on () (max(service_catalog_setup_observer_healthy) == 1)
+          for: 15m
+          labels:
+            severity: warning
+            service: service-catalog
+            team: platform
+          annotations:
+            runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+            dashboard_url: "/d/service-catalog-setup"
+            summary: "{{ $value }} {{ $labels.service_class }} activation(s) stalled at the {{ $labels.blocking_stage }} stage"
+            description: "{{ $value }} {{ $labels.service_class }} activation(s) are still unfinished more than an hour after authorization, blocked at the {{ $labels.blocking_stage }} stage. Retries will not fix these. Find them with the ServiceEntitlement setup status and resolve the blocker, for example a missing ServiceConfiguration."
+
+        # The setup observer runs on the leader once its source caches sync. While
+        # no pod reports it healthy, no activation can complete: the operator has
+        # no leader, cannot reach Milo, or is still syncing after a restart.
+        - alert: ServiceCatalogSetupObserverDown
+          expr: |
+            (max(service_catalog_setup_observer_healthy) == 0)
+            or absent(service_catalog_setup_observer_healthy)
+          for: 10m
+          labels:
+            severity: critical
+            service: service-catalog
+            team: platform
+          annotations:
+            runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+            dashboard_url: "/d/service-catalog-setup"
+            summary: "Service activation is not being processed"
+            description: "No services-controller-manager pod has reported a healthy setup observer for 10 minutes, so no service activation can complete. Check the operator pods for restarts, leader election, and Milo API connectivity."
+
+        # The operator's client-side rate limiter is the only throttle on its
+        # Milo traffic, because Milo's priority and fairness exempts it. Waiting
+        # on the limiter was the main cause of slow activation before the limit
+        # was raised, so sustained waits mean the limit needs raising again.
+        - alert: ServiceCatalogClientThrottled
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{job="services-system/services-controller-manager"}[10m])))
+            > 0.25
+          for: 15m
+          labels:
+            severity: warning
+            service: service-catalog
+            team: platform
+          annotations:
+            runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+            dashboard_url: "/d/service-catalog-setup"
+            summary: "The services operator is throttling its own Milo API requests"
+            description: "95% of the operator's Milo API requests waited up to {{ $value | humanizeDuration }} on its client-side rate limiter over the last 10 minutes. Raise --kube-api-qps and --kube-api-burst, or find what is driving the extra requests."
