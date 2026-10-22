@@ -468,7 +468,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs.",
+         "description": "Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -550,7 +550,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "((sum(service_catalog_setup_stalled)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1)",
+               "expr": "(absent(service_catalog_setup_stalled) * -1 and on() count(service_catalog_setup_inflight)) or (((sum(service_catalog_setup_stalled)) and on() (max(service_catalog_setup_observer_healthy) == 1)) or ((max(service_catalog_setup_observer_healthy) == 1) * 0) or ((max(service_catalog_setup_observer_healthy) == 0) - 1) or (absent(service_catalog_setup_observer_healthy) * -1))",
                "legendFormat": "stalled"
             }
          ],
@@ -716,7 +716,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first.",
+         "description": "Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.",
          "fieldConfig": {
             "defaults": {
                "noValue": "No stalled setups"
@@ -731,6 +731,28 @@
                      {
                         "id": "unit",
                         "value": "dtdurations"
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "Stalled"
+                  },
+                  "properties": [
+                     {
+                        "id": "mappings",
+                        "value": [
+                           {
+                              "options": {
+                                 "-1": {
+                                    "color": "purple",
+                                    "text": "Telemetry unavailable"
+                                 }
+                              },
+                              "type": "value"
+                           }
+                        ]
                      }
                   ]
                },
@@ -791,7 +813,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) and on() (max(service_catalog_setup_observer_healthy) == 1)",
+               "expr": "(sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) and on() (max(service_catalog_setup_observer_healthy) == 1)) or label_replace((absent(service_catalog_setup_stalled) * -1 and on() count(service_catalog_setup_inflight)), \"blocking_stage\", \"Telemetry unavailable\", \"\", \"\")",
                "format": "table",
                "instant": true,
                "legendFormat": "",
@@ -1777,7 +1799,7 @@
                      "mode": "none"
                   }
                },
-               "noValue": "Not exported yet: client-go latency metrics are not registered by this release",
+               "noValue": "No requests in range, or client-go latency metrics not exported yet",
                "unit": "s"
             }
          },
@@ -1837,7 +1859,7 @@
                      "mode": "none"
                   }
                },
-               "noValue": "Not exported yet: client-go rate-limiter metrics are not registered by this release",
+               "noValue": "No requests in range, or client-go rate-limiter metrics not exported yet",
                "unit": "s"
             }
          },
