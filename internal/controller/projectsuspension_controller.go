@@ -92,7 +92,11 @@ func patchConsumerSuspendedCondition(ctx context.Context, providerClient client.
 	if conditionsEqual(before.Status.Conditions, consumer.Status.Conditions, ConditionTypeSuspended) {
 		return nil
 	}
-	if err := providerClient.Status().Patch(ctx, consumer, client.MergeFrom(before), client.FieldOwner(suspendedConditionFieldManager)); err != nil {
+	// Locked like the entitlement-side patch: the merge patch carries the whole
+	// conditions list, so a stale copy would erase other writers' conditions.
+	if err := providerClient.Status().Patch(ctx, consumer,
+		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
+		client.FieldOwner(suspendedConditionFieldManager)); err != nil {
 		return fmt.Errorf("failed to patch ServiceConsumer status: %w", err)
 	}
 	return nil
@@ -233,5 +237,5 @@ func (r *ProjectSuspensionPropagationReconciler) SetupWithManager(mgr ctrl.Manag
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&resourcemanagerv1alpha1.Project{}).
 		Named("project-suspension-propagation").
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }

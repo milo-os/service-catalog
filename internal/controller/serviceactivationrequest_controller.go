@@ -318,5 +318,5 @@ func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Ma
 			mcbuilder.WithEngageWithProviderClusters(true),
 		).
 		WatchesRawSource(r.wakeups.source()).
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }
