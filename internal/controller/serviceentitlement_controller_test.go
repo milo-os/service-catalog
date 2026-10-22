@@ -13,9 +13,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -1376,5 +1380,68 @@ func TestServiceEntitlementReconcilerSharesADependencyUnderConcurrency(t *testin
 	}
 	if dep.Status.DependencyOf != owner {
 		t.Errorf("status.dependencyOf = %q, disagrees with label %q", dep.Status.DependencyOf, owner)
+	}
+}
+
+// The entitlement's finalizer is the only thing keeping teardown ordered
+// before the entitlement disappears. Releasing it while provisioned objects
+// remained left them in the project after the service was disabled.
+func TestServiceEntitlementReconciler_DeleteRemovesProvisionedObjects(t *testing.T) {
+	scheme := testScheme()
+	scheme.AddKnownTypeWithName(ipClassGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(ipClassGVK.GroupVersion().WithKind("IPClassList"), &unstructured.UnstructuredList{})
+
+	ent := terminatingEntitlement(testServiceSlug, testServiceSlug)
+	ent.UID = "ent-uid"
+	ent.Status.ProvisionedResources = []servicesv1alpha1.ProvisionedResourceStatus{{
+		Name:  "address-classes",
+		Kinds: kindRefs([]schema.GroupVersionKind{ipClassGVK}),
+	}}
+
+	installed := &unstructured.Unstructured{}
+	installed.SetGroupVersionKind(ipClassGVK)
+	installed.SetName("premium-anycast")
+	installed.SetLabels(map[string]string{
+		labelManagedBy:           labelManagedByValue,
+		labelEntitlementName:     ent.Name,
+		labelProvisionedResource: "address-classes",
+	})
+	installed.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: servicesv1alpha1.GroupVersion.String(),
+		Kind:       "ServiceEntitlement",
+		Name:       ent.Name,
+		UID:        ent.UID,
+		Controller: ptr.To(true),
+	}})
+
+	consumerClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ent, installed).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		Build()
+
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	r := &ServiceEntitlementReconciler{
+		rootClient: newServiceRootClient(),
+		Manager:    mgr,
+		Scheme:     scheme,
+	}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug)); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	var list unstructured.UnstructuredList
+	list.SetGroupVersionKind(ipClassGVK.GroupVersion().WithKind("IPClassList"))
+	if err := consumerClient.List(context.Background(), &list); err != nil {
+		t.Fatalf("list IPClasses: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("provisioned objects outlived the entitlement: %d left", len(list.Items))
+	}
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: testServiceSlug}, &got); !apierrors.IsNotFound(err) {
+		t.Errorf("expected the entitlement to finish deleting, got err=%v", err)
 	}
 }

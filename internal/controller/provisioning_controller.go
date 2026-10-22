@@ -237,8 +237,8 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	var entitlement servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(ctx, req.NamespacedName, &entitlement); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Projected objects carry a controller owner reference to the
-			// entitlement and are reclaimed by garbage collection.
+			// The entitlement's finalizer is released only after its
+			// provisioned objects were swept, so nothing is left to do.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get ServiceEntitlement: %w", err)
@@ -248,7 +248,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// than Active tears down: pending approval, rejected, deleting.
 	if !entitlement.DeletionTimestamp.IsZero() ||
 		entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 		if !entitlement.DeletionTimestamp.IsZero() {
@@ -284,7 +284,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	}
 
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, r.writeStatus(
@@ -310,6 +310,22 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// every kind provisioning has ever written.
 	if err := r.pruneUndeclared(ctx, consumerClient, &entitlement, sc.Spec.Provisioning.Resources); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// The entitlement was read before this pass installed anything. If it was
+	// deleted meanwhile, teardown may already have swept the project and
+	// released the entitlement, so an object written after that sweep would be
+	// left behind: garbage collection cannot be relied on to reclaim it. Check
+	// again, live, and remove what this pass wrote.
+	if withdrawn, err := entitlementWithdrawn(ctx, consumerReader, &entitlement); err != nil {
+		return ctrl.Result{}, err
+	} else if withdrawn {
+		logger.Info("entitlement was deleted while provisioning; removing what was installed")
+		kinds := allInstalledKinds(&entitlement)
+		for i := range ledger {
+			kinds = union(kinds, gvksOf(ledger[i].Kinds))
+		}
+		return ctrl.Result{}, sweepProvisioned(ctx, consumerReader, consumerClient, &entitlement, kinds, nil)
 	}
 
 	// A failed install is retried on its own short schedule. Waiting for the
@@ -749,18 +765,40 @@ func (r *ProvisioningReconciler) prune(
 	return nil
 }
 
-// pruneAll removes everything provisioned for this entitlement.
+// pruneProvisioned removes everything provisioned for this entitlement.
 //
 // The kinds come from the entitlement's own ledger, not from the configuration:
 // teardown runs when the entitlement stops being Active, which includes the
 // case where nothing declares anything any more. What was installed here is
 // what this project recorded receiving.
-func (r *ProvisioningReconciler) pruneAll(
+//
+// Objects are listed through reader, which should read live. Teardown often
+// follows an install by moments, and a cache that has not seen the install
+// yet would let the object outlive the entitlement.
+func pruneProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 ) error {
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+	return sweepProvisioned(ctx, reader, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+}
+
+// entitlementWithdrawn reports whether the entitlement has been deleted, or
+// replaced by a new one of the same name, since it was read.
+func entitlementWithdrawn(
+	ctx context.Context,
+	reader client.Reader,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+) (bool, error) {
+	var live servicesv1alpha1.ServiceEntitlement
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(entitlement), &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to re-read ServiceEntitlement: %w", err)
+	}
+	return live.UID != entitlement.UID || !live.DeletionTimestamp.IsZero(), nil
 }
 
 // pruneUndeclared removes objects installed by a declaration the configuration
@@ -779,13 +817,14 @@ func (r *ProvisioningReconciler) pruneUndeclared(
 	// The ledger still describes the previous reconcile at this point, and a
 	// withdrawn declaration names no kind, so the ledger is the only record of
 	// what it installed.
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
+	return sweepProvisioned(ctx, consumerClient, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
 }
 
-// sweep deletes every object this entitlement owns, of the given kinds, whose
-// declaration is not in keep. A nil keep removes everything.
-func (r *ProvisioningReconciler) sweep(
+// sweepProvisioned deletes every object this entitlement owns, of the given
+// kinds, whose declaration is not in keep. A nil keep removes everything.
+func sweepProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	kinds []schema.GroupVersionKind,
@@ -794,7 +833,7 @@ func (r *ProvisioningReconciler) sweep(
 	for _, gvk := range kinds {
 		var list unstructured.UnstructuredList
 		list.SetGroupVersionKind(provisioning.ListGVK(gvk))
-		if err := consumerClient.List(ctx, &list, client.MatchingLabels{
+		if err := reader.List(ctx, &list, client.MatchingLabels{
 			labelManagedBy:       labelManagedByValue,
 			labelEntitlementName: entitlement.Name,
 		}); err != nil {

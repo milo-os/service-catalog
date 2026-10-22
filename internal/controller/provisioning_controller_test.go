@@ -1394,3 +1394,39 @@ func TestProvisioningFailureRetryIsCappedAtTheResyncInterval(t *testing.T) {
 		t.Errorf("retry delay after repeated failures = %s, want the %s resync cap", got, provisioningResyncInterval)
 	}
 }
+
+// Disabling a service while a pass is installing used to leave the object
+// behind. Teardown swept the project before the install landed and released
+// the entitlement, and the object then pointed at an owner that no longer
+// existed, which garbage collection in a project control plane did not reclaim.
+func TestProvisioningRemovesWhatItInstalledWhenTheEntitlementIsDeletedMidPass(t *testing.T) {
+	var once sync.Once
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if err := c.Apply(ctx, obj, opts...); err != nil {
+					return err
+				}
+				// The customer disables the service, and teardown completes,
+				// between this pass reading the entitlement and finishing.
+				var err error
+				once.Do(func() {
+					err = c.Delete(ctx, provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+				})
+				return err
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if got := listClasses(t, consumer).Items; len(got) != 0 {
+		t.Errorf("objects outlived their entitlement: %+v", names(got))
+	}
+}
