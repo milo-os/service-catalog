@@ -390,7 +390,7 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 			os.Exit(1)
 		}
-		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr.GetClient()); err != nil {
+		if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(consumerMcMgr, mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 			os.Exit(1)
 		}
@@ -448,7 +448,7 @@ func main() {
 				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 				os.Exit(1)
 			}
-			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr.GetClient()); err != nil {
+			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(mcMgr, mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 				os.Exit(1)
 			}
@@ -503,7 +503,7 @@ func main() {
 				setupLog.Error(err, "unable to create controller", "controller", "LocationProjection")
 				os.Exit(1)
 			}
-			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr.GetClient()); err != nil {
+			if err = (&controller.CapabilityBindingReconciler{Scheme: scheme}).SetupWithManager(projectionMcMgr, mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "CapabilityBinding")
 				os.Exit(1)
 			}

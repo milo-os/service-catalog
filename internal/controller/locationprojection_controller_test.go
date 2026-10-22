@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -34,6 +35,7 @@ const (
 func projectionScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	s.AddKnownTypeWithName(LocationGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(LocationGVK.GroupVersion().WithKind("LocationList"), &unstructured.UnstructuredList{})
 	s.AddKnownTypeWithName(legacyLocationBindingGVK, &unstructured.Unstructured{})
@@ -42,6 +44,20 @@ func projectionScheme() *runtime.Scheme {
 }
 
 func projectionRootClient(objs ...client.Object) client.Client {
+	hasProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == projectionProject {
+			hasProject = true
+			break
+		}
+	}
+	if !hasProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: projectionProject}})
+	}
+	return projectionRootClientWithoutProject(objs...)
+}
+
+func projectionRootClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(projectionScheme()).WithObjects(objs...).Build()
 }
 
@@ -119,7 +135,7 @@ func reconcileProjection(t *testing.T, root, consumer client.Client) (ctrl.Resul
 	t.Helper()
 	mgr := newTestManager()
 	mgr.add(projectionProject, consumer)
-	r := &LocationProjectionReconciler{rootClient: root, Manager: mgr, Scheme: projectionScheme()}
+	r := &LocationProjectionReconciler{rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: projectionScheme()}
 	return r.Reconcile(context.Background(), mcreconcile.Request{
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
 		ClusterName: projectionProject,
@@ -178,6 +194,32 @@ func TestLocationProjectionReconciler_ProjectsCanonicalLocationAndAvailability(t
 	}
 	if _, ok := mirroredAvailability(t, consumer, projectionService+"--"+projectionLocation); !ok {
 		t.Error("ServiceAvailability was not mirrored")
+	}
+}
+
+func TestLocationProjectionReconcilerDoesNotDropProjectOnCacheMiss(t *testing.T) {
+	cacheClient := projectionRootClientWithoutProject(
+		publishedProjectionConfig(projectionClass),
+		availableAt(projectionLocation, true),
+		platformLocation(projectionLocation, true, projectionClass),
+	)
+	apiReader := projectionRootClient()
+	consumer := projectionConsumerClient(activeProjectionEntitlement())
+	mgr := newTestManager()
+	mgr.add(projectionProject, consumer)
+	index := newProjectionProjectIndex()
+	r := &LocationProjectionReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: projectionScheme(), projects: index,
+	}
+
+	if _, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: projectionProject}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := projectedLocation(t, consumer, projectionLocation); !ok {
+		t.Fatal("cache miss dropped location projection for a live Project")
+	}
+	if got := index.Projects(); len(got) != 1 || got[0] != projectionProject {
+		t.Fatalf("project index = %#v, want live project retained", got)
 	}
 }
 
@@ -521,13 +563,50 @@ func TestProjectionRootDispatcherUnionsUpdateTargetsAndFansOutLocations(t *testi
 func TestLocationProjectionReconcilerDropsDisengagedProjectFromIndex(t *testing.T) {
 	index := newProjectionProjectIndex()
 	index.Replace(projectionProject, []string{projectionService})
-	r := &LocationProjectionReconciler{Manager: newTestManager(), projects: index}
+	r := &LocationProjectionReconciler{rootClient: projectionRootClient(), Manager: newTestManager(), projects: index}
 	result, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: projectionProject})
 	if err != nil || result != (ctrl.Result{}) {
 		t.Fatalf("reconcile result=%+v err=%v", result, err)
 	}
 	if got := index.Projects(); len(got) != 0 {
 		t.Fatalf("stale projects = %#v, want none", got)
+	}
+}
+
+func TestLocationProjectionReconcilerDropsUnavailableProjectBeforeScanning(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root client.Client
+	}{
+		{name: "missing", root: projectionRootClientWithoutProject()},
+		{name: "terminating", root: func() client.Client {
+			now := metav1.Now()
+			return projectionRootClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+				Name: projectionProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+			}})
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			index := newProjectionProjectIndex()
+			index.Replace(projectionProject, []string{projectionService})
+			stale := platformLocation(projectionLocation, true, projectionClass)
+			stale.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
+			consumer := projectionConsumerClient(stale)
+			mgr := newTestManager()
+			mgr.add(projectionProject, consumer)
+			r := &LocationProjectionReconciler{rootClient: tc.root, Manager: mgr, projects: index}
+
+			result, err := r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: projectionProject})
+			if err != nil || result != (ctrl.Result{}) {
+				t.Fatalf("reconcile result=%+v err=%v", result, err)
+			}
+			if got := index.Projects(); len(got) != 0 {
+				t.Fatalf("stale projects = %#v, want none", got)
+			}
+			if _, ok := projectedLocation(t, consumer, projectionLocation); !ok {
+				t.Fatal("unavailable project was scanned and its existing projection was mutated")
+			}
+		})
 	}
 }
 

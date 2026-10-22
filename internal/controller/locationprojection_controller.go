@@ -120,9 +120,10 @@ type LocationProjectionReconciler struct {
 	// ServiceAvailability objects, and unstructured Location objects, from the
 	// root key space. These do not live in any project VCP, so the per-cluster
 	// client cannot see them — mirrors ServiceEntitlementReconciler.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
 
 	projects *projectionProjectIndex
 }
@@ -150,6 +151,17 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 	consumerProject := req.ClusterName
 	if consumerProject == "" {
 		return ctrl.Result{}, fmt.Errorf("location projection reconcile invoked without a cluster name")
+	}
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		if r.projects != nil {
+			r.projects.Remove(string(consumerProject))
+		}
+		logger.V(1).Info("project is absent or terminating; skipping location projection")
+		return ctrl.Result{}, nil
 	}
 
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
@@ -1145,6 +1157,7 @@ func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects 
 // locationProjectionMaxConcurrentReconciles.
 func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr manager.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	r.projects = newProjectionProjectIndex()
 	rootEvents := make(chan event.TypedGenericEvent[mcreconcile.Request], 4096)

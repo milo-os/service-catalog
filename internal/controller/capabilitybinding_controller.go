@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -20,9 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -86,9 +89,10 @@ const (
 type CapabilityBindingReconciler struct {
 	// rootClient reads the cluster-scoped catalog objects. They live outside
 	// every project, so a project's own client cannot see them.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
 
 	// warnedAgents remembers which agents we have already complained about, so
 	// a misconfigured one is reported once rather than on every pass over every
@@ -103,6 +107,7 @@ type CapabilityBindingReconciler struct {
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceagentconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceagentconfigurations/status,verbs=get
 // +kubebuilder:rbac:groups=capabilities.assistant.miloapis.com,resources=capabilitybindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 
 func (r *CapabilityBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -112,12 +117,30 @@ func (r *CapabilityBindingReconciler) Reconcile(ctx context.Context, req mcrecon
 	if consumerProject == "" {
 		return ctrl.Result{}, fmt.Errorf("CapabilityBinding reconcile invoked without a cluster name")
 	}
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if project == nil {
+		logger.V(1).Info("project is absent; skipping capability projection")
+		return ctrl.Result{}, nil
+	}
 
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// Reconciliation includes pruning bindings after entitlements are
+			// removed. Keep retrying while the Project exists so a transient
+			// disengagement cannot strand stale bindings or finalization work.
+			return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
+	if !project.DeletionTimestamp.IsZero() {
+		logger.V(1).Info("project is terminating; skipping capability projection")
+		return ctrl.Result{}, nil
+	}
 
 	// The event names one entitlement, but what a project's assistant can do
 	// depends on every Active entitlement it holds, so recompute all of them. A
@@ -374,8 +397,9 @@ func (r *CapabilityBindingReconciler) pruneCapabilityBindings(
 // reconcile. The agent and configuration gates live on the root cluster, which
 // we have no clean way to enqueue from, so they are picked up by the periodic
 // pass instead.
-func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootClient client.Client) error {
-	r.rootClient = rootClient
+func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr manager.Manager) error {
+	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("capability-binding").
