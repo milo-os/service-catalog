@@ -751,7 +751,11 @@ func (r *ProvisioningReconciler) writeStatus(
 	now := metav1.Now()
 	entitlement.Status.LastProvisioningEvaluation = &now
 
-	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before),
+	// A merge patch replaces status.conditions wholesale, so patching without
+	// the resourceVersion precondition from a stale cached copy would erase a
+	// condition another controller just wrote. A conflict retries from cache.
+	if err := consumerClient.Status().Patch(ctx, entitlement,
+		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
 		client.FieldOwner(provisioningFieldManager)); err != nil {
 		return fmt.Errorf("failed to patch ServiceEntitlement provisioning status: %w", err)
 	}

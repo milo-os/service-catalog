@@ -158,6 +158,13 @@ type ServiceSetupStatus struct {
 	// activation carries the originating request timestamp here.
 	RequestedAt metav1.Time `json:"requestedAt"`
 
+	// Backfilled is true when setup tracking began after the request had
+	// already been accepted, such as for entitlements that predate setup
+	// tracking. RequestedAt is then the creation time rather than an observed
+	// request, so the attempt is excluded from setup latency accounting.
+	// +optional
+	Backfilled bool `json:"backfilled,omitempty"`
+
 	// AuthorizedAt is set when external approval/access authorization finishes.
 	// +optional
 	AuthorizedAt *metav1.Time `json:"authorizedAt,omitempty"`

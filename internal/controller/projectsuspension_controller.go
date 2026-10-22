@@ -106,7 +106,11 @@ func patchEntitlementSuspendedCondition(ctx context.Context, consumerClient clie
 	if conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, ConditionTypeSuspended) {
 		return nil
 	}
-	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before), client.FieldOwner(suspendedConditionFieldManager)); err != nil {
+	// Unlike ServiceConsumer, an entitlement's conditions have several
+	// concurrent writers; the lock stops a stale copy erasing theirs.
+	if err := consumerClient.Status().Patch(ctx, entitlement,
+		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
+		client.FieldOwner(suspendedConditionFieldManager)); err != nil {
 		return fmt.Errorf("failed to patch ServiceEntitlement status: %w", err)
 	}
 	return nil

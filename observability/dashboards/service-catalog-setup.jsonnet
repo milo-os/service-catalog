@@ -150,7 +150,7 @@ local panels = [
     'Persisted setup attempts that have not reached first completion. Missing or unhealthy observer telemetry renders Telemetry unavailable.', telemetryMappings()),
   statPanel('Overdue (>60s)', observedAggregate('sum(service_catalog_setup_overdue)'), 'overdue', 'short',
     [['purple', null], ['green', 0], ['yellow', 1], ['red', 5]], { h: 5, w: 8, x: 8, y: 15 },
-    'Unfinished attempts older than the initial 60-second objective.', telemetryMappings()),
+    'Unfinished attempts more than 60 seconds past access authorization, the initial objective. Time waiting for external approval is excluded.', telemetryMappings()),
   statPanel('Oldest unfinished', observedAggregate('max(service_catalog_setup_oldest_inflight_seconds)'), 'oldest', 's',
     [['purple', null], ['green', 0], ['yellow', 60], ['red', 300]], { h: 5, w: 8, x: 16, y: 15 },
     'Age of the oldest unfinished persisted setup attempt.', telemetryMappings()),

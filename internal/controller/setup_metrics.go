@@ -63,6 +63,9 @@ func initializeSetupMetricSeries() {
 type setupInflightEntry struct {
 	class, operation, blocker string
 	requestedAt               time.Time
+	// authorizedAt starts the overdue clock. It is zero while access awaits
+	// external approval, which is reported as in flight but never overdue.
+	authorizedAt time.Time
 }
 
 type setupInflightCollector struct {
@@ -77,7 +80,7 @@ func newSetupInflightCollector() *setupInflightCollector {
 		projects: make(map[string][]setupInflightEntry),
 		inflight: prometheus.NewDesc("service_catalog_setup_inflight", "Unfinished persisted setup attempts.", labels, nil),
 		oldest:   prometheus.NewDesc("service_catalog_setup_oldest_inflight_seconds", "Age of the oldest unfinished persisted setup attempt.", labels, nil),
-		overdue:  prometheus.NewDesc("service_catalog_setup_overdue", "Unfinished setup attempts older than the initial 60 second objective.", labels, nil),
+		overdue:  prometheus.NewDesc("service_catalog_setup_overdue", "Unfinished setup attempts more than 60 seconds past authorization, the initial objective.", labels, nil),
 	}
 }
 
@@ -107,7 +110,7 @@ func (c *setupInflightCollector) Collect(ch chan<- prometheus.Metric) {
 			if age > value.oldest {
 				value.oldest = age
 			}
-			if age > 60 {
+			if !entry.authorizedAt.IsZero() && now.Sub(entry.authorizedAt).Seconds() > 60 {
 				value.overdue++
 			}
 			values[key] = value
@@ -124,10 +127,19 @@ func (c *setupInflightCollector) replaceProject(project string, entitlements []s
 	entries := make([]setupInflightEntry, 0, len(entitlements))
 	for i := range entitlements {
 		entitlement, setup := &entitlements[i], entitlements[i].Status.Setup
-		if setup == nil || setup.RequestedAt.IsZero() || setup.FirstCompletedAt != nil {
+		if setup == nil || setup.RequestedAt.IsZero() || setup.FirstCompletedAt != nil || setup.Backfilled {
 			continue
 		}
-		entries = append(entries, setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: setupOperationInitial, blocker: firstIncompleteSetupStage(setup.Stages), requestedAt: setup.RequestedAt.Time})
+		// A rejected or deleting entitlement will never complete setup, so
+		// counting it would leave permanent phantom work.
+		if !entitlement.DeletionTimestamp.IsZero() || entitlement.Status.Phase == servicesv1alpha1.EntitlementPhaseRejected {
+			continue
+		}
+		entry := setupInflightEntry{class: setupServiceClass(entitlement.Spec.ServiceRef.Name), operation: setupOperationInitial, blocker: firstIncompleteSetupStage(setup.Stages), requestedAt: setup.RequestedAt.Time}
+		if setup.AuthorizedAt != nil {
+			entry.authorizedAt = setup.AuthorizedAt.Time
+		}
+		entries = append(entries, entry)
 	}
 	c.mu.Lock()
 	c.projects[project] = entries
@@ -157,7 +169,7 @@ func setupServiceClass(service string) string {
 
 func observeSetupSuccess(entitlement *servicesv1alpha1.ServiceEntitlement, completedAt time.Time) {
 	setup := entitlement.Status.Setup
-	if setup == nil || setup.RequestedAt.IsZero() {
+	if setup == nil || setup.RequestedAt.IsZero() || setup.Backfilled {
 		return
 	}
 	class, operation := setupServiceClass(entitlement.Spec.ServiceRef.Name), setupOperationInitial

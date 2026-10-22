@@ -562,7 +562,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Unfinished attempts older than the initial 60-second objective.",
+         "description": "Unfinished attempts more than 60 seconds past access authorization, the initial objective. Time waiting for external approval is excluded.",
          "fieldConfig": {
             "defaults": {
                "color": {

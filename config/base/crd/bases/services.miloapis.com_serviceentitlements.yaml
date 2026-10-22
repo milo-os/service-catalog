@@ -369,6 +369,13 @@ spec:
                       authorization finishes.
                     format: date-time
                     type: string
+                  backfilled:
+                    description: |-
+                      Backfilled is true when setup tracking began after the request had
+                      already been accepted, such as for entitlements that predate setup
+                      tracking. RequestedAt is then the creation time rather than an observed
+                      request, so the attempt is excluded from setup latency accounting.
+                    type: boolean
                   configurationRevision:
                     description: ConfigurationRevision is the UID and generation evaluated
                       by setup.
