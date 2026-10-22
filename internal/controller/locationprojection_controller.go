@@ -126,6 +126,12 @@ type LocationProjectionReconciler struct {
 	Scheme        *runtime.Scheme
 
 	projects *projectionProjectIndex
+
+	// trackingStartedAt is when this reconciler began observing setup. An
+	// entitlement created before it with no setup record was never observed
+	// from its request, so its setup is recorded as backfilled. Zero disables
+	// the check.
+	trackingStartedAt time.Time
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -397,8 +403,12 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 			if entitlement.Spec.ProviderActivation != nil && !entitlement.Spec.ProviderActivation.RequestedAt.IsZero() {
 				requestedAt = entitlement.Spec.ProviderActivation.RequestedAt
 			}
+			// The first rollout finds every existing entitlement without a
+			// setup record. Measuring those from their creation time would
+			// report months-old enrollments as setup latency.
 			entitlement.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
 				RequestedAt: requestedAt,
+				Backfilled:  !r.trackingStartedAt.IsZero() && entitlement.CreationTimestamp.Time.Before(r.trackingStartedAt),
 			}
 		}
 		setup := entitlement.Status.Setup
@@ -462,7 +472,12 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 		if reflect.DeepEqual(before.Status, entitlement.Status) {
 			continue
 		}
-		if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before)); err != nil {
+		// status.conditions is shared with the entitlement and provisioning
+		// controllers, and a merge patch replaces the whole list. Without the
+		// resourceVersion precondition, a pass working from a cached copy that
+		// predates another controller's write would erase that write.
+		if err := consumerClient.Status().Patch(ctx, entitlement,
+			client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("patch setup status for ServiceEntitlement %q: %w", entitlement.Name, err)
 		}
 		if !newlyCompletedAt.IsZero() {
@@ -1166,6 +1181,7 @@ func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, r
 	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	r.projects = newProjectionProjectIndex()
+	r.trackingStartedAt = time.Now()
 	rootEvents := make(chan event.TypedGenericEvent[mcreconcile.Request], 4096)
 	if err := rootMgr.Add(&projectionRootDispatcher{
 		rootMgr: rootMgr,

@@ -503,7 +503,11 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 	if conditionsEqual(before.Status.Conditions, parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied) {
 		return nil
 	}
-	if err := consumerClient.Status().Patch(ctx, parent, client.MergeFrom(before),
+	// Locked for the same reason as the provisioning and setup writers: the
+	// merge patch carries the whole conditions list, so a stale copy would
+	// otherwise erase their concurrent writes.
+	if err := consumerClient.Status().Patch(ctx, parent,
+		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
 		client.FieldOwner(dependenciesConditionFieldManager)); err != nil {
 		return fmt.Errorf("failed to patch DependenciesSatisfied condition: %w", err)
 	}

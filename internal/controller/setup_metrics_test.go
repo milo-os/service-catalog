@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
 func TestSetupMetricSeriesAreInitialized(t *testing.T) {
@@ -72,5 +75,51 @@ func TestSetupServiceClassIsBounded(t *testing.T) {
 		if got := setupServiceClass(service); !allowed[got] {
 			t.Fatalf("setupServiceClass(%q) = %q, outside bounded vocabulary", service, got)
 		}
+	}
+}
+
+func TestSetupInflightExcludesUnfinishableAttemptsAndApprovalWaits(t *testing.T) {
+	old := metav1.NewTime(time.Now().Add(-time.Hour))
+	attempt := func(name string, mutate func(*servicesv1alpha1.ServiceEntitlement)) servicesv1alpha1.ServiceEntitlement {
+		e := servicesv1alpha1.ServiceEntitlement{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       servicesv1alpha1.ServiceEntitlementSpec{ServiceRef: servicesv1alpha1.ServiceRef{Name: "compute.miloapis.com"}},
+			Status: servicesv1alpha1.ServiceEntitlementStatus{
+				Phase: servicesv1alpha1.EntitlementPhaseActive,
+				Setup: &servicesv1alpha1.ServiceSetupStatus{RequestedAt: old},
+			},
+		}
+		mutate(&e)
+		return e
+	}
+	entitlements := []servicesv1alpha1.ServiceEntitlement{
+		attempt("rejected", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected }),
+		attempt("deleting", func(e *servicesv1alpha1.ServiceEntitlement) { e.DeletionTimestamp = &old }),
+		attempt("backfilled", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Setup.Backfilled = true }),
+		attempt("awaiting-approval", func(e *servicesv1alpha1.ServiceEntitlement) {
+			e.Status.Phase = servicesv1alpha1.EntitlementPhasePendingApproval
+		}),
+		attempt("authorized", func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Setup.AuthorizedAt = &old }),
+	}
+
+	collector := newSetupInflightCollector()
+	collector.replaceProject("project", entitlements)
+	registry := prometheus.NewPedanticRegistry()
+	registry.MustRegister(collector)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	totals := make(map[string]float64)
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			totals[family.GetName()] += metric.GetGauge().GetValue()
+		}
+	}
+	if got := totals["service_catalog_setup_inflight"]; got != 2 {
+		t.Errorf("in-flight setups = %v, want 2 (awaiting approval and authorized)", got)
+	}
+	if got := totals["service_catalog_setup_overdue"]; got != 1 {
+		t.Errorf("overdue setups = %v, want 1 (approval waits are not overdue)", got)
 	}
 }

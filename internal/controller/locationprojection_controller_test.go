@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -409,6 +410,19 @@ func TestLocationProjectionReconciler_AggregatesDependencyChainInOnePass(t *test
 
 	r := &LocationProjectionReconciler{rootClient: projectionRootClient(rootObjects...)}
 	consumer := projectionConsumerClient(consumerObjects...)
+	// Aggregate from the stored objects, as Reconcile does, so status patches
+	// carry the resourceVersion their optimistic lock requires.
+	byName := make(map[string]servicesv1alpha1.ServiceEntitlement, len(entitlements))
+	for i := range entitlements {
+		var stored servicesv1alpha1.ServiceEntitlement
+		if err := consumer.Get(context.Background(), types.NamespacedName{Name: entitlements[i].Name}, &stored); err != nil {
+			t.Fatal(err)
+		}
+		byName[stored.Name] = stored
+	}
+	for i := range entitlements {
+		entitlements[i] = byName[entitlements[i].Name]
+	}
 	if err := r.aggregateSetup(context.Background(), projectionProject, consumer, entitlements, stages); err != nil {
 		t.Fatal(err)
 	}
@@ -735,5 +749,83 @@ func TestProjectionTeardownClearsSetupMetricsWhenResourceCleanupFails(t *testing
 	setupInflight.mu.RUnlock()
 	if metricsRetained {
 		t.Fatal("failed project disengage cleanup retained setup in-flight metrics")
+	}
+}
+
+func TestLocationProjectionReconcilerDoesNotMeasureBackfilledSetup(t *testing.T) {
+	entitlement := activeProjectionEntitlement()
+	entitlement.CreationTimestamp = metav1.NewTime(time.Now().Add(-90 * 24 * time.Hour))
+	for _, typ := range []string{servicesv1alpha1.ConditionTypeReady, servicesv1alpha1.ConditionTypeDependenciesSatisfied, servicesv1alpha1.ConditionTypeProvisioned} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{Type: typ, Status: metav1.ConditionTrue, Reason: "Complete"})
+	}
+	root := projectionRootClient(publishedProjectionConfig(projectionClass), availableAt(projectionLocation, true), platformLocation(projectionLocation, true, projectionClass))
+	consumer := projectionConsumerClient(entitlement)
+	mgr := newTestManager()
+	mgr.add(projectionProject, consumer)
+	r := &LocationProjectionReconciler{rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: projectionScheme(), trackingStartedAt: time.Now()}
+
+	completed := setupAttempts.WithLabelValues("compute", "initial", "succeeded")
+	var beforeMetric, afterMetric dto.Metric
+	if err := completed.Write(&beforeMetric); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
+		ClusterName: projectionProject,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := completed.Write(&afterMetric); err != nil {
+		t.Fatal(err)
+	}
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumer.Get(context.Background(), types.NamespacedName{Name: entitlement.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Setup == nil || !got.Status.Setup.Backfilled || got.Status.Setup.FirstCompletedAt == nil {
+		t.Fatalf("setup = %#v, want a completed backfilled record", got.Status.Setup)
+	}
+	if after, before := afterMetric.GetCounter().GetValue(), beforeMetric.GetCounter().GetValue(); after != before {
+		t.Fatalf("backfilled completion changed the attempt counter from %v to %v", before, after)
+	}
+}
+
+func TestSetupAggregationDoesNotEraseConcurrentConditionWrites(t *testing.T) {
+	ctx := context.Background()
+	entitlement := activeProjectionEntitlement()
+	for _, typ := range []string{servicesv1alpha1.ConditionTypeReady, servicesv1alpha1.ConditionTypeDependenciesSatisfied} {
+		apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{Type: typ, Status: metav1.ConditionTrue, Reason: "Complete"})
+	}
+	consumer := projectionConsumerClient(entitlement)
+	// The projection pass works from this copy, read before provisioning
+	// records its condition.
+	var stale servicesv1alpha1.ServiceEntitlement
+	if err := consumer.Get(ctx, types.NamespacedName{Name: entitlement.Name}, &stale); err != nil {
+		t.Fatal(err)
+	}
+	var live servicesv1alpha1.ServiceEntitlement
+	if err := consumer.Get(ctx, types.NamespacedName{Name: entitlement.Name}, &live); err != nil {
+		t.Fatal(err)
+	}
+	before := live.DeepCopy()
+	apimeta.SetStatusCondition(&live.Status.Conditions, metav1.Condition{Type: servicesv1alpha1.ConditionTypeProvisioned, Status: metav1.ConditionTrue, Reason: "Provisioned"})
+	if err := consumer.Status().Patch(ctx, &live, client.MergeFrom(before)); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &LocationProjectionReconciler{rootClient: projectionRootClient()}
+	stages := map[string]setupProjectionStage{projectionService: {complete: true, reason: "NotApplicable"}}
+	err := r.aggregateSetup(ctx, projectionProject, consumer, []servicesv1alpha1.ServiceEntitlement{stale}, stages)
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("aggregateSetup error = %v, want a conflict for the stale copy", err)
+	}
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumer.Get(ctx, types.NamespacedName{Name: entitlement.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !apimeta.IsStatusConditionTrue(got.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned) {
+		t.Fatalf("Provisioned = %#v, want the concurrent write preserved",
+			apimeta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned))
 	}
 }
