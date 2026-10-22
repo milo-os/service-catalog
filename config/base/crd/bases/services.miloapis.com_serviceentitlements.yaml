@@ -28,6 +28,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Suspended")].status
       name: Suspended
       type: string
+    - jsonPath: .status.conditions[?(@.type=="SetupComplete")].status
+      name: Setup
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -356,6 +359,102 @@ spec:
                   on first successful reconcile so consumers can always read the
                   canonical name regardless of what was written to spec.serviceRef.name.
                 type: string
+              setup:
+                description: |-
+                  Setup is the durable aggregate setup attempt. It does not replace Ready
+                  (authorization) or Provisioned (declared-resource delivery).
+                properties:
+                  authorizedAt:
+                    description: AuthorizedAt is set when external approval/access
+                      authorization finishes.
+                    format: date-time
+                    type: string
+                  backfilled:
+                    description: |-
+                      Backfilled is true when setup tracking began after the request had
+                      already been accepted, such as for entitlements that predate setup
+                      tracking. RequestedAt is then the creation time rather than an observed
+                      request, so the attempt is excluded from setup latency accounting.
+                    type: boolean
+                  configurationRevision:
+                    description: ConfigurationRevision is the UID and generation evaluated
+                      by setup.
+                    type: string
+                  firstCompletedAt:
+                    description: FirstCompletedAt is immutable after the first successful
+                      convergence.
+                    format: date-time
+                    type: string
+                  requestedAt:
+                    description: |-
+                      RequestedAt is the original accepted request time. Provider-initiated
+                      activation carries the originating request timestamp here.
+                    format: date-time
+                    type: string
+                  stages:
+                    description: Stages are the separately observable setup gates.
+                    items:
+                      description: Condition contains details for one aspect of the
+                        current state of this API Resource.
+                      properties:
+                        lastTransitionTime:
+                          description: |-
+                            lastTransitionTime is the last time the condition transitioned from one status to another.
+                            This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                          format: date-time
+                          type: string
+                        message:
+                          description: |-
+                            message is a human readable message indicating details about the transition.
+                            This may be an empty string.
+                          maxLength: 32768
+                          type: string
+                        observedGeneration:
+                          description: |-
+                            observedGeneration represents the .metadata.generation that the condition was set based upon.
+                            For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                            with respect to the current state of the instance.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        reason:
+                          description: |-
+                            reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                            Producers of specific condition types may define expected values and meanings for this field,
+                            and whether the values are considered a guaranteed API.
+                            The value should be a CamelCase string.
+                            This field may not be empty.
+                          maxLength: 1024
+                          minLength: 1
+                          pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                          type: string
+                        status:
+                          description: status of the condition, one of True, False,
+                            Unknown.
+                          enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                          type: string
+                        type:
+                          description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                          maxLength: 316
+                          pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                          type: string
+                      required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    x-kubernetes-list-type: map
+                required:
+                - requestedAt
+                type: object
             type: object
         type: object
     served: true

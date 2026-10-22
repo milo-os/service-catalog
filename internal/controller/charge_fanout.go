@@ -113,6 +113,11 @@ func (f *ChargeFanOut) applyServicePricings(
 				WithMetric(charge.Usage.MetricRef).
 				WithPricingUnit(charge.Usage.PricingUnit).
 				WithRates(billingPricingRatesApplyFor(charge.Usage.Rates)...)
+			if uc := charge.Usage.UnitConversion; uc != nil {
+				spec = spec.WithUnitConversion(billingapply.UnitConversion().
+					WithMeterUnitsPerPricingUnit(uc.MeterUnitsPerPricingUnit).
+					WithDescription(uc.Description))
+			}
 		case servicesv1alpha1.ServiceChargeTypeOneTime:
 			if charge.OneTime == nil {
 				return nil, fmt.Errorf("charge %q: oneTime is required when chargeType is OneTime", charge.Name)

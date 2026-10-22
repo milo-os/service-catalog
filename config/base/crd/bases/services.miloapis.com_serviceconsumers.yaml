@@ -95,6 +95,14 @@ spec:
                 required:
                 - name
                 type: object
+              requestMessage:
+                description: |-
+                  RequestMessage is the consumer's message to the provider, copied from
+                  the ServiceEntitlement's spec.requestMessage so a provider deciding on a
+                  GatedByProvider request can read the consumer's stated use case. Set by
+                  the services controller; providers can't change it.
+                maxLength: 1024
+                type: string
               serviceRef:
                 description: ServiceRef identifies the Service this consumer record
                   is associated with.

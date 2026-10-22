@@ -21,6 +21,7 @@ import (
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -40,6 +41,7 @@ const (
 func capabilityScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	s.AddKnownTypeWithName(capabilityBindingGVK, &unstructured.Unstructured{})
 	s.AddKnownTypeWithName(
 		capabilityBindingGVK.GroupVersion().WithKind(capabilityBindingGVK.Kind+"List"),
@@ -49,6 +51,20 @@ func capabilityScheme() *runtime.Scheme {
 }
 
 func cbRootClient(objs ...client.Object) client.Client {
+	hasProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == cbProject {
+			hasProject = true
+			break
+		}
+	}
+	if !hasProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: cbProject}})
+	}
+	return cbRootClientWithoutProject(objs...)
+}
+
+func cbRootClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(capabilityScheme()).WithObjects(objs...).Build()
 }
 
@@ -158,15 +174,16 @@ func newCapabilityReconciler(rootClient, consumerClient client.Client) *Capabili
 	mgr := newTestManager()
 	mgr.add(cbProject, consumerClient)
 	return &CapabilityBindingReconciler{
-		rootClient: rootClient,
-		Manager:    mgr,
-		Scheme:     capabilityScheme(),
+		rootClient:    rootClient,
+		rootAPIReader: rootClient,
+		Manager:       mgr,
+		Scheme:        capabilityScheme(),
 	}
 }
 
 func cbRequest() mcreconcile.Request {
 	return mcreconcile.Request{
-		Request:     ctrlreconcile.Request{NamespacedName: types.NamespacedName{Name: locationBindingRequestName}},
+		Request:     ctrlreconcile.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
 		ClusterName: cbProject,
 	}
 }
@@ -270,6 +287,81 @@ func TestCapabilityBinding_AllGatesOpen(t *testing.T) {
 	}
 	if labels[labelCapabilityServiceAgent] != cbAgent {
 		t.Errorf("service-agent label = %q, want %q", labels[labelCapabilityServiceAgent], cbAgent)
+	}
+}
+
+func TestCapabilityBinding_DoesNotDropSetupOnProjectCacheMiss(t *testing.T) {
+	cacheClient := cbRootClientWithoutProject(
+		cbServiceObject(),
+		cbAgentObject(servicesv1alpha1.PhasePublished),
+		cbConfigObject(cbConfigV1, "v1", servicesv1alpha1.PhasePublished),
+	)
+	apiReader := cbRootClient()
+	consumer := cbConsumerClient(cbEntitlementActive())
+	mgr := newTestManager()
+	mgr.add(cbProject, consumer)
+	r := &CapabilityBindingReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: capabilityScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), cbRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := getCapabilityBinding(t, consumer, cbAgent); !ok {
+		t.Fatal("cache miss dropped capability projection for a live Project")
+	}
+}
+
+func TestCapabilityBinding_SkipsUnavailableProjectWithoutWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root client.Client
+	}{
+		{name: "missing", root: cbRootClientWithoutProject()},
+		{name: "terminating", root: func() client.Client {
+			now := metav1.Now()
+			return cbRootClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+				Name: cbProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+			}})
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := existingCapabilityBinding(cbAgent)
+			consumer := cbConsumerClient(cbEntitlementActive(), existing)
+			r := newCapabilityReconciler(tc.root, consumer)
+			result, err := r.Reconcile(context.Background(), cbRequest())
+			if err != nil || result != (ctrlreconcile.Result{}) {
+				t.Fatalf("reconcile result=%+v err=%v", result, err)
+			}
+			if _, ok := getCapabilityBinding(t, consumer, cbAgent); !ok {
+				t.Fatal("unavailable project was scanned and its existing binding was mutated")
+			}
+		})
+	}
+}
+
+func TestCapabilityBinding_RetriesDisengagedTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	root := cbRootClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name: cbProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}})
+	r := &CapabilityBindingReconciler{
+		rootClient: root, rootAPIReader: root, Manager: newTestManager(), Scheme: capabilityScheme(),
+	}
+	result, err := r.Reconcile(context.Background(), cbRequest())
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+func TestCapabilityBinding_RetriesDisengagedProject(t *testing.T) {
+	root := cbRootClient()
+	r := &CapabilityBindingReconciler{
+		rootClient: root, rootAPIReader: root, Manager: newTestManager(), Scheme: capabilityScheme(),
+	}
+	result, err := r.Reconcile(context.Background(), cbRequest())
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want retry after %v", result, err, projectLifecycleRetryInterval)
 	}
 }
 

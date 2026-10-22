@@ -107,7 +107,7 @@ type ServiceConfigurationSpec struct {
 	UserInterface *UserInterfaceSpec `json:"userInterface,omitempty"`
 
 	// Locations declares which location classes this service version
-	// supports. The LocationBindingReconciler uses it together with
+	// supports. The LocationProjectionReconciler uses it together with
 	// Location readiness and ServiceAvailability to decide which locations
 	// to project into entitled projects. Class selectors are used rather
 	// than specific location names so new PoPs of a supported class become
@@ -302,6 +302,19 @@ type MetricSpec struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=atomic
 	Dimensions []string `json:"dimensions,omitempty"`
+
+	// Phase retires this metric while the rest of the configuration stays
+	// as it is. Unset, the metric follows spec.phase. Deprecated still
+	// accepts usage and keeps its history; Retired stops accepting usage
+	// (late events are quarantined) and keeps its history. A metric is
+	// retired instead of removed, because invoices, usage queries and
+	// exports join on its name. Moves forward one step at a time
+	// (Published, Deprecated, Retired); its MeterDefinition takes the later
+	// of this and spec.phase.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=Published;Deprecated;Retired
+	Phase Phase `json:"phase,omitempty"`
 }
 
 // ServiceBillingConfig groups all billing routing declarations.

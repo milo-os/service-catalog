@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -68,7 +70,7 @@ func TestRequestWaitTimesOutWhilePending(t *testing.T) {
 
 	err := requesterWith(ec, io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 20 * time.Millisecond})
 	wantExit(t, err, ExitPending, StatePendingApproval)
-	if !strings.Contains(errb.String(), "Still waiting for approval") {
+	if !strings.Contains(errb.String(), "Setup is still waiting on authorization") {
 		t.Fatalf("missing timeout copy:\n%s", errb.String())
 	}
 }
@@ -83,8 +85,36 @@ func TestRequestWaitReachesActive(t *testing.T) {
 	if err := requesterWith(ec, io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 5 * time.Second}); err != nil {
 		t.Fatalf("Request(--wait) = %v, want nil once Active", err)
 	}
-	if !strings.Contains(errb.String(), "is now enabled") {
+	if !strings.Contains(errb.String(), "setup is complete") {
 		t.Fatalf("missing activation copy:\n%s", errb.String())
+	}
+}
+
+func TestRequestWaitDoesNotStopAtAuthorization(t *testing.T) {
+	pending := entitlement("compute", servicesv1alpha1.EntitlementPhasePendingApproval, servicesv1alpha1.ReasonEntitlementPendingApproval, "Waiting for approval.", nil)
+	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "Access granted.", ptrNow())
+	for i := range active.Status.Conditions {
+		if active.Status.Conditions[i].Type == servicesv1alpha1.ConditionTypeSetupComplete {
+			active.Status.Conditions[i].Status = metav1.ConditionFalse
+			active.Status.Conditions[i].Reason = "ProjectionPending"
+		}
+	}
+	active.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
+		RequestedAt: metav1.Now(),
+		Stages: []metav1.Condition{
+			{Type: "Authorization", Status: metav1.ConditionTrue},
+			{Type: "Dependencies", Status: metav1.ConditionTrue},
+			{Type: "Provisioning", Status: metav1.ConditionTrue},
+			{Type: "Projection", Status: metav1.ConditionFalse},
+		},
+	}
+	ec, _ := newFake(withObjects(pending), withWatch(modifiedEvent(active)))
+	io, _, errb := testIO("", false)
+
+	err := requesterWith(ec, io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 20 * time.Millisecond})
+	wantExit(t, err, ExitPending, StateActive)
+	if !strings.Contains(errb.String(), "waiting on Projection") {
+		t.Fatalf("timeout did not report setup blocker:\n%s", errb.String())
 	}
 }
 

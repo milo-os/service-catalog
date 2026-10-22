@@ -1,0 +1,28 @@
+version: "3"
+
+vars:
+  ROOT_DIR: "{{.ROOT_DIR | default .USER_WORKING_DIR}}"
+
+tasks:
+  install:
+    desc: Install pinned Jsonnet dependencies
+    cmds:
+      - jb install
+
+  build:
+    desc: Generate the Service Catalog setup dashboard
+    cmds:
+      - mkdir -p "{{.ROOT_DIR}}/config/components/observability/dashboards/generated"
+      - jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json"
+
+  verify:
+    desc: Verify generated dashboard content and semantic empty states
+    cmds:
+      - |
+        set -eu
+        output="$(mktemp)"
+        trap 'rm -f "$output"' EXIT
+        jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "$output"
+        diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json" "$output"
+        jq empty "$output"
+        python3 verify_dashboard.py "$output"

@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +65,20 @@ func newEntitlement(name, serviceRef string) *servicesv1alpha1.ServiceEntitlemen
 	}
 }
 
+func newServiceRootClient(objs ...client.Object) client.Client {
+	hasConsumerProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == testConsumerProject {
+			hasConsumerProject = true
+			break
+		}
+	}
+	if !hasConsumerProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: testConsumerProject}})
+	}
+	return newFakeClient(objs...)
+}
+
 func entitlementRequest(cluster, name string) mcreconcile.Request {
 	return mcreconcile.Request{
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: name}},
@@ -93,11 +109,103 @@ func reconcileUntilStable(t *testing.T, r *ServiceEntitlementReconciler, req mcr
 	}
 }
 
+func TestServiceEntitlementReconciler_SkipsTerminatingProject(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+	now := metav1.Now()
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              testConsumerProject,
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"resourcemanager.miloapis.com/project"},
+	}}
+
+	rootClient := newServiceRootClient(svc, project)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	result, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil || result != (ctrl.Result{}) {
+		t.Fatalf("reconcile result=%+v err=%v, want quiet no-op", result, err)
+	}
+
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: ent.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Finalizers) != 0 || got.Status.Phase != "" {
+		t.Errorf("terminating project entitlement was mutated: finalizers=%v phase=%q", got.Finalizers, got.Status.Phase)
+	}
+	var consumers servicesv1alpha1.ServiceConsumerList
+	if err := providerClient.List(context.Background(), &consumers); err != nil {
+		t.Fatal(err)
+	}
+	if len(consumers.Items) != 0 {
+		t.Fatalf("terminating project created %d provider consumers", len(consumers.Items))
+	}
+}
+
+func TestServiceEntitlementReconciler_SkipsMissingProject(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	ent := newEntitlement(testServiceSlug, testServiceSlug)
+	rootClient := newFakeClient(svc)
+	consumerClient := newFakeClient(ent)
+	providerClient := newFakeClient()
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	result, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil || result != (ctrl.Result{}) {
+		t.Fatalf("reconcile result=%+v err=%v, want quiet no-op", result, err)
+	}
+	var got servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: ent.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Finalizers) != 0 || got.Status.Phase != "" {
+		t.Errorf("missing project entitlement was mutated: finalizers=%v phase=%q", got.Finalizers, got.Status.Phase)
+	}
+	var consumers servicesv1alpha1.ServiceConsumerList
+	if err := providerClient.List(context.Background(), &consumers); err != nil {
+		t.Fatal(err)
+	}
+	if len(consumers.Items) != 0 {
+		t.Fatalf("missing project created %d provider consumers", len(consumers.Items))
+	}
+}
+
+func TestServiceEntitlementReconciler_RetriesDisengagedProject(t *testing.T) {
+	r := &ServiceEntitlementReconciler{rootClient: newServiceRootClient(), Manager: newTestManager(), Scheme: testScheme()}
+	result, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+func TestServiceEntitlementReconciler_RetriesDisengagedTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	root := newServiceRootClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name: testConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}})
+	r := &ServiceEntitlementReconciler{
+		rootClient: root, rootAPIReader: root, Manager: newTestManager(), Scheme: testScheme(),
+	}
+	result, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
 func TestServiceEntitlementReconciler_SelfServiceActive(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -145,11 +253,35 @@ func TestServiceEntitlementReconciler_SelfServiceActive(t *testing.T) {
 	}
 }
 
+func TestServiceEntitlementReconciler_DoesNotDropSetupOnProjectCacheMiss(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	cacheClient := newFakeClient(svc)
+	apiReader := newServiceRootClient()
+	consumerClient := newFakeClient(newEntitlement(testServiceSlug, testServiceSlug))
+	providerClient := newFakeClient()
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, providerClient)
+	r := &ServiceEntitlementReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: testScheme(),
+	}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var entitlement servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), client.ObjectKey{Name: testServiceSlug}, &entitlement); err != nil {
+		t.Fatal(err)
+	}
+	if entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
+		t.Fatalf("cache miss dropped entitlement setup: phase=%q", entitlement.Status.Phase)
+	}
+}
+
 func TestServiceEntitlementReconciler_GatedPendingApproval(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, servicesv1alpha1.EnablementModeGatedByProvider)
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -204,7 +336,7 @@ func TestServiceEntitlementReconciler_DependencyEntitlementCreated(t *testing.T)
 	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
 	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(parentSvc, depSvc)
+	rootClient := newServiceRootClient(parentSvc, depSvc)
 	// Admission-emulating client: the dependency Service's object name
 	// ("storage") differs from its canonical name ("storage.miloapis.com"),
 	// which is the shape that made the derived entitlement inadmissible.
@@ -257,7 +389,7 @@ func TestServiceEntitlementReconciler_DependencyUnpublished(t *testing.T) {
 	depSvc.Spec.Phase = servicesv1alpha1.PhaseDraft
 	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(parentSvc, depSvc)
+	rootClient := newServiceRootClient(parentSvc, depSvc)
 	// Draft dependency: admission refuses to enable an unpublished service.
 	consumerClient := &admissionClient{Client: newFakeClient(parentEnt), root: newFakeClient(parentSvc)}
 	providerClient := newFakeClient()
@@ -304,7 +436,7 @@ func TestMapServiceToServiceEntitlements(t *testing.T) {
 	other := newEntitlement("other", "other")
 	other.Status.ServiceName = "other.miloapis.com"
 
-	rootClient := newFakeClient(
+	rootClient := newServiceRootClient(
 		svc,
 		&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: testConsumerProject}},
 		&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "empty-project"}},
@@ -359,7 +491,7 @@ func TestServiceEntitlementReconciler_AddsFinalizer(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -386,9 +518,14 @@ func TestServiceEntitlementReconciler_AddsFinalizer(t *testing.T) {
 	}
 }
 
-func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
+func TestServiceEntitlementReconciler_DeleteRemovesConsumerWhileProjectTerminating(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	now := metav1.NewTime(time.Now())
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              testConsumerProject,
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"resourcemanager.miloapis.com/project"},
+	}}
 	ent := &servicesv1alpha1.ServiceEntitlement{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              testServiceSlug,
@@ -408,7 +545,7 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumer(t *testing.T) {
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc, project)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient(existingConsumer)
 
@@ -465,7 +602,7 @@ func TestServiceEntitlementReconciler_DeleteKeepsConsumerWhenSiblingActive(t *te
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(finalizing, sibling)
 	providerClient := newFakeClient(existingConsumer)
 
@@ -506,7 +643,7 @@ func TestServiceEntitlementReconciler_DeleteRemovesConsumerWhenSiblingTerminatin
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(finalizing, terminatingSibling)
 	providerClient := newFakeClient(existingConsumer)
 
@@ -547,7 +684,7 @@ func TestServiceEntitlementReconciler_DeleteIgnoresSiblingForDifferentService(t 
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(finalizing, otherService)
 	providerClient := newFakeClient(existingConsumer)
 
@@ -578,7 +715,7 @@ func TestServiceEntitlementReconciler_StampsCanonicalServiceNameInStatus(t *test
 	// status.serviceName should be stamped with the canonical identifier.
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -632,7 +769,7 @@ func TestServiceEntitlementReconciler_DoesNotRewriteExistingConsumerSpec(t *test
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient(existingConsumer)
 
@@ -674,7 +811,7 @@ func TestResolveService_CanonicalIndexHit(t *testing.T) {
 	svc := newPublishedService("compute-obj-name", testServiceName, testProviderProject, "")
 
 	r := &ServiceEntitlementReconciler{
-		rootClient: newFakeClient(svc),
+		rootClient: newServiceRootClient(svc),
 		Manager:    newTestManager(),
 		Scheme:     testScheme(),
 	}
@@ -701,7 +838,7 @@ func TestResolveService_ObjectNameFallback(t *testing.T) {
 	svc := newPublishedService("compute-obj-name", testServiceName, testProviderProject, "")
 
 	r := &ServiceEntitlementReconciler{
-		rootClient: newFakeClient(svc),
+		rootClient: newServiceRootClient(svc),
 		Manager:    newTestManager(),
 		Scheme:     testScheme(),
 	}
@@ -740,7 +877,7 @@ func TestEnsureDependencies_NoDuplicateByCanonicalName(t *testing.T) {
 		},
 	}
 
-	rootClient := newFakeClient(parentSvc, depSvc)
+	rootClient := newServiceRootClient(parentSvc, depSvc)
 	consumerClient := newFakeClient(parentEnt, preExisting)
 	providerClient := newFakeClient()
 
@@ -818,7 +955,7 @@ func TestServiceEntitlementReconciler_DeleteWaitsForProviderTeardown(t *testing.
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient(gatedConsumer)
 
@@ -874,7 +1011,7 @@ func TestServiceEntitlementReconciler_DeleteCompletesAfterProviderTeardown(t *te
 		},
 	}
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient(gatedConsumer)
 
@@ -926,7 +1063,7 @@ func TestEnsureDependencies_LabelsDependencyForProvenance(t *testing.T) {
 	depSvc := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
 	parentEnt := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(parentSvc, depSvc)
+	rootClient := newServiceRootClient(parentSvc, depSvc)
 	consumerClient := newAdmissionFakeClient(rootClient, parentEnt)
 	providerClient := newFakeClient()
 
@@ -959,7 +1096,7 @@ func TestDependencyOriginSurvivesItsOwnReconcile(t *testing.T) {
 	depEnt := newEntitlement(testDepServiceSlug, testDepServiceSlug)
 	depEnt.Labels = map[string]string{dependencyOfLabel: testServiceSlug}
 
-	rootClient := newFakeClient(depSvc)
+	rootClient := newServiceRootClient(depSvc)
 	consumerClient := newFakeClient(depEnt)
 	providerClient := newFakeClient()
 
@@ -989,7 +1126,7 @@ func TestUnlabelledEntitlementStaysDirect(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -1027,7 +1164,7 @@ func TestServiceEntitlementReconciler_TransitiveDependencyEntitlementCreated(t *
 	leafSvc := newPublishedService(leafSlug, "ipam.miloapis.com", testProviderProject, "")
 	topEnt := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(topSvc, midSvc, leafSvc)
+	rootClient := newServiceRootClient(topSvc, midSvc, leafSvc)
 	consumerClient := newAdmissionFakeClient(rootClient, topEnt)
 	providerClient := newFakeClient()
 
@@ -1085,7 +1222,7 @@ func TestServiceEntitlementReconciler_DependencyCycleConverges(t *testing.T) {
 	svcB := newPublishedService(otherSlug, "storage.miloapis.com", testProviderProject, "", testServiceSlug)
 	entA := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svcA, svcB)
+	rootClient := newServiceRootClient(svcA, svcB)
 	consumerClient := newAdmissionFakeClient(rootClient, entA)
 	providerClient := newFakeClient()
 
@@ -1145,5 +1282,99 @@ func TestServiceEntitlementReconciler_DependencyCycleConverges(t *testing.T) {
 	}
 	if direct.Status.Origin != servicesv1alpha1.EntitlementOriginDirect {
 		t.Errorf("direct entitlement origin = %q, want Direct", direct.Status.Origin)
+	}
+}
+
+// barrierCreateClient holds every create of one named object until two callers
+// have arrived, so a test can force two reconciles past their NotFound check
+// and into Create at the same time.
+type barrierCreateClient struct {
+	client.Client
+	name    string
+	arrived chan struct{}
+}
+
+func (c *barrierCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if obj.GetName() == c.name {
+		c.arrived <- struct{}{}
+		deadline := time.After(2 * time.Second)
+		for len(c.arrived) < cap(c.arrived) {
+			select {
+			case <-deadline:
+				return c.Client.Create(ctx, obj, opts...)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+// Two parents that share a dependency can now be authorized concurrently. Both
+// may try to create the dependency entitlement at once; exactly one must
+// exist afterwards, owned consistently by one parent, and neither parent may
+// fail on anything but a retryable conflict.
+func TestServiceEntitlementReconcilerSharesADependencyUnderConcurrency(t *testing.T) {
+	compute := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", testDepServiceSlug)
+	networking := newPublishedService("networking", "networking.miloapis.com", testProviderProject, "", testDepServiceSlug)
+	storage := newPublishedService(testDepServiceSlug, "storage.miloapis.com", testProviderProject, "")
+	rootClient := newServiceRootClient(compute, networking, storage)
+
+	consumerClient := &barrierCreateClient{
+		Client:  newAdmissionFakeClient(rootClient, newEntitlement(testServiceSlug, testServiceSlug), newEntitlement("networking", "networking")),
+		name:    testDepServiceSlug,
+		arrived: make(chan struct{}, 2),
+	}
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, newFakeClient())
+	r := requeueOnConflict[mcreconcile.Request](&ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, parent := range []string{testServiceSlug, "networking"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				res, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, name))
+				if err != nil {
+					errs <- fmt.Errorf("reconcile %s: %w", name, err)
+					return
+				}
+				if res.RequeueAfter == 0 && i > 2 {
+					return
+				}
+			}
+		}(parent)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if got := len(consumerClient.arrived); got != 2 {
+		t.Fatalf("parents that reached the dependency Create together = %d, want 2", got)
+	}
+
+	var list servicesv1alpha1.ServiceEntitlementList
+	if err := consumerClient.List(context.Background(), &list); err != nil {
+		t.Fatal(err)
+	}
+	var shared []servicesv1alpha1.ServiceEntitlement
+	for _, e := range list.Items {
+		if e.Spec.ServiceRef.Name == testDepServiceSlug {
+			shared = append(shared, e)
+		}
+	}
+	if len(shared) != 1 {
+		t.Fatalf("dependency entitlements = %d, want exactly 1", len(shared))
+	}
+	dep := shared[0]
+	owner := dep.Labels[dependencyOfLabel]
+	if owner != testServiceSlug && owner != "networking" {
+		t.Errorf("dependency-of label = %q, want one of the parents", owner)
+	}
+	if dep.Status.DependencyOf != owner {
+		t.Errorf("status.dependencyOf = %q, disagrees with label %q", dep.Status.DependencyOf, owner)
 	}
 }

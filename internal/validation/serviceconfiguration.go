@@ -5,6 +5,7 @@ package validation
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -33,6 +34,7 @@ func ValidateServiceConfigurationCreate(
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(sc)...)
 	allErrs = append(allErrs, validateMetricUniqueness(sc)...)
 	allErrs = append(allErrs, validateCharges(sc, metricNames)...)
+	allErrs = append(allErrs, validateChargesPriceLiveMetrics(sc)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
@@ -62,6 +64,8 @@ func ValidateServiceConfigurationUpdate(
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(newSC)...)
 	allErrs = append(allErrs, validateMetricUniqueness(newSC)...)
 	allErrs = append(allErrs, validateCharges(newSC, metricNames)...)
+	allErrs = append(allErrs, validateChargesPriceLiveMetrics(newSC)...)
+	allErrs = append(allErrs, validateMetricPhaseTransitions(oldSC, newSC)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
 	allErrs = append(allErrs, validateQuotaRefs(newSC, metricNames)...)
@@ -330,6 +334,96 @@ func validateServicePricingNameUniqueness(sc *servicesv1alpha1.ServiceConfigurat
 	return allErrs
 }
 
+// positiveDecimal matches a positive decimal string without a sign or
+// exponent, e.g. "1073741824" or "0.001".
+var positiveDecimal = regexp.MustCompile(`^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)$`)
+
+// validateUnitConversion requires a positive factor and a description of why
+// the conversion is there.
+func validateUnitConversion(uc *servicesv1alpha1.UnitConversion, fldPath *field.Path) field.ErrorList {
+	if uc == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	if !positiveDecimal.MatchString(uc.MeterUnitsPerPricingUnit) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("meterUnitsPerPricingUnit"), uc.MeterUnitsPerPricingUnit,
+			"must be a positive decimal, e.g. \"1073741824\" for a metric in bytes priced per GiB",
+		))
+	}
+	if strings.TrimSpace(uc.Description) == "" {
+		allErrs = append(allErrs, field.Required(
+			fldPath.Child("description"),
+			"explain why usage is converted, e.g. \"Memory is metered in byte-seconds and priced per GiB-second\"",
+		))
+	}
+	return allErrs
+}
+
+// validateChargesPriceLiveMetrics rejects a Usage charge on a Retired
+// metric: a retired metric no longer accepts usage, so the charge could
+// never bill. Remove the charge before retiring the metric.
+func validateChargesPriceLiveMetrics(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	retired := make(map[string]struct{})
+	for _, m := range sc.Spec.Metrics {
+		if m.Phase == servicesv1alpha1.PhaseRetired {
+			retired[m.Name] = struct{}{}
+		}
+	}
+	if len(retired) == 0 {
+		return nil
+	}
+	var allErrs field.ErrorList
+	for i, charge := range sc.Spec.Charges {
+		if charge.Usage == nil {
+			continue
+		}
+		if _, ok := retired[charge.Usage.MetricRef]; ok {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "charges").Index(i).Child("usage", "metricRef"), charge.Usage.MetricRef,
+				"prices a retired metric, which no longer accepts usage; remove the charge before retiring the metric",
+			))
+		}
+	}
+	return allErrs
+}
+
+// metricPhaseTransitionMessage is the error text for a metric phase change
+// that skips ahead or moves back.
+const metricPhaseTransitionMessage = "a metric only moves forward through its lifecycle, one step at a time (Published, then Deprecated, then Retired), and cannot move back or skip ahead"
+
+// validateMetricPhaseTransitions enforces the forward-only lifecycle on each
+// metric that exists in both versions. An unset phase counts as Published.
+func validateMetricPhaseTransitions(oldSC, newSC *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	oldPhases := make(map[string]servicesv1alpha1.Phase, len(oldSC.Spec.Metrics))
+	for _, m := range oldSC.Spec.Metrics {
+		oldPhases[m.Name] = metricPhase(m)
+	}
+	var allErrs field.ErrorList
+	for i, m := range newSC.Spec.Metrics {
+		oldPhase, ok := oldPhases[m.Name]
+		if !ok {
+			continue
+		}
+		newPhase := metricPhase(m)
+		if oldPhase != newPhase && phaseOrder(newPhase) != phaseOrder(oldPhase)+1 {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "metrics").Index(i).Child("phase"), string(m.Phase), metricPhaseTransitionMessage,
+			))
+		}
+	}
+	return allErrs
+}
+
+// metricPhase is a metric's own lifecycle position; unset counts as
+// Published.
+func metricPhase(m servicesv1alpha1.MetricSpec) servicesv1alpha1.Phase {
+	if m.Phase == "" {
+		return servicesv1alpha1.PhasePublished
+	}
+	return m.Phase
+}
+
 // encodeServicePricingName mirrors controller.encodeServicePricingName so
 // admission can reject collisions before fan-out. Keep in sync with
 // internal/controller/names.go.
@@ -406,6 +500,7 @@ func validateChargeEntry(
 		} else {
 			allErrs = append(allErrs, validatePricingRateEntries(charge.Usage.Rates, usagePath.Child("rates"))...)
 		}
+		allErrs = append(allErrs, validateUnitConversion(charge.Usage.UnitConversion, usagePath.Child("unitConversion"))...)
 	case servicesv1alpha1.ServiceChargeTypeOneTime:
 		if charge.Usage != nil {
 			allErrs = append(allErrs, field.Forbidden(

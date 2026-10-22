@@ -72,7 +72,7 @@ func newDecisionFixture(t *testing.T, mode servicesv1alpha1.EnablementMode, cons
 
 	f := &decisionFixture{
 		r: &ServiceEntitlementReconciler{
-			rootClient: newFakeClient(svc),
+			rootClient: newServiceRootClient(svc),
 			Manager:    mgr,
 			Scheme:     testScheme(),
 		},

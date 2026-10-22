@@ -17,7 +17,7 @@ func newEnableCommand(opts ServicesCommandOptions) *cobra.Command {
 		Long: `Submit a request to enable a Datum Cloud service for the current project.
 
 Approval may be a manual step by the service provider — use --wait to block
-until the platform reaches an answer, or check back later with
+until access, dependencies, provisioning, and catalog projection complete, or check back later with
 "datumctl services status <name>".`,
 		Example: `  # Request access and return immediately
   datumctl services enable compute
@@ -35,7 +35,7 @@ until the platform reaches an answer, or check back later with
 
 	cmd.Flags().StringVar(&ropts.Message, "message", "", "Justification sent to the service provider with the request")
 	cmd.Flags().BoolVar(&ropts.Renew, "renew", false, "Delete a denied or revoked request and submit a new one")
-	cmd.Flags().BoolVar(&ropts.Wait, "wait", false, "Wait until access becomes active (approval is a manual provider step)")
+	cmd.Flags().BoolVar(&ropts.Wait, "wait", false, "Wait until aggregate service setup completes")
 	cmd.Flags().DurationVar(&ropts.Timeout, "timeout", 0, "Maximum time to wait when --wait is set (0 uses the SDK's own default)")
 
 	return cmd

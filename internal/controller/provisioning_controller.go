@@ -4,10 +4,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,17 +20,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/internal/provisioning"
 )
+
+const labelServiceName = "services.miloapis.com/service-name"
 
 const (
 	// provisioningResyncInterval bounds how long a change no watch here observes
@@ -40,6 +46,18 @@ const (
 	// may get when nothing else changed, so a dead fan-out stays detectable
 	// without patching on every five-minute resync.
 	provisioningHeartbeatInterval = time.Hour
+
+	// provisioningMaxConcurrentReconciles is how many entitlements this
+	// controller provisions at once. A reconcile spends most of its time on API
+	// round-trips to one consumer project; running them serially lets a slow or
+	// rate-limited project hold up unrelated projects behind it.
+	//
+	// Five matches the other project fan-out controllers and keeps the extra API
+	// pressure modest. Parallel reconciles remain isolated: every status patch
+	// targets its triggering entitlement, while object pruning is restricted by
+	// that entitlement's name and controller owner UID. Server-side apply makes
+	// repeated writes atomic and idempotent.
+	provisioningMaxConcurrentReconciles = 5
 
 	// provisioningFieldManager identifies writes this reconciler makes, to
 	// installed objects and to the entitlement's provisioning status. It
@@ -77,8 +95,9 @@ const (
 
 	// maxLedgerMessageBytes matches the schema's MaxLength for a ledger entry's
 	// message. A declaration that installs many objects collects one note per
-	// object and can exceed the limit. The API server refuses an over-long
-	// message, which loses the whole ledger write.
+	// object, and a failure message embeds the API server's own error; either
+	// can exceed the limit. The API server refuses an over-long message, which
+	// loses the whole ledger write, so writeStatus truncates every entry.
 	maxLedgerMessageBytes = 1024
 
 	// authorizationCaveat explains the gap to the consumer, on every installed
@@ -106,15 +125,17 @@ const (
 type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
-	// cannot see them. Mirrors LocationBindingReconciler.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	// cannot see them. Mirrors LocationProjectionReconciler.
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 // This controller holds no per-kind RBAC grants, and could not: the kinds are
 // named by providers at runtime and the operator's certificate carries
 // system:masters, so RBAC bounds nothing here. What bounds it is where the
@@ -134,8 +155,22 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, fmt.Errorf("provisioning reconcile invoked without a cluster name")
 	}
 
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// The queued entitlement may be deleting and need explicit pruning.
+			// Retry every confirmed Project until its control plane is reachable;
+			// only a confirmed-absent Project is safe to forget.
+			if project != nil {
+				return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
@@ -164,6 +199,11 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, r.writeStatus(ctx, consumerClient, &entitlement, nil,
 			servicesv1alpha1.ReasonEntitlementNotActive,
 			"Resources are installed once this service is enabled and any approval has been granted.")
+	}
+
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		logger.V(1).Info("project is absent or terminating; skipping provisioning")
+		return ctrl.Result{}, nil
 	}
 
 	serviceRefName := entitlement.Spec.ServiceRef.Name
@@ -453,7 +493,12 @@ func truncateMessage(message string, limit int) string {
 		return message
 	}
 	const ellipsis = "..."
-	return message[:limit-len(ellipsis)] + ellipsis
+	cut := limit - len(ellipsis)
+	// Never split a multi-byte character: the result must stay valid UTF-8.
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return message[:cut] + ellipsis
 }
 
 // prune deletes objects this declaration previously installed that it no longer
@@ -643,11 +688,9 @@ func union(a, b []schema.GroupVersionKind) []schema.GroupVersionKind {
 // writeStatus records the ledger and the Provisioned condition on the
 // entitlement, in the consumer's own control plane.
 //
-// The condition is patched rather than written with the rest of the status:
-// ServiceEntitlementReconciler owns Ready and ProjectSuspensionPropagation owns
-// Suspended on the same object, so a full status update would have the three
-// clobbering each other. Ready stays untouched here, because a delivery failure
-// is not a denial of access.
+// Only provisioningStatusOwner's fields are applied: other controllers own
+// Ready, Suspended and setup on the same object. Ready stays untouched here,
+// because a delivery failure is not a denial of access.
 func (r *ProvisioningReconciler) writeStatus(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -658,6 +701,9 @@ func (r *ProvisioningReconciler) writeStatus(
 	before := entitlement.DeepCopy()
 
 	sort.Slice(ledger, func(i, j int) bool { return ledger[i].Name < ledger[j].Name })
+	for i := range ledger {
+		ledger[i].Message = truncateMessage(ledger[i].Message, maxLedgerMessageBytes)
+	}
 	entitlement.Status.ProvisionedResources = ledger
 
 	status := metav1.ConditionTrue
@@ -700,10 +746,10 @@ func (r *ProvisioningReconciler) writeStatus(
 		ObservedGeneration: entitlement.Generation,
 	})
 
-	// Nothing changed: skip the patch, or every resync bumps resourceVersion
+	// Nothing changed: skip the write, or every resync bumps resourceVersion
 	// and re-triggers every other controller watching ServiceEntitlement.
 	changed := !apiequality.Semantic.DeepEqual(before.Status.ProvisionedResources, entitlement.Status.ProvisionedResources) ||
-		!apiequality.Semantic.DeepEqual(before.Status.Conditions, entitlement.Status.Conditions)
+		!conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
 	stale := before.Status.LastProvisioningEvaluation == nil ||
 		time.Since(before.Status.LastProvisioningEvaluation.Time) >= provisioningHeartbeatInterval
 	if !changed && !stale {
@@ -713,9 +759,8 @@ func (r *ProvisioningReconciler) writeStatus(
 	now := metav1.Now()
 	entitlement.Status.LastProvisioningEvaluation = &now
 
-	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before),
-		client.FieldOwner(provisioningFieldManager)); err != nil {
-		return fmt.Errorf("failed to patch ServiceEntitlement provisioning status: %w", err)
+	if err := applyEntitlementStatus(ctx, consumerClient, provisioningStatusOwner, before, entitlement); err != nil {
+		return fmt.Errorf("failed to apply ServiceEntitlement provisioning status: %w", err)
 	}
 	return nil
 }
@@ -764,6 +809,7 @@ func activePublishedConfiguration(
 // newly labelled source object converges on the resync.
 func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-provisioning").
@@ -776,5 +822,8 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 					return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
 				}),
 		)).
-		Complete(r)
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: provisioningMaxConcurrentReconciles,
+		}).
+		Complete(requeueOnConflict(r))
 }

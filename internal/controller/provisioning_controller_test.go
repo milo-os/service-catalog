@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -21,8 +23,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -47,6 +51,7 @@ var (
 func provScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	for _, gvk := range []schema.GroupVersionKind{ipClassGVK, ipPoolGVK} {
 		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
@@ -55,6 +60,20 @@ func provScheme() *runtime.Scheme {
 }
 
 func provClient(objs ...client.Object) client.Client {
+	hasProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == provConsumerProject {
+			hasProject = true
+			break
+		}
+	}
+	if !hasProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: provConsumerProject}})
+	}
+	return provClientWithoutProject(objs...)
+}
+
+func provClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
 		WithObjects(objs...).
@@ -66,9 +85,33 @@ func provClient(objs ...client.Object) client.Client {
 func provConsumerClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		Build()
+}
+
+// blockingApplyClient holds the first object apply so a test can prove several
+// projects enter the write path together. Each project gets its own client,
+// matching the isolation provided by the multicluster manager in production.
+type blockingApplyClient struct {
+	client.Client
+	project string
+	entered chan<- string
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingApplyClient) Apply(
+	ctx context.Context,
+	obj runtime.ApplyConfiguration,
+	opts ...client.ApplyOption,
+) error {
+	c.once.Do(func() {
+		c.entered <- c.project
+		<-c.release
+	})
+	return c.Client.Apply(ctx, obj, opts...)
 }
 
 func provEntitlementObj(phase servicesv1alpha1.EntitlementPhase) *servicesv1alpha1.ServiceEntitlement {
@@ -118,7 +161,7 @@ func newProvReconciler(root client.Client, clusters map[string]client.Client) *P
 	for name, c := range clusters {
 		mgr.add(name, c)
 	}
-	return &ProvisioningReconciler{rootClient: root, Manager: mgr, Scheme: provScheme()}
+	return &ProvisioningReconciler{rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: provScheme()}
 }
 
 func provReconcile(t *testing.T, r *ProvisioningReconciler) ctrl.Result {
@@ -213,6 +256,209 @@ func TestProvisioningInstallsDeclaredObjectsForActiveEntitlement(t *testing.T) {
 	}
 	if len(entry.Kinds) != 1 || entry.Kinds[0].Kind != "IPClass" || entry.Kinds[0].Version != "v1alpha1" {
 		t.Errorf("ledger does not record what was installed: %+v", entry.Kinds)
+	}
+}
+
+func TestProvisioningDoesNotDropSetupOnProjectCacheMiss(t *testing.T) {
+	cacheClient := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	apiReader := provClient()
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	mgr := newTestManager()
+	mgr.add(provConsumerProject, consumer)
+	r := &ProvisioningReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: provScheme(),
+	}
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 1 {
+		t.Fatalf("cache miss dropped provisioning; installed %d objects, want 1", len(list.Items))
+	}
+}
+
+func TestProvisioningSkipsTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              provConsumerProject,
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"resourcemanager.miloapis.com/project"},
+	}}
+	root := provClient(project, provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("terminating project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("terminating project received a provisioning status write")
+	}
+}
+
+func TestProvisioningPrunesInactiveEntitlementWhileProjectTerminates(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+	if got := len(listClasses(t, consumer).Items); got != 1 {
+		t.Fatalf("precondition: installed objects = %d, want 1", got)
+	}
+
+	var project resourcemanagerv1alpha1.Project
+	if err := root.Get(context.Background(), client.ObjectKey{Name: provConsumerProject}, &project); err != nil {
+		t.Fatal(err)
+	}
+	project.Finalizers = []string{"test"}
+	if err := root.Update(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Delete(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+
+	entitlement := getEntitlement(t, consumer)
+	entitlement.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), entitlement); err != nil {
+		t.Fatal(err)
+	}
+	provReconcile(t, r)
+
+	if got := len(listClasses(t, consumer).Items); got != 0 {
+		t.Fatalf("terminating project retained %d explicitly provisioned objects", got)
+	}
+	condition := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
+		servicesv1alpha1.ConditionTypeProvisioned)
+	if condition == nil || condition.Reason != servicesv1alpha1.ReasonEntitlementNotActive {
+		t.Fatalf("teardown status = %#v, want EntitlementNotActive", condition)
+	}
+}
+
+func TestProvisioningSkipsMissingProject(t *testing.T) {
+	root := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("missing project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("missing project received a provisioning status write")
+	}
+}
+
+func TestProvisioningRetriesDisengagedProject(t *testing.T) {
+	r := newProvReconciler(provClient(), nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+func TestProvisioningRetriesDisengagedTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	root := provClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name: provConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}})
+	r := newProvReconciler(root, nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+// Reconciles for distinct projects must not share mutable state. The controller
+// runs several workers so an API round-trip in one project cannot block every
+// project behind it; this test holds all object writes until every project has
+// reached the write path, then verifies each result kept its own owner.
+func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) {
+	const projectCount = provisioningMaxConcurrentReconciles
+
+	rootObjects := []client.Object{provConfig(ipClassRef("tenant-endpoint-ipv6"))}
+	entered := make(chan string, projectCount)
+	release := make(chan struct{})
+	consumers := make(map[string]client.Client, projectCount)
+	managed := make(map[string]client.Client, projectCount)
+	wantUID := make(map[string]types.UID, projectCount)
+
+	for i := range projectCount {
+		project := fmt.Sprintf("consumer-proj-%d", i)
+		rootObjects = append(rootObjects, &resourcemanagerv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: project},
+		})
+		uid := types.UID(project + "-entitlement")
+		entitlement := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
+		entitlement.UID = uid
+		consumer := provConsumerClient(entitlement)
+		consumers[project] = consumer
+		wantUID[project] = uid
+		managed[project] = &blockingApplyClient{
+			Client:  consumer,
+			project: project,
+			entered: entered,
+			release: release,
+		}
+	}
+
+	root := provClient(rootObjects...)
+	r := newProvReconciler(root, managed)
+	errCh := make(chan error, projectCount)
+	var wg sync.WaitGroup
+	for project := range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+				ClusterName: multicluster.ClusterName(project),
+			})
+			errCh <- err
+		}()
+	}
+
+	seen := make(map[string]struct{}, projectCount)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for len(seen) < projectCount {
+		select {
+		case project := <-entered:
+			seen[project] = struct{}{}
+		case <-timer.C:
+			close(release)
+			wg.Wait()
+			t.Fatalf("only %d of %d projects reached the apply path concurrently", len(seen), projectCount)
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent reconcile: %v", err)
+		}
+	}
+
+	for project, consumer := range consumers {
+		items := listClasses(t, consumer).Items
+		if len(items) != 1 {
+			t.Fatalf("project %q installed %d objects, want 1", project, len(items))
+		}
+		if !ownedBy(items[0].GetOwnerReferences(), wantUID[project]) {
+			t.Errorf("project %q object has another project's owner: %+v", project, items[0].GetOwnerReferences())
+		}
+		entry := getEntitlement(t, consumer).Status.ProvisionedResources
+		if len(entry) != 1 || entry[0].State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+			t.Errorf("project %q ledger did not converge: %+v", project, entry)
+		}
 	}
 }
 
@@ -586,6 +832,7 @@ func provStatusConsumerClient(objs ...client.Object) client.Client {
 	ipClass.SetGroupVersionKind(ipClassGVK)
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		Build()
@@ -722,11 +969,15 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	var applied []string
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClassObject()).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				body, err := json.Marshal(obj)
 				if err != nil {
 					return err
@@ -765,6 +1016,19 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	}
 }
 
+// isEntitlementApply tells the entitlement's own status apply apart from the
+// installed object's, so an interceptor aimed at the latter lets it through.
+func isEntitlementApply(obj runtime.ApplyConfiguration) bool {
+	body, err := json.Marshal(obj)
+	if err != nil {
+		return false
+	}
+	var typed struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal(body, &typed) == nil && typed.Kind == "ServiceEntitlement"
+}
+
 func ipClassObject() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(ipClassGVK)
@@ -779,11 +1043,15 @@ func TestProvisioningReportsAStatusAnotherControllerOwns(t *testing.T) {
 	ipClass := ipClassObject()
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				return apierrors.NewConflict(
 					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
 					"tenant-endpoint-ipv6",
@@ -830,5 +1098,51 @@ func TestLedgerMessageIsTruncatedToTheSchemaLimit(t *testing.T) {
 	}
 	if got := truncateMessage("short", maxLedgerMessageBytes); got != "short" {
 		t.Errorf("a message inside the limit was rewritten: %q", got)
+	}
+}
+
+// A failed install embeds the API server's error, which has no length bound.
+// An over-long ledger message makes the API server refuse the whole status
+// write, hiding the failure and retrying it with backoff.
+func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
+	longCause := strings.Repeat("admission webhook denied the request; ", 60)
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				return apierrors.NewBadRequest(longCause)
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	ledger := getEntitlement(t, consumer).Status.ProvisionedResources
+	if len(ledger) != 1 {
+		t.Fatalf("ledger = %+v, want one entry", ledger)
+	}
+	if ledger[0].State != servicesv1alpha1.ProvisionedResourceStateFailed {
+		t.Errorf("state = %q, want %q", ledger[0].State, servicesv1alpha1.ProvisionedResourceStateFailed)
+	}
+	if got := len(ledger[0].Message); got > maxLedgerMessageBytes {
+		t.Errorf("failure message is %d bytes, above the %d byte schema limit", got, maxLedgerMessageBytes)
+	}
+	if !strings.HasPrefix(ledger[0].Message, provServiceName) && !strings.Contains(ledger[0].Message, "could not install") {
+		t.Errorf("truncation lost the start of the message: %q", ledger[0].Message[:80])
+	}
+}
+
+func TestLedgerMessageTruncationKeepsCharactersWhole(t *testing.T) {
+	message := truncateMessage(strings.Repeat("é", maxLedgerMessageBytes), maxLedgerMessageBytes)
+	if len(message) > maxLedgerMessageBytes {
+		t.Errorf("truncated message is %d bytes, above %d", len(message), maxLedgerMessageBytes)
+	}
+	if !utf8.ValidString(message) {
+		t.Errorf("truncation split a multi-byte character")
 	}
 }

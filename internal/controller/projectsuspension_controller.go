@@ -31,9 +31,9 @@ const (
 
 	// suspendedConditionFieldManager is the field manager both writers of the
 	// Suspended condition — this reconciler and ServiceEntitlementReconciler
-	// — pass to client.FieldOwner on their merge patch, mirroring the
-	// pattern Milo's own ProjectSuspensionPropagatorController uses for the
-	// Project's Suspended condition.
+	// — write it under: a merge patch on ServiceConsumer, mirroring Milo's own
+	// ProjectSuspensionPropagatorController, and server-side apply on
+	// ServiceEntitlement.
 	suspendedConditionFieldManager = "services-suspended-condition"
 )
 
@@ -92,22 +92,25 @@ func patchConsumerSuspendedCondition(ctx context.Context, providerClient client.
 	if conditionsEqual(before.Status.Conditions, consumer.Status.Conditions, ConditionTypeSuspended) {
 		return nil
 	}
-	if err := providerClient.Status().Patch(ctx, consumer, client.MergeFrom(before), client.FieldOwner(suspendedConditionFieldManager)); err != nil {
+	// Locked like the entitlement-side patch: the merge patch carries the whole
+	// conditions list, so a stale copy would erase other writers' conditions.
+	if err := providerClient.Status().Patch(ctx, consumer,
+		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
+		client.FieldOwner(suspendedConditionFieldManager)); err != nil {
 		return fmt.Errorf("failed to patch ServiceConsumer status: %w", err)
 	}
 	return nil
 }
 
 // patchEntitlementSuspendedCondition is patchConsumerSuspendedCondition's
-// counterpart for the ServiceEntitlement side of the propagation.
+// counterpart for the ServiceEntitlement side of the propagation. An
+// entitlement's conditions have several concurrent writers, so it applies only
+// the Suspended condition under suspendedConditionOwner.
 func patchEntitlementSuspendedCondition(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, suspension projectSuspension) error {
 	before := entitlement.DeepCopy()
 	apimeta.SetStatusCondition(&entitlement.Status.Conditions, suspendedCondition(suspension, entitlement.Generation))
-	if conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, ConditionTypeSuspended) {
-		return nil
-	}
-	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before), client.FieldOwner(suspendedConditionFieldManager)); err != nil {
-		return fmt.Errorf("failed to patch ServiceEntitlement status: %w", err)
+	if err := applyEntitlementStatus(ctx, consumerClient, suspendedConditionOwner, before, entitlement); err != nil {
+		return fmt.Errorf("failed to apply ServiceEntitlement Suspended condition: %w", err)
 	}
 	return nil
 }
@@ -229,5 +232,5 @@ func (r *ProjectSuspensionPropagationReconciler) SetupWithManager(mgr ctrl.Manag
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&resourcemanagerv1alpha1.Project{}).
 		Named("project-suspension-propagation").
-		Complete(r)
+		Complete(requeueOnConflict(r))
 }
