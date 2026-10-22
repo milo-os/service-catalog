@@ -30,6 +30,7 @@ import (
 type ServiceConsumerReconciler struct {
 	Manager mcmanager.Manager
 	Scheme  *runtime.Scheme
+	wakeups *engagementWakeups
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
@@ -101,10 +102,14 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	if consumerProject == "" {
 		return ctrl.Result{}, nil
 	}
-	consumerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(consumerProject))
+	consumerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(consumerProject), req)
 	if err != nil {
-		logger.Info("consumer cluster unavailable, requeuing", "consumerProject", consumerProject, "err", err)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, err
+	}
+	if !ok {
+		// The consumer project's engagement re-enqueues this request.
+		logger.Info("consumer cluster not yet available; waiting for engagement", "consumerProject", consumerProject)
+		return ctrl.Result{}, nil
 	}
 	consumerClient := consumerCluster.GetClient()
 
@@ -203,8 +208,13 @@ func updateConsumerStatus(ctx context.Context, providerClient client.Client, con
 // project virtual control planes, not the root cluster.
 func (r *ServiceConsumerReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
+	r.wakeups = newEngagementWakeups()
+	if err := mgr.Add(r.wakeups); err != nil {
+		return fmt.Errorf("failed to register consumer engagement wakeups: %w", err)
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-consumer").
 		For(&servicesv1alpha1.ServiceConsumer{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WatchesRawSource(r.wakeups.source()).
 		Complete(r)
 }

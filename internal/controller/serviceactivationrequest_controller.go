@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,15 +12,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -47,83 +43,10 @@ type ServiceActivationRequestReconciler struct {
 	rootAPIReader client.Reader
 	Manager       mcmanager.Manager
 	Scheme        *runtime.Scheme
-	wakeups       *activationRequestWakeups
+	wakeups       *engagementWakeups
 }
 
-// activationRequestWakeups remembers requests waiting for a consumer project
-// connection. The multicluster manager calls Engage when that project becomes
-// available; the synthetic event then places each dependent provider-side
-// request back on the controller's queue without a polling interval.
-type activationRequestWakeups struct {
-	mu      sync.Mutex
-	waiting map[multicluster.ClusterName]map[mcreconcile.Request]struct{}
-	events  chan event.TypedGenericEvent[mcreconcile.Request]
-}
-
-func newActivationRequestWakeups() *activationRequestWakeups {
-	return &activationRequestWakeups{
-		waiting: make(map[multicluster.ClusterName]map[mcreconcile.Request]struct{}),
-		events:  make(chan event.TypedGenericEvent[mcreconcile.Request], 1024),
-	}
-}
-
-func (w *activationRequestWakeups) waitFor(clusterName multicluster.ClusterName, req mcreconcile.Request) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.waiting[clusterName] == nil {
-		w.waiting[clusterName] = make(map[mcreconcile.Request]struct{})
-	}
-	w.waiting[clusterName][req] = struct{}{}
-}
-
-func (w *activationRequestWakeups) forget(clusterName multicluster.ClusterName, req mcreconcile.Request) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	delete(w.waiting[clusterName], req)
-	if len(w.waiting[clusterName]) == 0 {
-		delete(w.waiting, clusterName)
-	}
-}
-
-func (w *activationRequestWakeups) Engage(ctx context.Context, name multicluster.ClusterName, _ cluster.Cluster) error {
-	w.mu.Lock()
-	requests := w.waiting[name]
-	delete(w.waiting, name)
-	w.mu.Unlock()
-
-	// Engage must remain non-blocking even when many requests depend on the
-	// same project. If that project disengages before delivery completes,
-	// retain the unsent requests for its next engagement.
-	go func() {
-		for req := range requests {
-			select {
-			case w.events <- event.TypedGenericEvent[mcreconcile.Request]{Object: req}:
-				delete(requests, req)
-			case <-ctx.Done():
-				w.mu.Lock()
-				if w.waiting[name] == nil {
-					w.waiting[name] = make(map[mcreconcile.Request]struct{})
-				}
-				for pending := range requests {
-					w.waiting[name][pending] = struct{}{}
-				}
-				w.mu.Unlock()
-				return
-			}
-		}
-	}()
-	return nil
-}
-
-func (w *activationRequestWakeups) Start(ctx context.Context) error {
-	<-ctx.Done()
-	return nil
-}
-
-func (*activationRequestWakeups) NeedLeaderElection() bool { return false }
-
-var _ mcmanager.Runnable = (*activationRequestWakeups)(nil)
-var _ manager.LeaderElectionRunnable = (*activationRequestWakeups)(nil)
+var _ manager.LeaderElectionRunnable = (*engagementWakeups)(nil)
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceactivationrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceactivationrequests/status,verbs=get;update;patch
@@ -379,7 +302,7 @@ func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Ma
 	r.rootClient = rootMgr.GetAPIReader()
 	r.rootAPIReader = r.rootClient
 	r.Manager = mcMgr
-	r.wakeups = newActivationRequestWakeups()
+	r.wakeups = newEngagementWakeups()
 	if err := mcMgr.Add(r.wakeups); err != nil {
 		return fmt.Errorf("failed to register activation request engagement wakeups: %w", err)
 	}
@@ -394,13 +317,6 @@ func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Ma
 			},
 			mcbuilder.WithEngageWithProviderClusters(true),
 		).
-		WatchesRawSource(source.TypedChannel(
-			r.wakeups.events,
-			handler.TypedFuncs[mcreconcile.Request, mcreconcile.Request]{
-				GenericFunc: func(_ context.Context, evt event.TypedGenericEvent[mcreconcile.Request], q workqueue.TypedRateLimitingInterface[mcreconcile.Request]) {
-					q.Add(evt.Object)
-				},
-			},
-		)).
+		WatchesRawSource(r.wakeups.source()).
 		Complete(requeueOnConflict(r))
 }
