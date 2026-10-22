@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -122,14 +124,16 @@ type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
 	// cannot see them. Mirrors LocationProjectionReconciler.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 // This controller holds no per-kind RBAC grants, and could not: the kinds are
 // named by providers at runtime and the operator's certificate carries
 // system:masters, so RBAC bounds nothing here. What bounds it is where the
@@ -149,8 +153,22 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, fmt.Errorf("provisioning reconcile invoked without a cluster name")
 	}
 
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// The queued entitlement may be deleting and need explicit pruning.
+			// Retry every confirmed Project until its control plane is reachable;
+			// only a confirmed-absent Project is safe to forget.
+			if project != nil {
+				return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
@@ -179,6 +197,11 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, r.writeStatus(ctx, consumerClient, &entitlement, nil,
 			servicesv1alpha1.ReasonEntitlementNotActive,
 			"Resources are installed once this service is enabled and any approval has been granted.")
+	}
+
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		logger.V(1).Info("project is absent or terminating; skipping provisioning")
+		return ctrl.Result{}, nil
 	}
 
 	serviceRefName := entitlement.Spec.ServiceRef.Name
@@ -779,6 +802,7 @@ func activePublishedConfiguration(
 // newly labelled source object converges on the resync.
 func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-provisioning").

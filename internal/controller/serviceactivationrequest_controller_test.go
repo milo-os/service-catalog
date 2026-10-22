@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -15,6 +16,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -46,7 +48,7 @@ func TestServiceActivationRequestReconcilerDoesNotResolveMetadataName(t *testing
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
 	activation.Spec.ServiceRef.Name = svc.Name
-	r := &ServiceActivationRequestReconciler{rootClient: newFakeClient(svc)}
+	r := &ServiceActivationRequestReconciler{rootClient: newServiceRootClient(svc)}
 
 	_, err := r.resolveService(context.Background(), activation.Spec.ServiceRef.Name)
 	if !apierrors.IsNotFound(err) {
@@ -64,7 +66,7 @@ func activationRequest(cluster, name string) mcreconcile.Request {
 func TestServiceActivationRequestReconcilerCreatesEntitlementWithProvenance(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	providerClient := newFakeClient(activation)
 	consumerClient := newFakeClient()
 	mgr := newTestManager()
@@ -115,6 +117,173 @@ func TestServiceActivationRequestReconcilerCreatesEntitlementWithProvenance(t *t
 	}
 }
 
+func TestServiceActivationRequestReconcilerDoesNotFailOnProjectCacheMiss(t *testing.T) {
+	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
+	cacheClient := newFakeClient(svc) // Deliberately missing the live Project.
+	apiReader := newServiceRootClient()
+	providerClient := newFakeClient(activation)
+	consumerClient := newFakeClient()
+	mgr := newTestManager()
+	mgr.add(testProviderProject, providerClient)
+	mgr.add(testConsumerProject, consumerClient)
+	r := &ServiceActivationRequestReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: testScheme(),
+	}
+
+	if _, err := r.Reconcile(context.Background(), activationRequest(testProviderProject, activation.Name)); err != nil {
+		t.Fatal(err)
+	}
+	var entitlement servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), client.ObjectKey{Name: testServiceSlug}, &entitlement); err != nil {
+		t.Fatalf("cache miss dropped activation instead of creating entitlement: %v", err)
+	}
+	var got servicesv1alpha1.ServiceActivationRequest
+	if err := providerClient.Get(context.Background(), client.ObjectKey{Name: activation.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase == servicesv1alpha1.ServiceActivationRequestPhaseFailed ||
+		got.Status.Phase == servicesv1alpha1.ServiceActivationRequestPhaseDisabled {
+		t.Fatalf("cache miss produced terminal activation status: %#v", got.Status)
+	}
+}
+
+func TestServiceActivationRequestReconcilerRejectsUnavailableConsumerProject(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		root   func(*servicesv1alpha1.Service) client.Client
+	}{
+		{
+			name:   "missing",
+			reason: "ConsumerProjectNotFound",
+			root:   func(svc *servicesv1alpha1.Service) client.Client { return newFakeClient(svc) },
+		},
+		{
+			name:   "terminating",
+			reason: "ConsumerProjectTerminating",
+			root: func(svc *servicesv1alpha1.Service) client.Client {
+				now := metav1.Now()
+				return newServiceRootClient(svc, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+					Name: testConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+				}})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+			activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
+			providerClient := newFakeClient(activation)
+			consumerClient := newFakeClient()
+			mgr := newTestManager()
+			mgr.add(testProviderProject, providerClient)
+			mgr.add(testConsumerProject, consumerClient)
+			r := &ServiceActivationRequestReconciler{rootClient: tc.root(svc), Manager: mgr, Scheme: testScheme()}
+
+			result, err := r.Reconcile(context.Background(), activationRequest(testProviderProject, activation.Name))
+			if err != nil || result != (ctrl.Result{}) {
+				t.Fatalf("reconcile result=%+v err=%v", result, err)
+			}
+			var entitlement servicesv1alpha1.ServiceEntitlement
+			if err := consumerClient.Get(context.Background(), client.ObjectKey{Name: testServiceSlug}, &entitlement); !apierrors.IsNotFound(err) {
+				t.Fatalf("unavailable project received entitlement: err=%v object=%#v", err, entitlement)
+			}
+			var got servicesv1alpha1.ServiceActivationRequest
+			if err := providerClient.Get(context.Background(), client.ObjectKey{Name: activation.Name}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status.Phase != servicesv1alpha1.ServiceActivationRequestPhaseFailed || got.Status.EntitlementRef != nil {
+				t.Fatalf("status = %#v, want Failed with no entitlement reference", got.Status)
+			}
+			for _, conditionType := range []string{conditionTypeEntitlementCreated, conditionTypeActivationReady} {
+				condition := apimeta.FindStatusCondition(got.Status.Conditions, conditionType)
+				if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != tc.reason {
+					t.Errorf("condition %s = %#v, want False/%s", conditionType, condition, tc.reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceActivationRequestReconcilerDisablesExistingRequestForUnavailableProject(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+		root   func(*servicesv1alpha1.Service) client.Client
+	}{
+		{
+			name:   "missing",
+			reason: "ConsumerProjectNotFound",
+			root:   func(svc *servicesv1alpha1.Service) client.Client { return newFakeClient(svc) },
+		},
+		{
+			name:   "terminating",
+			reason: "ConsumerProjectTerminating",
+			root: func(svc *servicesv1alpha1.Service) client.Client {
+				now := metav1.Now()
+				return newServiceRootClient(svc, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+					Name: testConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+				}})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
+			activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
+			activation.Status.Phase = servicesv1alpha1.ServiceActivationRequestPhaseActive
+			activation.Status.EntitlementRef = &servicesv1alpha1.ServiceEntitlementReference{
+				Name: testServiceSlug,
+				UID:  types.UID("entitlement-uid"),
+			}
+			setActivationCondition(activation, conditionTypeEntitlementCreated, metav1.ConditionTrue,
+				"EntitlementCreated", "The consumer-side service entitlement exists.")
+			setActivationCondition(activation, conditionTypeActivationReady, metav1.ConditionTrue,
+				"EntitlementActive", "The service is active in the consumer project.")
+
+			providerClient := newFakeClient(activation)
+			mgr := newTestManager()
+			mgr.add(testProviderProject, providerClient)
+			wakeups := newActivationRequestWakeups()
+			req := activationRequest(testProviderProject, activation.Name)
+			consumerClusterName := multicluster.ClusterName(testConsumerProject)
+			wakeups.waitFor(consumerClusterName, req)
+			r := &ServiceActivationRequestReconciler{
+				rootClient: tc.root(svc),
+				Manager:    mgr,
+				Scheme:     testScheme(),
+				wakeups:    wakeups,
+			}
+
+			result, err := r.Reconcile(context.Background(), req)
+			if err != nil || result != (ctrl.Result{}) {
+				t.Fatalf("reconcile result=%+v err=%v", result, err)
+			}
+			var got servicesv1alpha1.ServiceActivationRequest
+			if err := providerClient.Get(context.Background(), client.ObjectKey{Name: activation.Name}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status.Phase != servicesv1alpha1.ServiceActivationRequestPhaseDisabled {
+				t.Fatalf("phase = %q, want Disabled", got.Status.Phase)
+			}
+			if got.Status.EntitlementRef == nil || got.Status.EntitlementRef.Name != testServiceSlug ||
+				got.Status.EntitlementRef.UID != types.UID("entitlement-uid") {
+				t.Fatalf("entitlementRef = %#v, want original reference retained", got.Status.EntitlementRef)
+			}
+			ready := apimeta.FindStatusCondition(got.Status.Conditions, conditionTypeActivationReady)
+			if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != tc.reason {
+				t.Fatalf("Ready = %#v, want False/%s", ready, tc.reason)
+			}
+
+			wakeups.mu.Lock()
+			_, stillWaiting := wakeups.waiting[consumerClusterName]
+			wakeups.mu.Unlock()
+			if stillWaiting {
+				t.Fatal("terminal activation request remained registered for consumer engagement")
+			}
+		})
+	}
+}
+
 func TestServiceActivationRequestReconcilerWaitsForConsumerEngagement(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
@@ -123,7 +292,7 @@ func TestServiceActivationRequestReconcilerWaitsForConsumerEngagement(t *testing
 	mgr.add(testProviderProject, providerClient)
 	wakeups := newActivationRequestWakeups()
 	r := &ServiceActivationRequestReconciler{
-		rootClient: newFakeClient(svc),
+		rootClient: newServiceRootClient(svc),
 		Manager:    mgr,
 		Scheme:     testScheme(),
 		wakeups:    wakeups,
@@ -174,7 +343,7 @@ func TestMapServiceEntitlementToActivationRequest(t *testing.T) {
 func TestServiceActivationRequestReconcilerDeniedWithoutAuthorization(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, false)
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	providerClient := newFakeClient(activation)
 	consumerClient := newFakeClient()
 	mgr := newTestManager()
@@ -201,7 +370,7 @@ func TestServiceActivationRequestReconcilerDeniedWithoutAuthorization(t *testing
 func TestServiceActivationRequestReconcilerDoesNotRecreateConsumerDeletedEntitlement(t *testing.T) {
 	svc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "")
 	activation := newActivationRequest("enable-compute", testProviderProject, testConsumerProject, true)
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	providerClient := newFakeClient(activation)
 	consumerClient := newFakeClient()
 	mgr := newTestManager()
@@ -245,7 +414,7 @@ func TestServiceEntitlementReconcilerProviderActivationImplicitlyApprovesGatedSe
 		Actor:              servicesv1alpha1.ActorReference{Username: "provider@example.com"},
 		RequestedAt:        metav1.Now(),
 	}
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(entitlement)
 	providerClient := newFakeClient()
 	mgr := newTestManager()
@@ -292,7 +461,7 @@ func TestServiceEntitlementReconcilerProviderActivationDoesNotOverwriteDecision(
 			},
 		},
 	}
-	rootClient := newFakeClient(svc)
+	rootClient := newServiceRootClient(svc)
 	consumerClient := newFakeClient(entitlement)
 	providerClient := newFakeClient(existingConsumer)
 	mgr := newTestManager()

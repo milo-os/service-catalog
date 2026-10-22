@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -49,6 +50,7 @@ var (
 func provScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	for _, gvk := range []schema.GroupVersionKind{ipClassGVK, ipPoolGVK} {
 		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
@@ -57,6 +59,20 @@ func provScheme() *runtime.Scheme {
 }
 
 func provClient(objs ...client.Object) client.Client {
+	hasProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == provConsumerProject {
+			hasProject = true
+			break
+		}
+	}
+	if !hasProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: provConsumerProject}})
+	}
+	return provClientWithoutProject(objs...)
+}
+
+func provClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
 		WithObjects(objs...).
@@ -143,7 +159,7 @@ func newProvReconciler(root client.Client, clusters map[string]client.Client) *P
 	for name, c := range clusters {
 		mgr.add(name, c)
 	}
-	return &ProvisioningReconciler{rootClient: root, Manager: mgr, Scheme: provScheme()}
+	return &ProvisioningReconciler{rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: provScheme()}
 }
 
 func provReconcile(t *testing.T, r *ProvisioningReconciler) ctrl.Result {
@@ -241,6 +257,123 @@ func TestProvisioningInstallsDeclaredObjectsForActiveEntitlement(t *testing.T) {
 	}
 }
 
+func TestProvisioningDoesNotDropSetupOnProjectCacheMiss(t *testing.T) {
+	cacheClient := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	apiReader := provClient()
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	mgr := newTestManager()
+	mgr.add(provConsumerProject, consumer)
+	r := &ProvisioningReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: provScheme(),
+	}
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 1 {
+		t.Fatalf("cache miss dropped provisioning; installed %d objects, want 1", len(list.Items))
+	}
+}
+
+func TestProvisioningSkipsTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              provConsumerProject,
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"resourcemanager.miloapis.com/project"},
+	}}
+	root := provClient(project, provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("terminating project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("terminating project received a provisioning status write")
+	}
+}
+
+func TestProvisioningPrunesInactiveEntitlementWhileProjectTerminates(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+	if got := len(listClasses(t, consumer).Items); got != 1 {
+		t.Fatalf("precondition: installed objects = %d, want 1", got)
+	}
+
+	var project resourcemanagerv1alpha1.Project
+	if err := root.Get(context.Background(), client.ObjectKey{Name: provConsumerProject}, &project); err != nil {
+		t.Fatal(err)
+	}
+	project.Finalizers = []string{"test"}
+	if err := root.Update(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Delete(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+
+	entitlement := getEntitlement(t, consumer)
+	entitlement.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), entitlement); err != nil {
+		t.Fatal(err)
+	}
+	provReconcile(t, r)
+
+	if got := len(listClasses(t, consumer).Items); got != 0 {
+		t.Fatalf("terminating project retained %d explicitly provisioned objects", got)
+	}
+	condition := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
+		servicesv1alpha1.ConditionTypeProvisioned)
+	if condition == nil || condition.Reason != servicesv1alpha1.ReasonEntitlementNotActive {
+		t.Fatalf("teardown status = %#v, want EntitlementNotActive", condition)
+	}
+}
+
+func TestProvisioningSkipsMissingProject(t *testing.T) {
+	root := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("missing project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("missing project received a provisioning status write")
+	}
+}
+
+func TestProvisioningRetriesDisengagedProject(t *testing.T) {
+	r := newProvReconciler(provClient(), nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+func TestProvisioningRetriesDisengagedTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	root := provClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name: provConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}})
+	r := newProvReconciler(root, nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
 // Reconciles for distinct projects must not share mutable state. The controller
 // runs several workers so an API round-trip in one project cannot block every
 // project behind it; this test holds all object writes until every project has
@@ -248,7 +381,7 @@ func TestProvisioningInstallsDeclaredObjectsForActiveEntitlement(t *testing.T) {
 func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) {
 	const projectCount = provisioningMaxConcurrentReconciles
 
-	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	rootObjects := []client.Object{provConfig(ipClassRef("tenant-endpoint-ipv6"))}
 	entered := make(chan string, projectCount)
 	release := make(chan struct{})
 	consumers := make(map[string]client.Client, projectCount)
@@ -257,6 +390,9 @@ func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) 
 
 	for i := range projectCount {
 		project := fmt.Sprintf("consumer-proj-%d", i)
+		rootObjects = append(rootObjects, &resourcemanagerv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: project},
+		})
 		uid := types.UID(project + "-entitlement")
 		entitlement := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
 		entitlement.UID = uid
@@ -271,6 +407,7 @@ func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) 
 		}
 	}
 
+	root := provClient(rootObjects...)
 	r := newProvReconciler(root, managed)
 	errCh := make(chan error, projectCount)
 	var wg sync.WaitGroup

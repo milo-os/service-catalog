@@ -43,10 +43,11 @@ const (
 // entitlement, its later absence means the consumer disabled it and must not
 // cause a replacement entitlement to be created.
 type ServiceActivationRequestReconciler struct {
-	rootClient client.Reader
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
-	wakeups    *activationRequestWakeups
+	rootClient    client.Reader
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
+	wakeups       *activationRequestWakeups
 }
 
 // activationRequestWakeups remembers requests waiting for a consumer project
@@ -128,6 +129,7 @@ var _ manager.LeaderElectionRunnable = (*activationRequestWakeups)(nil)
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceactivationrequests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 
 func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	providerProject := string(req.ClusterName)
@@ -187,6 +189,33 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 
 	consumerProject := activation.Spec.ConsumerProjectRef.Name
 	consumerClusterName := multicluster.ClusterName(consumerProject)
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, consumerProject)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		if r.wakeups != nil {
+			r.wakeups.forget(consumerClusterName, req)
+		}
+		reason := "ConsumerProjectNotFound"
+		entitlementMessage := "The consumer project no longer exists, so no service entitlement was created."
+		readyMessage := "The consumer project no longer exists, so the service cannot be activated."
+		if project != nil {
+			reason = "ConsumerProjectTerminating"
+			entitlementMessage = "The consumer project is terminating, so no service entitlement was created."
+			readyMessage = "The consumer project is terminating, so the service cannot be activated."
+		}
+		if activation.Status.EntitlementRef == nil {
+			setActivationCondition(&activation, conditionTypeEntitlementCreated, metav1.ConditionFalse,
+				reason, entitlementMessage)
+			return ctrl.Result{}, r.setFailed(ctx, providerClient, &activation, reason, readyMessage)
+		}
+		setActivationCondition(&activation, conditionTypeActivationReady, metav1.ConditionFalse, reason, readyMessage)
+		if err := r.updateStatus(ctx, providerClient, &activation, servicesv1alpha1.ServiceActivationRequestPhaseDisabled); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerClusterName)
 	if err != nil {
 		// Register before checking again so engagement cannot race between the
@@ -348,6 +377,7 @@ func (r *ServiceActivationRequestReconciler) SetupWithManager(mcMgr mcmanager.Ma
 	// Use the uncached reader so canonical-name resolution cannot race the root
 	// cache, then match only the immutable spec.serviceName.
 	r.rootClient = rootMgr.GetAPIReader()
+	r.rootAPIReader = r.rootClient
 	r.Manager = mcMgr
 	r.wakeups = newActivationRequestWakeups()
 	if err := mcMgr.Add(r.wakeups); err != nil {
