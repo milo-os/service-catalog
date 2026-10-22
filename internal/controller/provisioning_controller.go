@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/flowcontrol"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -46,6 +49,12 @@ const (
 	// may get when nothing else changed, so a dead fan-out stays detectable
 	// without patching on every five-minute resync.
 	provisioningHeartbeatInterval = time.Hour
+
+	// provisioningFailureRetryInitial is how soon a declaration that failed to
+	// install is tried again. Failures right after enablement are usually brief:
+	// the owning service's API or webhook may not have reached the new project
+	// yet. Each further failure doubles the wait, up to provisioningResyncInterval.
+	provisioningFailureRetryInitial = 2 * time.Second
 
 	// provisioningMaxConcurrentReconciles is how many entitlements this
 	// controller provisions at once. A reconcile spends most of its time on API
@@ -142,6 +151,40 @@ type ProvisioningReconciler struct {
 	rootAPIReader client.Reader
 	Manager       mcmanager.Manager
 	Scheme        *runtime.Scheme
+
+	// failureRetries paces retries of entitlements whose ledger holds a Failed
+	// declaration, keyed by entitlement UID.
+	failureRetries     *flowcontrol.Backoff
+	failureRetriesOnce sync.Once
+}
+
+// failureRetryDelay records another failed pass for the entitlement and
+// returns how long to wait before the next one.
+func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration {
+	r.failureRetriesOnce.Do(r.initFailureRetries)
+	r.failureRetries.Next(string(uid), r.failureRetries.Clock.Now())
+	return r.failureRetries.Get(string(uid))
+}
+
+// clearFailureRetry forgets an entitlement's failure history once nothing it
+// declares is failing, so a later failure starts again from the short delay.
+func (r *ProvisioningReconciler) clearFailureRetry(uid types.UID) {
+	r.failureRetriesOnce.Do(r.initFailureRetries)
+	r.failureRetries.Reset(string(uid))
+	r.failureRetries.GC()
+}
+
+func (r *ProvisioningReconciler) initFailureRetries() {
+	r.failureRetries = flowcontrol.NewBackOff(provisioningFailureRetryInitial, provisioningResyncInterval)
+}
+
+func hasFailedResource(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
+	for i := range ledger {
+		if ledger[i].State == servicesv1alpha1.ProvisionedResourceStateFailed {
+			return true
+		}
+	}
+	return false
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
@@ -269,7 +312,16 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: provisioningResyncInterval},
+	// A failed install is retried on its own short schedule. Waiting for the
+	// resync left setup stalled for minutes behind failures that cleared within
+	// seconds, because nothing else re-triggers this entitlement once it settles.
+	requeue := provisioningResyncInterval
+	if hasFailedResource(ledger) {
+		requeue = r.failureRetryDelay(entitlement.UID)
+	} else {
+		r.clearFailureRetry(entitlement.UID)
+	}
+	return ctrl.Result{RequeueAfter: requeue},
 		r.writeStatus(ctx, consumerClient, &entitlement, ledger, "", "")
 }
 
