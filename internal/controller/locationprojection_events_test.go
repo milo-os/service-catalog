@@ -4,7 +4,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,9 +379,13 @@ func TestLocationProjectionRecoversFromStopBetweenDependencyAndParent(t *testing
 func TestEntitlementProjectionPredicate(t *testing.T) {
 	ledger := newProjectionWriteLedger()
 	p := entitlementProjectionPredicate(ledger)
-	base := setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionTrue, "Complete")
+	base := setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionFalse, "DependenciesPending")
 	base.UID = "compute-uid"
 	base.ResourceVersion = "1"
+	base.Generation = 1
+	setCondition(ConditionTypeSuspended, metav1.ConditionFalse, "ProjectActive")(base)
+	setCondition(servicesv1alpha1.ConditionTypeSetupComplete, metav1.ConditionFalse, "DependenciesPending")(base)
+	base.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{RequestedAt: metav1.NewTime(time.Unix(100, 0))}
 
 	update := func(mutate func(*servicesv1alpha1.ServiceEntitlement)) bool {
 		next := base.DeepCopy()
@@ -385,38 +393,93 @@ func TestEntitlementProjectionPredicate(t *testing.T) {
 		mutate(next)
 		return p.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: next})
 	}
+	// condition changes one field of one condition, leaving every other field,
+	// including its transition time, as it was.
+	condition := func(conditionType string, mutate func(*metav1.Condition)) func(*servicesv1alpha1.ServiceEntitlement) {
+		return func(e *servicesv1alpha1.ServiceEntitlement) {
+			c := apimeta.FindStatusCondition(e.Status.Conditions, conditionType)
+			if c == nil {
+				t.Fatalf("base has no %s condition", conditionType)
+			}
+			mutate(c)
+		}
+	}
+	flip := func(c *metav1.Condition) {
+		if c.Status == metav1.ConditionTrue {
+			c.Status = metav1.ConditionFalse
+		} else {
+			c.Status = metav1.ConditionTrue
+		}
+	}
+	reason := func(c *metav1.Condition) { c.Reason = "Changed" }
+	moved := func(c *metav1.Condition) { c.LastTransitionTime = metav1.NewTime(time.Unix(200, 0)) }
+
 	ownSetup := base.DeepCopy()
 	setCondition(servicesv1alpha1.ConditionTypeSetupComplete, metav1.ConditionTrue, "AllStagesComplete")(ownSetup)
-	ownSetup.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{RequestedAt: metav1.Now()}
+	ownSetup.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{RequestedAt: metav1.NewTime(time.Unix(100, 0)), AuthorizedAt: &metav1.Time{Time: time.Unix(150, 0)}}
 	ledger.recordSetup(projectionProject, ownSetup)
 
 	for name, tc := range map[string]struct {
 		mutate func(*servicesv1alpha1.ServiceEntitlement)
 		want   bool
 	}{
-		"finalizer": {func(e *servicesv1alpha1.ServiceEntitlement) { e.Finalizers = []string{"x"} }, false},
-		"provisioning evaluation": {func(e *servicesv1alpha1.ServiceEntitlement) {
-			now := metav1.Now()
-			e.Status.LastProvisioningEvaluation = &now
-		}, false},
-		"condition message": {func(e *servicesv1alpha1.ServiceEntitlement) {
-			e.Status.Conditions[0].Message = "changed"
-		}, false},
+		// Inputs, each changed on its own.
+		"generation":   {func(e *servicesv1alpha1.ServiceEntitlement) { e.Generation++ }, true},
+		"service ref":  {func(e *servicesv1alpha1.ServiceEntitlement) { e.Spec.ServiceRef.Name = "storage" }, true},
+		"service name": {func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.ServiceName = "storage.miloapis.com" }, true},
+		"provider activation": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			e.Spec.ProviderActivation = &servicesv1alpha1.ProviderActivation{RequestedAt: metav1.NewTime(time.Unix(50, 0))}
+		}, true},
 		"phase": {func(e *servicesv1alpha1.ServiceEntitlement) {
 			e.Status.Phase = servicesv1alpha1.EntitlementPhase("Revoked")
 		}, true},
-		"provisioned reason": {setCondition(servicesv1alpha1.ConditionTypeProvisioned, metav1.ConditionTrue, "Reinstalled"), true},
-		"suspended":          {setCondition(ConditionTypeSuspended, metav1.ConditionTrue, "ProjectSuspended"), true},
 		"deleting": {func(e *servicesv1alpha1.ServiceEntitlement) {
 			now := metav1.Now()
 			e.DeletionTimestamp = &now
 		}, true},
+		"ready removed": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			apimeta.RemoveStatusCondition(&e.Status.Conditions, servicesv1alpha1.ConditionTypeReady)
+		}, true},
+		"ready status":                  {condition(servicesv1alpha1.ConditionTypeReady, flip), true},
+		"ready reason":                  {condition(servicesv1alpha1.ConditionTypeReady, reason), true},
+		"ready transition time":         {condition(servicesv1alpha1.ConditionTypeReady, moved), true},
+		"dependencies satisfied status": {condition(servicesv1alpha1.ConditionTypeDependenciesSatisfied, flip), true},
+		"dependencies satisfied reason": {condition(servicesv1alpha1.ConditionTypeDependenciesSatisfied, reason), true},
+		"dependencies satisfied removed": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			apimeta.RemoveStatusCondition(&e.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied)
+		}, true},
+		"provisioned status": {condition(servicesv1alpha1.ConditionTypeProvisioned, flip), true},
+		"provisioned reason": {condition(servicesv1alpha1.ConditionTypeProvisioned, reason), true},
+		"provisioned removed": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			apimeta.RemoveStatusCondition(&e.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+		}, true},
+		"suspended status": {condition(ConditionTypeSuspended, flip), true},
+
+		// Fields a pass never reads.
+		"finalizer": {func(e *servicesv1alpha1.ServiceEntitlement) { e.Finalizers = []string{"x"} }, false},
+		"labels":    {func(e *servicesv1alpha1.ServiceEntitlement) { e.Labels = map[string]string{"x": "y"} }, false},
+		"provisioning evaluation": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			now := metav1.Now()
+			e.Status.LastProvisioningEvaluation = &now
+		}, false},
+		"observed generation": {func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.ObservedGeneration++ }, false},
+		"condition message":   {condition(servicesv1alpha1.ConditionTypeReady, func(c *metav1.Condition) { c.Message = "changed" }), false},
+		"suspended reason":    {condition(ConditionTypeSuspended, reason), false},
+		"suspended False removed": {func(e *servicesv1alpha1.ServiceEntitlement) {
+			apimeta.RemoveStatusCondition(&e.Status.Conditions, ConditionTypeSuspended)
+		}, false},
+
+		// The setup aggregate this reconciler writes.
 		"own setup write": {func(e *servicesv1alpha1.ServiceEntitlement) {
 			e.Status = *ownSetup.Status.DeepCopy()
 		}, false},
 		"setup changed by someone else": {func(e *servicesv1alpha1.ServiceEntitlement) {
 			e.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{RequestedAt: metav1.NewTime(time.Unix(1, 0))}
 		}, true},
+		"setup removed by someone else": {func(e *servicesv1alpha1.ServiceEntitlement) { e.Status.Setup = nil }, true},
+		"only setupComplete changed by someone else": {
+			condition(servicesv1alpha1.ConditionTypeSetupComplete, flip), true,
+		},
 	} {
 		if got := update(tc.mutate); got != tc.want {
 			t.Errorf("%s: admitted = %v, want %v", name, got, tc.want)
@@ -424,6 +487,342 @@ func TestEntitlementProjectionPredicate(t *testing.T) {
 	}
 	if !p.Create(event.CreateEvent{Object: base}) || !p.Delete(event.DeleteEvent{Object: base}) {
 		t.Error("entitlement create and delete events must always pass")
+	}
+}
+
+// TestProjectionInputsCoverEveryFieldAPassReads changes each field of a
+// ServiceEntitlement on its own and runs a real pass before and after. Any
+// change that alters what the pass produces must be admitted by the filter, so
+// a new reader in Reconcile or aggregateSetup that projectionInputs does not
+// know about fails here.
+func TestProjectionInputsCoverEveryFieldAPassReads(t *testing.T) {
+	base := func() []*servicesv1alpha1.ServiceEntitlement {
+		compute := setupEntitlement("compute", "compute.miloapis.com", metav1.ConditionTrue, "DependenciesSatisfied")
+		// The dependency is entitled by its canonical name, so compute's
+		// lookup of "networking" resolves through status.serviceName.
+		networking := setupEntitlement("networking", "networking", metav1.ConditionTrue, "DependenciesSatisfied")
+		networking.Spec.ServiceRef.Name = "networking.miloapis.com"
+		for _, e := range []*servicesv1alpha1.ServiceEntitlement{compute, networking} {
+			e.UID = types.UID(e.Name + "-uid")
+			e.Generation = 1
+			e.CreationTimestamp = metav1.NewTime(time.Unix(1000, 0))
+			e.Finalizers = []string{serviceEntitlementFinalizer}
+			setCondition(ConditionTypeSuspended, metav1.ConditionFalse, "ProjectActive")(e)
+			for i := range e.Status.Conditions {
+				e.Status.Conditions[i].LastTransitionTime = metav1.NewTime(time.Unix(1100, 0))
+			}
+		}
+		return []*servicesv1alpha1.ServiceEntitlement{compute, networking}
+	}
+	outcome := func(entitlements []*servicesv1alpha1.ServiceEntitlement) string {
+		t.Helper()
+		computeConfig := passHarnessConfig("compute")
+		computeConfig.Spec.Locations = &servicesv1alpha1.ServiceLocationConfig{SupportedClasses: []servicesv1alpha1.LocationClassName{projectionClass}}
+		availability := availableAt(projectionLocation, true)
+		availability.Spec.ServiceRef.Name = "compute"
+		root := projectionRootClient(
+			setupService("compute", "compute.miloapis.com", "networking"),
+			setupService("networking", "networking.miloapis.com"),
+			computeConfig, passHarnessConfig("networking.miloapis.com"),
+			platformLocation(projectionLocation, true, projectionClass),
+			availability,
+		)
+		objects := make([]client.Object, 0, len(entitlements))
+		for _, e := range entitlements {
+			objects = append(objects, e.DeepCopy())
+		}
+		consumer := projectionConsumerClient(objects...)
+		mgr := newTestManager()
+		mgr.add(projectionProject, consumer)
+		r := &LocationProjectionReconciler{
+			rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: projectionScheme(),
+			projects: newProjectionProjectIndex(),
+		}
+		if _, err := r.Reconcile(context.Background(), mcreconcile.Request{
+			Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
+			ClusterName: projectionProject,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Setup     map[string]string
+			Locations []string
+			Mirrors   []string
+			Services  []string
+		}
+		result.Setup = map[string]string{}
+		var list servicesv1alpha1.ServiceEntitlementList
+		if err := consumer.List(context.Background(), &list); err != nil {
+			t.Fatal(err)
+		}
+		for i := range list.Items {
+			result.Setup[list.Items[i].Name] = normalizedSetup(&list.Items[i])
+		}
+		locations := &unstructured.UnstructuredList{}
+		locations.SetGroupVersionKind(LocationGVK.GroupVersion().WithKind("LocationList"))
+		if err := consumer.List(context.Background(), locations); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range locations.Items {
+			result.Locations = append(result.Locations, l.GetName())
+		}
+		var mirrors servicesv1alpha1.ServiceAvailabilityList
+		if err := consumer.List(context.Background(), &mirrors); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range mirrors.Items {
+			result.Mirrors = append(result.Mirrors, m.Name)
+		}
+		for _, service := range []string{"compute", "networking", "networking.miloapis.com", "x1", "x2"} {
+			if len(r.projects.ProjectsForService(service)) > 0 {
+				result.Services = append(result.Services, service)
+			}
+		}
+		raw, _ := json.Marshal(result)
+		return string(raw)
+	}
+
+	baseline := outcome(base())
+	if !strings.Contains(baseline, projectionLocation) || !strings.Contains(baseline, "AllStagesComplete") {
+		t.Fatalf("baseline must project a Location and complete setup, or readers go untested: %s", baseline)
+	}
+	p := entitlementProjectionPredicate(newProjectionWriteLedger())
+	checked, changed := 0, 0
+	for _, m := range entitlementFieldMutations() {
+		for target := range 2 {
+			entitlements := base()
+			before := entitlements[target].DeepCopy()
+			m.apply(entitlements[target])
+			if reflect.DeepEqual(before, entitlements[target]) {
+				continue
+			}
+			checked++
+			got := outcome(entitlements)
+			if got == baseline {
+				continue
+			}
+			changed++
+			if !p.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: entitlements[target]}) {
+				t.Errorf("%s on %s changes the pass outcome but is filtered out\nbefore: %s\nafter:  %s",
+					m.name, before.Name, baseline, got)
+			}
+		}
+	}
+	t.Logf("%d field changes checked, %d changed the outcome", checked, changed)
+	if changed == 0 {
+		t.Fatal("no mutation changed the outcome; the test is not exercising the pass")
+	}
+}
+
+// normalizedSetup is an entitlement's setup aggregate without the timestamps
+// a pass takes from the clock.
+func normalizedSetup(e *servicesv1alpha1.ServiceEntitlement) string {
+	copied := e.DeepCopy()
+	if setup := copied.Status.Setup; setup != nil {
+		for i := range setup.Stages {
+			setup.Stages[i].LastTransitionTime = metav1.Time{}
+		}
+		if setup.FirstCompletedAt != nil {
+			setup.FirstCompletedAt = &metav1.Time{}
+		}
+	}
+	if c := apimeta.FindStatusCondition(copied.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete); c != nil {
+		c.LastTransitionTime = metav1.Time{}
+	}
+	return setupFingerprint(copied)
+}
+
+type entitlementFieldMutation struct {
+	name  string
+	apply func(*servicesv1alpha1.ServiceEntitlement)
+}
+
+// entitlementFieldMutations sets and clears every metadata field a client can
+// write, every top-level spec and status field, and every field of every
+// condition. The setup aggregate is left out: it is this reconciler's own
+// output, covered by the ledger cases in TestEntitlementProjectionPredicate.
+func entitlementFieldMutations() []entitlementFieldMutation {
+	var out []entitlementFieldMutation
+	add := func(name string, apply func(*servicesv1alpha1.ServiceEntitlement)) {
+		out = append(out, entitlementFieldMutation{name: name, apply: apply})
+	}
+	add("generation", func(e *servicesv1alpha1.ServiceEntitlement) { e.Generation++ })
+	add("deletionTimestamp", func(e *servicesv1alpha1.ServiceEntitlement) {
+		now := metav1.NewTime(time.Unix(2000, 0))
+		e.DeletionTimestamp = &now
+	})
+	add("labels", func(e *servicesv1alpha1.ServiceEntitlement) { e.Labels = map[string]string{dependencyOfLabel: "x"} })
+	add("annotations", func(e *servicesv1alpha1.ServiceEntitlement) { e.Annotations = map[string]string{"x": "y"} })
+	add("finalizers", func(e *servicesv1alpha1.ServiceEntitlement) { e.Finalizers = append(e.Finalizers, "x") })
+
+	for _, part := range []struct {
+		name string
+		get  func(*servicesv1alpha1.ServiceEntitlement) reflect.Value
+	}{
+		{"spec", func(e *servicesv1alpha1.ServiceEntitlement) reflect.Value { return reflect.ValueOf(&e.Spec).Elem() }},
+		{"status", func(e *servicesv1alpha1.ServiceEntitlement) reflect.Value { return reflect.ValueOf(&e.Status).Elem() }},
+	} {
+		fields := part.get(&servicesv1alpha1.ServiceEntitlement{}).Type()
+		for i := range fields.NumField() {
+			field := fields.Field(i)
+			if field.Name == "Conditions" || field.Name == "Setup" {
+				continue
+			}
+			for seed := range 3 {
+				add(fmt.Sprintf("%s.%s set (%d)", part.name, field.Name, seed), func(e *servicesv1alpha1.ServiceEntitlement) {
+					fillValue(part.get(e).Field(i), seed+1)
+				})
+			}
+			add(fmt.Sprintf("%s.%s cleared", part.name, field.Name), func(e *servicesv1alpha1.ServiceEntitlement) {
+				v := part.get(e).Field(i)
+				v.Set(reflect.Zero(v.Type()))
+			})
+		}
+	}
+
+	for _, conditionType := range []string{
+		servicesv1alpha1.ConditionTypeReady,
+		ConditionTypeSuspended,
+		servicesv1alpha1.ConditionTypeDependenciesSatisfied,
+		servicesv1alpha1.ConditionTypeProvisioned,
+	} {
+		with := func(mutate func(*metav1.Condition)) func(*servicesv1alpha1.ServiceEntitlement) {
+			return func(e *servicesv1alpha1.ServiceEntitlement) {
+				if c := apimeta.FindStatusCondition(e.Status.Conditions, conditionType); c != nil {
+					mutate(c)
+				}
+			}
+		}
+		add(conditionType+" status", with(func(c *metav1.Condition) {
+			if c.Status == metav1.ConditionTrue {
+				c.Status = metav1.ConditionFalse
+			} else {
+				c.Status = metav1.ConditionTrue
+			}
+		}))
+		add(conditionType+" unknown", with(func(c *metav1.Condition) { c.Status = metav1.ConditionUnknown }))
+		add(conditionType+" reason", with(func(c *metav1.Condition) { c.Reason = "Changed" }))
+		add(conditionType+" message", with(func(c *metav1.Condition) { c.Message = "changed" }))
+		add(conditionType+" observedGeneration", with(func(c *metav1.Condition) { c.ObservedGeneration += 5 }))
+		add(conditionType+" lastTransitionTime", with(func(c *metav1.Condition) {
+			c.LastTransitionTime = metav1.NewTime(time.Unix(3000, 0))
+		}))
+		add(conditionType+" removed", func(e *servicesv1alpha1.ServiceEntitlement) {
+			apimeta.RemoveStatusCondition(&e.Status.Conditions, conditionType)
+		})
+	}
+	add("unrelated condition added", func(e *servicesv1alpha1.ServiceEntitlement) {
+		apimeta.SetStatusCondition(&e.Status.Conditions, metav1.Condition{Type: "Other", Status: metav1.ConditionTrue, Reason: "X"})
+	})
+	return out
+}
+
+// fillValue sets v to a non-zero value derived from seed, recursively.
+func fillValue(v reflect.Value, seed int) {
+	if v.Type() == reflect.TypeFor[metav1.Time]() {
+		v.Set(reflect.ValueOf(metav1.NewTime(time.Unix(int64(5000+seed), 0))))
+		return
+	}
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(fmt.Sprintf("x%d", seed))
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.Int, reflect.Int32, reflect.Int64:
+		v.SetInt(v.Int() + int64(seed))
+	case reflect.Pointer:
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		fillValue(v.Elem(), seed)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fillValue(v.Field(i), seed)
+			}
+		}
+	case reflect.Slice:
+		elem := reflect.New(v.Type().Elem()).Elem()
+		fillValue(elem, seed)
+		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), elem))
+	case reflect.Map:
+		key := reflect.New(v.Type().Key()).Elem()
+		fillValue(key, seed)
+		value := reflect.New(v.Type().Elem()).Elem()
+		fillValue(value, seed)
+		m := reflect.MakeMap(v.Type())
+		m.SetMapIndex(key, value)
+		v.Set(m)
+	}
+}
+
+func TestPruneFailureDoesNotHideALaterForeignDelete(t *testing.T) {
+	ctx := context.Background()
+	availability := availableAt(projectionLocation, true)
+	root := projectionRootClient(
+		publishedProjectionConfig(projectionClass),
+		platformLocation(projectionLocation, true, projectionClass),
+		availability,
+	)
+	failDeletes := false
+	consumer := interceptor.NewClient(projectionConsumerClient(activeProjectionEntitlement()), interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			obj.SetUID(types.UID(obj.GetObjectKind().GroupVersionKind().Kind + "/" + obj.GetName()))
+			return c.Create(ctx, obj, opts...)
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if failDeletes {
+				return errors.New("delete unavailable")
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	mgr := newTestManager()
+	mgr.add(projectionProject, consumer)
+	r := &LocationProjectionReconciler{
+		rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: projectionScheme(),
+		writes: newProjectionWriteLedger(),
+	}
+	reconcile := func() error {
+		_, err := r.Reconcile(ctx, mcreconcile.Request{
+			Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: locationProjectionRequestName}},
+			ClusterName: projectionProject,
+		})
+		return err
+	}
+	setAvailable := func(available bool) {
+		var sa servicesv1alpha1.ServiceAvailability
+		if err := root.Get(ctx, types.NamespacedName{Name: availability.Name}, &sa); err != nil {
+			t.Fatal(err)
+		}
+		sa.Status = availableAt(projectionLocation, available).Status
+		if err := root.Update(ctx, &sa); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reconcile(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The location stops being wanted, and its prune fails.
+	setAvailable(false)
+	failDeletes = true
+	if err := reconcile(); err == nil {
+		t.Fatal("expected the failed prune to fail the pass")
+	}
+	// It is wanted again before any retry, so the pass writes nothing to it.
+	failDeletes = false
+	setAvailable(true)
+	if err := reconcile(); err != nil {
+		t.Fatal(err)
+	}
+
+	location, ok := projectedLocation(t, consumer, projectionLocation)
+	if !ok {
+		t.Fatal("location is missing")
+	}
+	if !managedProjectionPredicate(r.writes).Delete(event.DeleteEvent{Object: location}) {
+		t.Fatal("someone else's delete after a failed prune was taken for the reconciler's own")
 	}
 }
 
@@ -490,5 +889,46 @@ func TestManagedProjectionPredicateDropsOnlyOwnWrites(t *testing.T) {
 	}
 	if !p.Delete(event.DeleteEvent{Object: mirror}) {
 		t.Error("a delete is only recognized once")
+	}
+}
+
+func TestProjectionRootDispatcherTargetsServiceSpecEdits(t *testing.T) {
+	index := newProjectionProjectIndex()
+	index.Replace("by-name", []string{"networking"})
+	index.Replace("by-canonical-name", []string{"networking.miloapis.com"})
+	index.Replace("unrelated", []string{"storage"})
+	events := make(chan event.TypedGenericEvent[mcreconcile.Request], 4)
+	dispatcher := &projectionRootDispatcher{index: index, events: events}
+
+	service := setupService("networking", "networking.miloapis.com")
+	dispatcher.dispatchObjects(context.Background(), service)
+	for _, want := range []string{"by-canonical-name", "by-name"} {
+		if got := string((<-events).Object.ClusterName); got != want {
+			t.Fatalf("Service dispatched to %q, want %q", got, want)
+		}
+	}
+	if len(events) != 0 {
+		t.Fatalf("Service dispatched to %d unrelated projects", len(events))
+	}
+
+	for name, tc := range map[string]struct {
+		mutate func(*servicesv1alpha1.Service)
+		want   bool
+	}{
+		"dependency added": {func(s *servicesv1alpha1.Service) {
+			s.Spec.Dependencies = append(s.Spec.Dependencies, servicesv1alpha1.ServiceDependency{ServiceRef: servicesv1alpha1.ServiceRef{Name: "ipam"}})
+		}, true},
+		"canonical name": {func(s *servicesv1alpha1.Service) { s.Spec.ServiceName = "net.miloapis.com" }, true},
+		"status only":    {func(s *servicesv1alpha1.Service) { s.Status.ObservedGeneration++ }, false},
+		"labels only":    {func(s *servicesv1alpha1.Service) { s.Labels = map[string]string{"x": "y"} }, false},
+	} {
+		next := service.DeepCopy()
+		tc.mutate(next)
+		if got := projectionRelevantRootUpdate(service, next); got != tc.want {
+			t.Errorf("%s: relevant = %v, want %v", name, got, tc.want)
+		}
+	}
+	if !projectionRelevantRootUpdate(&servicesv1alpha1.ServiceAvailability{}, &servicesv1alpha1.ServiceAvailability{}) {
+		t.Error("updates to other root kinds must always dispatch")
 	}
 }

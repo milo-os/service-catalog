@@ -138,7 +138,9 @@ func (l *projectionWriteLedger) recordWrite(project string, obj client.Object) {
 	l.objects[obj.GetUID()] = objectWrites{project: project, versions: versions}
 }
 
-// recordDelete notes that this reconciler deleted a managed projection.
+// recordDelete notes that this reconciler is deleting a managed projection.
+// It is recorded before the delete so the echo can't arrive first, and must be
+// undone with forgetDelete if the delete fails.
 func (l *projectionWriteLedger) recordDelete(project string, obj client.Object) {
 	if l == nil || obj.GetUID() == "" {
 		return
@@ -146,6 +148,20 @@ func (l *projectionWriteLedger) recordDelete(project string, obj client.Object) 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.objects[obj.GetUID()] = objectWrites{project: project, deleted: true}
+}
+
+// forgetDelete undoes recordDelete after a delete that did not happen. Left
+// in place, the flag would make a later deletion by someone else look like
+// this reconciler's own, and the projection would not be recreated.
+func (l *projectionWriteLedger) forgetDelete(obj client.Object) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.objects[obj.GetUID()].deleted {
+		delete(l.objects, obj.GetUID())
+	}
 }
 
 func (l *projectionWriteLedger) isOwnWrite(obj client.Object) bool {

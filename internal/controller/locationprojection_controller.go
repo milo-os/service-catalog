@@ -1002,8 +1002,13 @@ func (r *LocationProjectionReconciler) prune(
 				continue
 			}
 			r.writes.recordDelete(project, item)
-			if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("failed to delete stale %s %q: %w", gvk.Kind, item.GetName(), err)
+			if err := consumerClient.Delete(ctx, item); err != nil {
+				// NotFound means someone else deleted it, so this delete
+				// produced no event of its own either.
+				r.writes.forgetDelete(item)
+				if !apierrors.IsNotFound(err) {
+					return fmt.Errorf("failed to delete stale %s %q: %w", gvk.Kind, item.GetName(), err)
+				}
 			}
 		}
 	}
@@ -1106,6 +1111,7 @@ func (d *projectionRootDispatcher) Start(ctx context.Context) error {
 	objects := []client.Object{
 		&servicesv1alpha1.ServiceAvailability{},
 		&servicesv1alpha1.ServiceConfiguration{},
+		&servicesv1alpha1.Service{},
 	}
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(d.gvk)
@@ -1117,8 +1123,13 @@ func (d *projectionRootDispatcher) Start(ctx context.Context) error {
 			return fmt.Errorf("get required projection source informer for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
 		}
 		if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj any) { d.dispatchObjects(ctx, obj) },
-			UpdateFunc: func(oldObj, newObj any) { d.dispatchObjects(ctx, oldObj, newObj) },
+			AddFunc: func(obj any) { d.dispatchObjects(ctx, obj) },
+			UpdateFunc: func(oldObj, newObj any) {
+				if !projectionRelevantRootUpdate(oldObj, newObj) {
+					return
+				}
+				d.dispatchObjects(ctx, oldObj, newObj)
+			},
 			DeleteFunc: func(obj any) { d.dispatchObjects(ctx, obj) },
 		}); err != nil {
 			return fmt.Errorf("register projection source handler for %s: %w", object.GetObjectKind().GroupVersionKind(), err)
@@ -1133,6 +1144,20 @@ func (d *projectionRootDispatcher) Start(ctx context.Context) error {
 	return nil
 }
 
+// projectionRelevantRootUpdate reports whether a root update can change a
+// pass. Services are written for reasons a pass never reads, such as their own
+// status, so only the fields setup aggregation reads dispatch. Other kinds
+// always do.
+func projectionRelevantRootUpdate(oldObj, newObj any) bool {
+	oldService, okOld := oldObj.(*servicesv1alpha1.Service)
+	newService, okNew := newObj.(*servicesv1alpha1.Service)
+	if !okOld || !okNew {
+		return true
+	}
+	return oldService.Spec.ServiceName != newService.Spec.ServiceName ||
+		!reflect.DeepEqual(oldService.Spec.Dependencies, newService.Spec.Dependencies)
+}
+
 func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects ...any) {
 	projects := make(map[string]struct{})
 	for _, object := range objects {
@@ -1145,6 +1170,11 @@ func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects 
 			selected = d.index.ProjectsForService(object.Spec.ServiceRef.Name)
 		case *servicesv1alpha1.ServiceConfiguration:
 			selected = d.index.ProjectsForService(object.Spec.ServiceRef.Name)
+		case *servicesv1alpha1.Service:
+			// Setup aggregation reads a Service's dependencies, looked up by
+			// either of its names. Ancestors of an affected entitlement are in
+			// the same project, so targeting its projects covers them.
+			selected = append(d.index.ProjectsForService(object.Name), d.index.ProjectsForService(object.Spec.ServiceName)...)
 		default:
 			// Location changes can affect every service, and an unfamiliar event
 			// must favor a complete resync over a missed invalidation.
@@ -1184,8 +1214,8 @@ func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects 
 // that keeps recovery intact). A setup aggregate changed by anyone else still
 // passes, so a status edit is repaired.
 //
-// Root ServiceAvailability, ServiceConfiguration, and canonical Location
-// informer events are translated by projectionRootDispatcher into the same
+// Root ServiceAvailability, ServiceConfiguration, Service, and canonical
+// Location informer events are translated by projectionRootDispatcher into the same
 // project key. Managed projection objects are watched in each project so
 // deletion and drift repair do not depend on a periodic sweep; only the echoes
 // of this reconciler's own writes are dropped there.
