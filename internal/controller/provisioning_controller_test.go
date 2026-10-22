@@ -85,6 +85,7 @@ func provClientWithoutProject(objs ...client.Object) client.Client {
 func provConsumerClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		Build()
@@ -831,6 +832,7 @@ func provStatusConsumerClient(objs ...client.Object) client.Client {
 	ipClass.SetGroupVersionKind(ipClassGVK)
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		Build()
@@ -967,11 +969,15 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	var applied []string
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClassObject()).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				body, err := json.Marshal(obj)
 				if err != nil {
 					return err
@@ -1010,6 +1016,19 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	}
 }
 
+// isEntitlementApply tells the entitlement's own status apply apart from the
+// installed object's, so an interceptor aimed at the latter lets it through.
+func isEntitlementApply(obj runtime.ApplyConfiguration) bool {
+	body, err := json.Marshal(obj)
+	if err != nil {
+		return false
+	}
+	var typed struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal(body, &typed) == nil && typed.Kind == "ServiceEntitlement"
+}
+
 func ipClassObject() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(ipClassGVK)
@@ -1024,11 +1043,15 @@ func TestProvisioningReportsAStatusAnotherControllerOwns(t *testing.T) {
 	ipClass := ipClassObject()
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				return apierrors.NewConflict(
 					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
 					"tenant-endpoint-ipv6",
@@ -1085,6 +1108,7 @@ func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
 	longCause := strings.Repeat("admission webhook denied the request; ", 60)
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		WithInterceptorFuncs(interceptor.Funcs{

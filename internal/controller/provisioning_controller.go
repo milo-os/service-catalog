@@ -688,11 +688,9 @@ func union(a, b []schema.GroupVersionKind) []schema.GroupVersionKind {
 // writeStatus records the ledger and the Provisioned condition on the
 // entitlement, in the consumer's own control plane.
 //
-// The condition is patched rather than written with the rest of the status:
-// ServiceEntitlementReconciler owns Ready and ProjectSuspensionPropagation owns
-// Suspended on the same object, so a full status update would have the three
-// clobbering each other. Ready stays untouched here, because a delivery failure
-// is not a denial of access.
+// Only provisioningStatusOwner's fields are applied: other controllers own
+// Ready, Suspended and setup on the same object. Ready stays untouched here,
+// because a delivery failure is not a denial of access.
 func (r *ProvisioningReconciler) writeStatus(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -748,10 +746,10 @@ func (r *ProvisioningReconciler) writeStatus(
 		ObservedGeneration: entitlement.Generation,
 	})
 
-	// Nothing changed: skip the patch, or every resync bumps resourceVersion
+	// Nothing changed: skip the write, or every resync bumps resourceVersion
 	// and re-triggers every other controller watching ServiceEntitlement.
 	changed := !apiequality.Semantic.DeepEqual(before.Status.ProvisionedResources, entitlement.Status.ProvisionedResources) ||
-		!apiequality.Semantic.DeepEqual(before.Status.Conditions, entitlement.Status.Conditions)
+		!conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
 	stale := before.Status.LastProvisioningEvaluation == nil ||
 		time.Since(before.Status.LastProvisioningEvaluation.Time) >= provisioningHeartbeatInterval
 	if !changed && !stale {
@@ -761,13 +759,8 @@ func (r *ProvisioningReconciler) writeStatus(
 	now := metav1.Now()
 	entitlement.Status.LastProvisioningEvaluation = &now
 
-	// A merge patch replaces status.conditions wholesale, so patching without
-	// the resourceVersion precondition from a stale cached copy would erase a
-	// condition another controller just wrote. A conflict retries from cache.
-	if err := consumerClient.Status().Patch(ctx, entitlement,
-		client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}),
-		client.FieldOwner(provisioningFieldManager)); err != nil {
-		return fmt.Errorf("failed to patch ServiceEntitlement provisioning status: %w", err)
+	if err := applyEntitlementStatus(ctx, consumerClient, provisioningStatusOwner, before, entitlement); err != nil {
+		return fmt.Errorf("failed to apply ServiceEntitlement provisioning status: %w", err)
 	}
 	return nil
 }

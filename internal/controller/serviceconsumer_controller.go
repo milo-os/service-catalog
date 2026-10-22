@@ -138,26 +138,9 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	}
 	entitlement := &entitlementList.Items[0]
 
-	original := entitlement.Status.DeepCopy()
-	entitlement.Status.Phase = decision.entitlementPhase
-	entitlement.Status.ObservedGeneration = entitlement.Generation
-	if decision.entitlementPhase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
-		now := metav1.Now()
-		entitlement.Status.EntitledAt = &now
-	}
-	apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             readyStatusForEntitlementPhase(decision.entitlementPhase),
-		Reason:             decision.entitlementReason,
-		Message:            decision.entitlementMessage,
-		ObservedGeneration: entitlement.Generation,
-	})
-
-	if equalEntitlementStatus(original, &entitlement.Status) {
-		return ctrl.Result{}, nil
-	}
-	if err := consumerClient.Status().Update(ctx, entitlement); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
+	if err := applyEntitlementReadyStatus(ctx, consumerClient, entitlement,
+		decision.entitlementPhase, decision.entitlementReason, decision.entitlementMessage, want); err != nil {
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -72,6 +71,7 @@ func projectionConsumerClient(objs ...client.Object) client.WithWatch {
 	legacyBinding.SetGroupVersionKind(legacyLocationBindingGVK)
 	return fake.NewClientBuilder().
 		WithScheme(projectionScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(location, legacyBinding, &servicesv1alpha1.ServiceAvailability{}, &servicesv1alpha1.ServiceEntitlement{}).
 		Build()
@@ -356,13 +356,13 @@ func TestLocationProjectionReconcilerRecordsCompletionOnlyAfterStatusPersists(t 
 	}
 	root := projectionRootClient(publishedProjectionConfig(projectionClass), availableAt(projectionLocation, true), platformLocation(projectionLocation, true, projectionClass))
 	base := projectionConsumerClient(entitlement)
-	patchErr := errors.New("injected status patch failure")
+	patchErr := errors.New("injected status apply failure")
 	consumer := interceptor.NewClient(base, interceptor.Funcs{
-		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
-			if _, ok := obj.(*servicesv1alpha1.ServiceEntitlement); ok && subResource == "status" {
+		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			if isEntitlementApply(obj) && subResource == "status" {
 				return patchErr
 			}
-			return c.Status().Patch(ctx, obj, patch, opts...)
+			return c.Status().Apply(ctx, obj, opts...)
 		},
 	})
 	completed := setupAttempts.WithLabelValues("compute", "initial", "succeeded")
@@ -810,19 +810,21 @@ func TestSetupAggregationDoesNotEraseConcurrentConditionWrites(t *testing.T) {
 	}
 	before := live.DeepCopy()
 	apimeta.SetStatusCondition(&live.Status.Conditions, metav1.Condition{Type: servicesv1alpha1.ConditionTypeProvisioned, Status: metav1.ConditionTrue, Reason: "Provisioned"})
-	if err := consumer.Status().Patch(ctx, &live, client.MergeFrom(before)); err != nil {
+	if err := applyEntitlementStatus(ctx, consumer, provisioningStatusOwner, before, &live); err != nil {
 		t.Fatal(err)
 	}
 
 	r := &LocationProjectionReconciler{rootClient: projectionRootClient()}
 	stages := map[string]setupProjectionStage{projectionService: {complete: true, reason: "NotApplicable"}}
-	err := r.aggregateSetup(ctx, projectionProject, consumer, []servicesv1alpha1.ServiceEntitlement{stale}, stages)
-	if !apierrors.IsConflict(err) {
-		t.Fatalf("aggregateSetup error = %v, want a conflict for the stale copy", err)
+	if err := r.aggregateSetup(ctx, projectionProject, consumer, []servicesv1alpha1.ServiceEntitlement{stale}, stages); err != nil {
+		t.Fatalf("aggregateSetup from a stale copy: %v", err)
 	}
 	var got servicesv1alpha1.ServiceEntitlement
 	if err := consumer.Get(ctx, types.NamespacedName{Name: entitlement.Name}, &got); err != nil {
 		t.Fatal(err)
+	}
+	if apimeta.FindStatusCondition(got.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete) == nil || got.Status.Setup == nil {
+		t.Fatalf("setup status was not written: %#v", got.Status)
 	}
 	if !apimeta.IsStatusConditionTrue(got.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned) {
 		t.Fatalf("Provisioned = %#v, want the concurrent write preserved",
