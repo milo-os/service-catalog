@@ -1,7 +1,6 @@
 packages:
   - '.'
 
-# pnpm 11+ fails install when a dependency's build script has not been
-# approved. esbuild needs its postinstall to fetch the platform binary.
+# esbuild's postinstall fetches its platform-specific binary.
 allowBuilds:
   esbuild: true
