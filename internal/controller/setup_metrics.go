@@ -101,6 +101,12 @@ func (c *setupInflightCollector) replaceProject(project string, entitlements []s
 	c.mu.Unlock()
 }
 
+func (c *setupInflightCollector) removeProject(project string) {
+	c.mu.Lock()
+	delete(c.projects, project)
+	c.mu.Unlock()
+}
+
 func setupServiceClass(service string) string {
 	switch {
 	case strings.Contains(service, "compute"):
