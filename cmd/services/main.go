@@ -232,7 +232,7 @@ func main() {
 			"NOT the Milo multicluster provider — project isolation is disabled")
 		provider = e2esingle.New(mgr)
 	} else {
-		miloProvider, err := miloprovider.New(discoveryMgr, miloprovider.Options{
+		miloProvider, err := newMiloProvider(discoveryMgr, miloprovider.Options{
 			InternalServiceDiscovery: false,
 			ProjectRestConfig:        cfg,
 			// Engaged project clusters must use our scheme; without it their cache

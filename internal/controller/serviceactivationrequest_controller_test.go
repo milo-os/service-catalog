@@ -243,7 +243,7 @@ func TestServiceActivationRequestReconcilerDisablesExistingRequestForUnavailable
 			providerClient := newFakeClient(activation)
 			mgr := newTestManager()
 			mgr.add(testProviderProject, providerClient)
-			wakeups := newActivationRequestWakeups()
+			wakeups := newEngagementWakeups()
 			req := activationRequest(testProviderProject, activation.Name)
 			consumerClusterName := multicluster.ClusterName(testConsumerProject)
 			wakeups.waitFor(consumerClusterName, req)
@@ -290,7 +290,7 @@ func TestServiceActivationRequestReconcilerWaitsForConsumerEngagement(t *testing
 	providerClient := newFakeClient(activation)
 	mgr := newTestManager()
 	mgr.add(testProviderProject, providerClient)
-	wakeups := newActivationRequestWakeups()
+	wakeups := newEngagementWakeups()
 	r := &ServiceActivationRequestReconciler{
 		rootClient: newServiceRootClient(svc),
 		Manager:    mgr,

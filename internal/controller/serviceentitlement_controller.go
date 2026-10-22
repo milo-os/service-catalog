@@ -79,6 +79,7 @@ type ServiceEntitlementReconciler struct {
 	rootAPIReader client.Reader
 	Manager       mcmanager.Manager
 	Scheme        *runtime.Scheme
+	wakeups       *engagementWakeups
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch;create;update;patch;delete
@@ -134,7 +135,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !entitlement.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, string(consumerProject), consumerClient, &entitlement)
+		return r.reconcileDelete(ctx, req, string(consumerProject), consumerClient, &entitlement)
 	}
 
 	if project == nil || !project.DeletionTimestamp.IsZero() {
@@ -171,11 +172,16 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	providerProject := svc.Spec.Owner.ProducerProjectRef.Name
-	providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(providerProject))
+	providerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(providerProject), req)
 	if err != nil {
-		// Provider project may not be engaged yet; requeue.
-		logger.Info("provider cluster not yet available, requeuing", "providerProject", providerProject, "err", err)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, err
+	}
+	if !ok {
+		// The provider project is not engaged yet, which is routine for a
+		// minute or so after the operator starts. Its engagement re-enqueues
+		// this request.
+		logger.Info("provider cluster not yet available; waiting for engagement", "providerProject", providerProject)
+		return ctrl.Result{}, nil
 	}
 	providerClient := providerCluster.GetClient()
 
@@ -514,7 +520,7 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 	return nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, consumerProject string, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
+func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req mcreconcile.Request, consumerProject string, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(entitlement, serviceEntitlementFinalizer) {
@@ -541,10 +547,13 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	// provider to observe, chaining the teardown guarantee up to project deletion.
 	consumerGated := false
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
-		providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name))
+		providerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name), req)
 		if err != nil {
-			logger.Info("provider cluster unavailable during finalize, requeuing", "err", err)
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			logger.Info("provider cluster unavailable during finalize; waiting for engagement")
+			return ctrl.Result{}, nil
 		}
 		providerClient := providerCluster.GetClient()
 
@@ -713,6 +722,10 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 	r.rootClient = rootMgr.GetClient()
 	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mcMgr
+	r.wakeups = newEngagementWakeups()
+	if err := mcMgr.Add(r.wakeups); err != nil {
+		return fmt.Errorf("failed to register entitlement engagement wakeups: %w", err)
+	}
 
 	// Index ServiceEntitlement objects by the canonical service name stamped
 	// on status.serviceName. The multicluster manager propagates the index to
@@ -809,6 +822,7 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
 		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WatchesRawSource(r.wakeups.source()).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.BillingEntitlement{},
