@@ -33,7 +33,7 @@ func newEnablementFixture(mode servicesv1alpha1.EnablementMode, ent *servicesv1a
 	mgr := newTestManager()
 	mgr.add(testConsumerProject, f.consumerClient)
 	mgr.add(testProviderProject, f.providerClient)
-	f.entitlementR = &ServiceEntitlementReconciler{rootClient: newFakeClient(svc), Manager: mgr, Scheme: testScheme()}
+	f.entitlementR = &ServiceEntitlementReconciler{rootClient: newServiceRootClient(svc), Manager: mgr, Scheme: testScheme()}
 	f.consumerR = &ServiceConsumerReconciler{Manager: mgr, Scheme: testScheme()}
 	return f
 }

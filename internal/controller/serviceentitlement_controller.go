@@ -28,7 +28,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
-	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -76,9 +75,10 @@ type ServiceEntitlementReconciler struct {
 	// Services live in the root etcd prefix, not in any project, so a normal
 	// per-cluster client (which talks to a project's virtual control plane)
 	// cannot see them.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch;create;update;patch;delete
@@ -93,6 +93,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=offers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -103,8 +104,23 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("ServiceEntitlement reconcile invoked without a cluster name")
 	}
 
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// A live Project means this may be a transient disengagement. Keep
+			// retrying because the queued entitlement may need its finalizer
+			// removed once the project control plane is reachable again. Only a
+			// confirmed-absent Project makes this request terminal.
+			if project != nil {
+				return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
@@ -119,6 +135,15 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 
 	if !entitlement.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, string(consumerProject), consumerClient, &entitlement)
+	}
+
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		// The project purger will delete this entitlement and drive the normal
+		// finalizer path. Until then, do not add a new finalizer, enroll
+		// dependencies, create provider consumers, or restore quota grants into
+		// a control plane that is already being drained.
+		logger.V(1).Info("project is absent or terminating; skipping entitlement activation")
+		return ctrl.Result{}, nil
 	}
 
 	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
@@ -154,12 +179,9 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 	providerClient := providerCluster.GetClient()
 
-	var project resourcemanagerv1alpha1.Project
 	var projectSuspended projectSuspension
-	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: string(consumerProject)}, &project); err == nil {
-		projectSuspended = suspensionFromProject(&project)
-	} else if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get project: %w", err)
+	if project != nil {
+		projectSuspended = suspensionFromProject(project)
 	}
 
 	gated := svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider
@@ -685,6 +707,7 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 // would overwrite it with the local cluster name).
 func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mcMgr
 
 	// Index ServiceEntitlement objects by the canonical service name stamped
