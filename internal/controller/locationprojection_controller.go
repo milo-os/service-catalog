@@ -127,6 +127,10 @@ type LocationProjectionReconciler struct {
 
 	projects *projectionProjectIndex
 
+	// writes lets the watches recognize echoes of this reconciler's own
+	// writes. See projectionWriteLedger.
+	writes *projectionWriteLedger
+
 	// trackingStartedAt is when this reconciler began observing setup. An
 	// entitlement created before it with no setup record was never observed
 	// from its request, so its setup is recorded as backfilled. Zero disables
@@ -166,6 +170,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 		if r.projects != nil {
 			r.projects.Remove(string(consumerProject))
 		}
+		r.writes.forgetProject(string(consumerProject))
 		setupInflight.removeProject(string(consumerProject))
 		logger.V(1).Info("project is absent or terminating; skipping location projection")
 		return ctrl.Result{}, nil
@@ -177,6 +182,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 			if r.projects != nil {
 				r.projects.Remove(string(consumerProject))
 			}
+			r.writes.forgetProject(string(consumerProject))
 			setupInflight.removeProject(string(consumerProject))
 			return ctrl.Result{}, nil
 		}
@@ -221,6 +227,10 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("failed to list ServiceAvailabilities: %w", err)
 	}
 	sort.Slice(saList.Items, func(i, j int) bool { return saList.Items[i].Name < saList.Items[j].Name })
+	var configList servicesv1alpha1.ServiceConfigurationList
+	if err := r.rootClient.List(ctx, &configList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to list ServiceConfigurations: %w", err)
+	}
 
 	desiredLocationFields := make(map[string]locationFields)
 	desiredMirrors := make(map[string]*servicesv1alpha1.ServiceAvailability)
@@ -235,10 +245,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 		// there is nothing to evaluate for this entitlement; it contributes
 		// nothing this pass and is picked up when configuration publication
 		// produces a root informer event.
-		sc, err := r.latestPublishedConfiguration(ctx, serviceRefName)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
+		sc := latestPublishedConfiguration(configList.Items, serviceRefName)
 		if sc == nil {
 			logger.V(1).Info("no published ServiceConfiguration for service yet", "service", serviceRefName)
 			projectionStages[serviceRefName] = setupProjectionStage{reason: "ConfigurationUnavailable"}
@@ -319,23 +326,23 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	for locName, fields := range desiredLocationFields {
-		if err := r.projectLocation(ctx, consumerClient, locName, fields); err != nil {
+		if err := r.projectLocation(ctx, string(consumerProject), consumerClient, locName, fields); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{LocationGVK}, keySet(desiredLocationFields)); err != nil {
+	if err := r.prune(ctx, string(consumerProject), consumerClient, []schema.GroupVersionKind{LocationGVK}, keySet(desiredLocationFields)); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{legacyLocationBindingGVK}, map[string]struct{}{}); err != nil {
+	if err := r.prune(ctx, string(consumerProject), consumerClient, []schema.GroupVersionKind{legacyLocationBindingGVK}, map[string]struct{}{}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove legacy LocationBindings: %w", err)
 	}
 
 	for _, sa := range desiredMirrors {
-		if err := r.mirrorAvailability(ctx, consumerClient, sa); err != nil {
+		if err := r.mirrorAvailability(ctx, string(consumerProject), consumerClient, sa); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	if err := r.prune(ctx, consumerClient, []schema.GroupVersionKind{serviceAvailabilityMirrorGVK}, keySet(desiredMirrors)); err != nil {
+	if err := r.prune(ctx, string(consumerProject), consumerClient, []schema.GroupVersionKind{serviceAvailabilityMirrorGVK}, keySet(desiredMirrors)); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.aggregateSetup(ctx, string(consumerProject), consumerClient, entitlementList.Items, projectionStages); err != nil {
@@ -469,6 +476,9 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 			newlyCompletedAt = t.Time
 		}
 
+		// Recorded before the write so its echo is recognized however soon it
+		// arrives.
+		r.writes.recordSetup(project, entitlement)
 		if reflect.DeepEqual(before.Status, entitlement.Status) {
 			continue
 		}
@@ -479,6 +489,7 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 			observeSetupSuccess(entitlement, newlyCompletedAt)
 		}
 	}
+	r.writes.retainSetup(project, entitlements)
 	setupInflight.replaceProject(project, entitlements)
 	setupObserverLastSuccess.SetToCurrentTime()
 	return nil
@@ -635,17 +646,13 @@ func keySet[V any](m map[string]V) map[string]struct{} {
 // ServiceConfiguration for the named service, or nil if none exists. Selecting
 // the latest published document (rather than a pinned reference) is the agreed
 // configuration-selection behavior for the location gates.
-func (r *LocationProjectionReconciler) latestPublishedConfiguration(
-	ctx context.Context,
+func latestPublishedConfiguration(
+	configs []servicesv1alpha1.ServiceConfiguration,
 	serviceRefName string,
-) (*servicesv1alpha1.ServiceConfiguration, error) {
-	var list servicesv1alpha1.ServiceConfigurationList
-	if err := r.rootClient.List(ctx, &list); err != nil {
-		return nil, fmt.Errorf("failed to list ServiceConfigurations: %w", err)
-	}
+) *servicesv1alpha1.ServiceConfiguration {
 	var latest *servicesv1alpha1.ServiceConfiguration
-	for i := range list.Items {
-		sc := &list.Items[i]
+	for i := range configs {
+		sc := &configs[i]
 		if sc.Spec.ServiceRef.Name != serviceRefName {
 			continue
 		}
@@ -656,7 +663,7 @@ func (r *LocationProjectionReconciler) latestPublishedConfiguration(
 			latest = sc
 		}
 	}
-	return latest, nil
+	return latest
 }
 
 // moreRecent reports whether a should win over b as the active configuration:
@@ -710,6 +717,7 @@ func extractLocationFields(loc *unstructured.Unstructured) locationFields {
 // exists to say instead.
 func (r *LocationProjectionReconciler) projectLocation(
 	ctx context.Context,
+	project string,
 	consumerClient client.Client,
 	locName string,
 	fields locationFields,
@@ -718,7 +726,7 @@ func (r *LocationProjectionReconciler) projectLocation(
 	if !ok {
 		return nil
 	}
-	if err := r.upsertProjection(ctx, consumerClient, spec, locName, fields.conditions); err != nil {
+	if err := r.upsertProjection(ctx, project, consumerClient, spec, locName, fields.conditions); err != nil {
 		return fmt.Errorf("failed to upsert %s %q: %w", LocationGVK.Kind, locName, err)
 	}
 	return nil
@@ -753,6 +761,7 @@ func projectionSpec(fields locationFields) (map[string]any, bool) {
 // The projection carries the platform Location's own conditions.
 func (r *LocationProjectionReconciler) upsertProjection(
 	ctx context.Context,
+	project string,
 	consumerClient client.Client,
 	spec map[string]any,
 	locName string,
@@ -762,7 +771,7 @@ func (r *LocationProjectionReconciler) upsertProjection(
 	u.SetGroupVersionKind(LocationGVK)
 	u.SetName(locName)
 
-	if _, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
+	result, err := controllerutil.CreateOrUpdate(ctx, consumerClient, u, func() error {
 		labels := u.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
@@ -783,15 +792,19 @@ func (r *LocationProjectionReconciler) upsertProjection(
 		// than left for CreateOrUpdate to ignore.
 		u.SetOwnerReferences(nil)
 		return unstructured.SetNestedMap(u.Object, spec, "spec")
-	}); err != nil {
+	})
+	if err != nil {
 		if apimeta.IsNoMatchError(err) {
 			// The kind is not installed in this consumer control plane.
 			return nil
 		}
 		return err
 	}
+	if result != controllerutil.OperationResultNone {
+		r.writes.recordWrite(project, u)
+	}
 
-	return r.setProjectionStatus(ctx, consumerClient, u, mirrored)
+	return r.setProjectionStatus(ctx, project, consumerClient, u, mirrored)
 }
 
 // setProjectionStatus reconciles a projection's conditions: the platform
@@ -812,6 +825,7 @@ func (r *LocationProjectionReconciler) upsertProjection(
 // the projection's own.
 func (r *LocationProjectionReconciler) setProjectionStatus(
 	ctx context.Context,
+	project string,
 	consumerClient client.Client,
 	u *unstructured.Unstructured,
 	mirrored []metav1.Condition,
@@ -835,6 +849,7 @@ func (r *LocationProjectionReconciler) setProjectionStatus(
 	if err := consumerClient.Status().Update(ctx, u, client.FieldOwner(locationProjectionFieldManager)); err != nil {
 		return fmt.Errorf("failed to update %s status: %w", u.GetKind(), err)
 	}
+	r.writes.recordWrite(project, u)
 	return nil
 }
 
@@ -866,13 +881,14 @@ func conditionSetsEqual(a, b []metav1.Condition) bool {
 // not recomputed.
 func (r *LocationProjectionReconciler) mirrorAvailability(
 	ctx context.Context,
+	project string,
 	consumerClient client.Client,
 	source *servicesv1alpha1.ServiceAvailability,
 ) error {
 	mirror := &servicesv1alpha1.ServiceAvailability{}
 	mirror.Name = source.Name
 
-	if _, err := controllerutil.CreateOrUpdate(ctx, consumerClient, mirror, func() error {
+	result, err := controllerutil.CreateOrUpdate(ctx, consumerClient, mirror, func() error {
 		labels := mirror.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
@@ -881,13 +897,17 @@ func (r *LocationProjectionReconciler) mirrorAvailability(
 		mirror.SetLabels(labels)
 		mirror.Spec = source.Spec
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		if apimeta.IsNoMatchError(err) {
 			// ServiceAvailability is not installed in this consumer control
 			// plane; nothing to mirror into.
 			return nil
 		}
 		return fmt.Errorf("failed to upsert mirrored ServiceAvailability %q: %w", source.Name, err)
+	}
+	if result != controllerutil.OperationResultNone {
+		r.writes.recordWrite(project, mirror)
 	}
 
 	if conditionsEqual(mirror.Status.Conditions, source.Status.Conditions, ConditionTypeAvailable) &&
@@ -898,6 +918,7 @@ func (r *LocationProjectionReconciler) mirrorAvailability(
 	if err := consumerClient.Status().Update(ctx, mirror, client.FieldOwner(serviceAvailabilityMirrorFieldManager)); err != nil {
 		return fmt.Errorf("failed to update mirrored ServiceAvailability %q status: %w", source.Name, err)
 	}
+	r.writes.recordWrite(project, mirror)
 	return nil
 }
 
@@ -957,6 +978,7 @@ func setObjectConditions(u *unstructured.Unstructured, conds []metav1.Condition)
 // notion of which entitlement a projection came from.
 func (r *LocationProjectionReconciler) prune(
 	ctx context.Context,
+	project string,
 	consumerClient client.Client,
 	gvks []schema.GroupVersionKind,
 	keep map[string]struct{},
@@ -979,6 +1001,7 @@ func (r *LocationProjectionReconciler) prune(
 			if _, ok := keep[item.GetName()]; ok {
 				continue
 			}
+			r.writes.recordDelete(project, item)
 			if err := consumerClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("failed to delete stale %s %q: %w", gvk.Kind, item.GetName(), err)
 			}
@@ -1156,15 +1179,16 @@ func (d *projectionRootDispatcher) dispatchObjects(ctx context.Context, objects 
 // via Watches rather than For, so events collapse onto one project-keyed
 // request (see locationProjectionRequestName).
 //
-// Setup-only status updates are intentionally not filtered from this watch.
-// Dependency-first aggregation normally makes their follow-up pass a no-op,
-// but the event is the recovery trigger if the process stops after patching a
-// dependency and before patching its parent.
+// Entitlement updates are filtered to changes a pass reads, and the echoes of
+// this reconciler's own writes are dropped (see projectionWriteLedger for why
+// that keeps recovery intact). A setup aggregate changed by anyone else still
+// passes, so a status edit is repaired.
 //
 // Root ServiceAvailability, ServiceConfiguration, and canonical Location
 // informer events are translated by projectionRootDispatcher into the same
 // project key. Managed projection objects are watched in each project so
-// deletion and drift repair do not depend on a periodic sweep.
+// deletion and drift repair do not depend on a periodic sweep; only the echoes
+// of this reconciler's own writes are dropped there.
 //
 // Reconciles run concurrently across projects. Two passes over the same
 // project are serialized by controller-runtime's per-key locking, since every
@@ -1176,6 +1200,7 @@ func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, r
 	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	r.projects = newProjectionProjectIndex()
+	r.writes = newProjectionWriteLedger()
 	r.trackingStartedAt = time.Now()
 	rootEvents := make(chan event.TypedGenericEvent[mcreconcile.Request], 4096)
 	if err := rootMgr.Add(&projectionRootDispatcher{
@@ -1200,6 +1225,7 @@ func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, r
 			&servicesv1alpha1.ServiceEntitlement{},
 			mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
 			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(entitlementProjectionPredicate(r.writes)),
 		)
 	projection := &unstructured.Unstructured{}
 	projection.SetGroupVersionKind(LocationGVK)
@@ -1207,11 +1233,13 @@ func (r *LocationProjectionReconciler) SetupWithManager(mgr mcmanager.Manager, r
 		projection,
 		mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
 		mcbuilder.WithEngageWithProviderClusters(true),
+		mcbuilder.WithPredicates(managedProjectionPredicate(r.writes)),
 	)
 	builder = builder.Watches(
 		&servicesv1alpha1.ServiceAvailability{},
 		mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
 		mcbuilder.WithEngageWithProviderClusters(true),
+		mcbuilder.WithPredicates(managedProjectionPredicate(r.writes)),
 	)
 	return builder.WithOptions(controller.TypedOptions[mcreconcile.Request]{
 		MaxConcurrentReconciles: locationProjectionMaxConcurrentReconciles,
