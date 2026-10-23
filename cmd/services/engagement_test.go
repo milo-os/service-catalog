@@ -68,7 +68,7 @@ func TestNewMiloProviderEngagesProjectsConcurrently(t *testing.T) {
 	if !workers.IsValid() {
 		t.Fatal("controller no longer exposes MaxConcurrentReconciles; update this test")
 	}
-	if got := workers.Int(); got != projectEngagementWorkers {
+	if got := workers.Int(); got != int64(projectEngagementWorkers) {
 		t.Errorf("MaxConcurrentReconciles = %d, want %d", got, projectEngagementWorkers)
 	}
 }

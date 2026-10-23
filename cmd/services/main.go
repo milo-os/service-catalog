@@ -99,6 +99,9 @@ func main() {
 			"one kind in one project, not the whole operator. A negative value turns client-side throttling off; 0 is rejected.")
 	flag.IntVar(&kubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst,
 		"Requests each Milo client may send at once before --kube-api-qps applies. Must be positive unless --kube-api-qps is negative.")
+	flag.IntVar(&projectEngagementWorkers, "project-engagement-workers", defaultProjectEngagementWorkers,
+		"Project control planes each Milo provider connects to at once. Each one lists every kind the operator "+
+			"watches in that project, so this bounds the startup load on Milo. Must be positive.")
 	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
 		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
 			"project name (consumer and provider alike) to this single cluster, so ServiceEntitlement/"+
@@ -154,6 +157,10 @@ func main() {
 	// in-cluster development where they happen to be the same cluster.
 	if err := validateClientRateLimits(float32(kubeAPIQPS), kubeAPIBurst); err != nil {
 		setupLog.Error(err, "invalid client rate limits")
+		os.Exit(1)
+	}
+	if projectEngagementWorkers < 1 {
+		setupLog.Error(fmt.Errorf("--project-engagement-workers must be positive, got %d", projectEngagementWorkers), "invalid project engagement workers")
 		os.Exit(1)
 	}
 	cfg, err := miloRestConfig(&serverConfig, float32(kubeAPIQPS), kubeAPIBurst)
