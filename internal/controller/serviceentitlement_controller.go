@@ -335,6 +335,7 @@ func applyEntitlementReadyStatus(ctx context.Context, consumerClient client.Clie
 	if err := applyEntitlementStatus(ctx, consumerClient, entitlementReadyOwner, before, entitlement); err != nil {
 		return fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
 	}
+	observeServiceRejection(before, entitlement)
 	return nil
 }
 
@@ -663,6 +664,7 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req 
 	if err := consumerClient.Update(ctx, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
+	observeServiceDisable(svc, entitlement)
 	logger.Info("finalized ServiceEntitlement", "name", entitlement.Name)
 	return ctrl.Result{}, nil
 }

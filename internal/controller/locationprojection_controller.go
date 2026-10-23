@@ -172,6 +172,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 		r.writes.forgetProject(string(consumerProject))
 		setupInflight.removeProject(string(consumerProject))
+		serviceUsage.removeProject(string(consumerProject))
 		logger.V(1).Info("project is absent or terminating; skipping location projection")
 		return ctrl.Result{}, nil
 	}
@@ -184,6 +185,7 @@ func (r *LocationProjectionReconciler) Reconcile(ctx context.Context, req mcreco
 			}
 			r.writes.forgetProject(string(consumerProject))
 			setupInflight.removeProject(string(consumerProject))
+			serviceUsage.removeProject(string(consumerProject))
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
@@ -388,6 +390,7 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 			servicesByName[service.Spec.ServiceName] = service
 		}
 	}
+	initializeServiceMetricSeries(servicesByName)
 	entitlementsByService := make(map[string]*servicesv1alpha1.ServiceEntitlement, len(entitlements))
 	for i := range entitlements {
 		entitlement := &entitlements[i]
@@ -487,10 +490,12 @@ func (r *LocationProjectionReconciler) aggregateSetup(
 		}
 		if !newlyCompletedAt.IsZero() {
 			observeSetupSuccess(entitlement, newlyCompletedAt)
+			observeServiceSetupSuccess(serviceMetricName(servicesByName, entitlement), entitlement, newlyCompletedAt)
 		}
 	}
 	r.writes.retainSetup(project, entitlements)
 	setupInflight.replaceProject(project, entitlements)
+	serviceUsage.replaceProject(project, entitlements, servicesByName)
 	setupObserverLastSuccess.SetToCurrentTime()
 	return nil
 }
