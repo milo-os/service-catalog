@@ -53,7 +53,7 @@
          "title": "Runbook",
          "tooltip": "Diagnose service setup stalls",
          "type": "link",
-         "url": "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+         "url": "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
       },
       {
          "icon": "dashboard",

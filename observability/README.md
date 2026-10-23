@@ -35,5 +35,6 @@ gets them alongside the dashboard:
 | `ServiceCatalogSetupObserverDown` | No operator pod has a synced setup observer for 10 minutes, so no activation can complete | critical |
 | `ServiceCatalogClientThrottled` | p95 wait on the operator's client-side rate limiter exceeds 250ms for 15 minutes | warning |
 
-Install `promtool` and run `task observability:test-alerts` to unit test the
-rules.
+Install `promtool` and [yq](https://github.com/mikefarah/yq) v4, then run
+`task observability:test-alerts` to unit test the
+rules. Each alert links to the [service setup runbook](../docs/runbooks/service-setup.md).

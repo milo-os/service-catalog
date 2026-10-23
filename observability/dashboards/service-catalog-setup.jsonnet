@@ -396,7 +396,7 @@ g.dashboard.new('Service Catalog Setup')
 + g.dashboard.time.withFrom('now-6h')
 + g.dashboard.time.withTo('now')
 + g.dashboard.withLinks([
-  { icon: 'external link', includeVars: false, keepTime: false, targetBlank: true, title: 'Runbook', tooltip: 'Diagnose service setup stalls', type: 'link', url: 'https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md' },
+  { icon: 'external link', includeVars: false, keepTime: false, targetBlank: true, title: 'Runbook', tooltip: 'Diagnose service setup stalls', type: 'link', url: 'https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md' },
   { icon: 'dashboard', includeVars: true, keepTime: true, targetBlank: false, title: 'Milo API latency', tooltip: 'Control-plane API latency and dependencies', type: 'link', url: '/d/milo-api-latency' },
 ])
 + g.dashboard.withVariables([datasourceVar])

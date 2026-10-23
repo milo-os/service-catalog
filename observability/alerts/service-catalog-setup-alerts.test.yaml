@@ -41,7 +41,7 @@ tests:
               team: platform
               service_class: compute
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "compute service activation p95 is over 15 seconds"
               description: "Over the last 30 minutes, 95% of compute activations finished within 25.5s of authorization, above the 15-second target. Check the setup dashboard for client throttling, API latency, and the slowest setup stage."
@@ -92,7 +92,7 @@ tests:
               service_class: compute
               blocking_stage: Projection
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "1 compute activation(s) unfinished more than a minute after authorization"
               description: "1 compute activation(s) have waited more than a minute past authorization at the Projection stage. The ServiceEntitlement setup status names the stage and reason."
@@ -109,7 +109,7 @@ tests:
               service_class: compute
               blocking_stage: Projection
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "1 compute activation(s) stalled at the Projection stage"
               description: "1 compute activation(s) are still unfinished more than an hour after authorization, blocked at the Projection stage. Retries will not fix these. Find them with the ServiceEntitlement setup status and resolve the blocker, for example a missing ServiceConfiguration."
@@ -136,7 +136,7 @@ tests:
               service_class: dns
               blocking_stage: Dependencies
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "3 dns activation(s) unfinished more than a minute after authorization"
               description: "3 dns activation(s) have waited more than a minute past authorization at the Dependencies stage. The ServiceEntitlement setup status names the stage and reason."
@@ -161,7 +161,7 @@ tests:
               service: service-catalog
               team: platform
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "Service activation is not being processed"
               description: "No services-controller-manager pod has reported a healthy setup observer for 10 minutes, so no service activation can complete. Check the operator pods for restarts, leader election, and Milo API connectivity."
@@ -183,7 +183,7 @@ tests:
               service: service-catalog
               team: platform
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "Service activation is not being processed"
               description: "No services-controller-manager pod has reported a healthy setup observer for 10 minutes, so no service activation can complete. Check the operator pods for restarts, leader election, and Milo API connectivity."
@@ -216,7 +216,7 @@ tests:
               service: service-catalog
               team: platform
             exp_annotations:
-              runbook_url: "https://github.com/datum-cloud/infra/blob/main/docs/runbooks/control-plane/service-setup.md"
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
               dashboard_url: "/d/service-catalog-setup"
               summary: "The services operator is throttling its own Milo API requests"
               description: "95% of the operator's Milo API requests waited up to 2s on its client-side rate limiter over the last 10 minutes. Raise --kube-api-qps and --kube-api-burst, or find what is driving the extra requests."
