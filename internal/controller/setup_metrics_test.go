@@ -46,8 +46,8 @@ func TestSetupInflightCollectorRemovesProject(t *testing.T) {
 	}
 }
 
-func TestSetupDurationBucketsCoverLongRunningSetup(t *testing.T) {
-	want := []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
+func TestSetupDurationBucketsCoverSubSecondAndLongRunningSetup(t *testing.T) {
+	want := []float64{0.1, 0.25, 0.5, 0.75, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
 	if len(setupDurationBuckets) != len(want) {
 		t.Fatalf("setup duration buckets = %v, want %v", setupDurationBuckets, want)
 	}
@@ -59,8 +59,8 @@ func TestSetupDurationBucketsCoverLongRunningSetup(t *testing.T) {
 }
 
 func TestSetupMetricSeriesBudget(t *testing.T) {
-	if got := setupMetricSeriesBudget(); got != 402 {
-		t.Fatalf("setup metrics add %d series, want 402", got)
+	if got := setupMetricSeriesBudget(); got != 442 {
+		t.Fatalf("setup metrics add %d series, want 442", got)
 	} else if got >= 20_000 {
 		t.Fatalf("setup metrics add %d series, want fewer than 20,000", got)
 	}

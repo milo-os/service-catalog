@@ -38,7 +38,7 @@ var (
 	setupOperations           = []string{setupOperationInitial}
 	setupClocks               = []string{setupClockUser, setupClockPlatform}
 	setupOutcomes             = []string{setupOutcomeSucceeded}
-	setupDurationBuckets      = []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
+	setupDurationBuckets      = []float64{0.1, 0.25, 0.5, 0.75, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 43200, 86400}
 	setupDuration             = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "service_catalog_setup_duration_seconds", Help: "Elapsed time from the original accepted request to successful catalog setup.", Buckets: setupDurationBuckets}, []string{"service_class", "operation", "clock"})
 	setupAttempts             = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "service_catalog_setup_attempts_total", Help: "Terminal service setup attempts observed by the aggregate writer."}, []string{"service_class", "operation", "outcome"})
 	projectionDurationBuckets = prometheus.ExponentialBuckets(0.005, 2, 12)
