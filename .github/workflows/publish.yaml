@@ -18,7 +18,10 @@ jobs:
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
+  # Flux deploys a bundle as soon as it appears, so publish it only after the
+  # image it references exists.
   publish-kustomize-bundles:
+    needs: publish-container-image
     permissions:
       id-token: write
       contents: read
