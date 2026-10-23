@@ -152,18 +152,15 @@ func main() {
 	// that hosts the controller pod. Connect directly to Milo using the
 	// configured kubeconfig, falling back to ctrl.GetConfig() for local /
 	// in-cluster development where they happen to be the same cluster.
-	cfg, err := serverConfig.RestConfig()
-	if err != nil {
-		setupLog.Error(err, "unable to load rest config")
-		os.Exit(1)
-	}
-	// Before anything copies cfg: every manager, the Milo providers, and each
-	// project control plane's config derive from it.
 	if err := validateClientRateLimits(float32(kubeAPIQPS), kubeAPIBurst); err != nil {
 		setupLog.Error(err, "invalid client rate limits")
 		os.Exit(1)
 	}
-	setClientRateLimits(cfg, float32(kubeAPIQPS), kubeAPIBurst)
+	cfg, err := miloRestConfig(&serverConfig, float32(kubeAPIQPS), kubeAPIBurst)
+	if err != nil {
+		setupLog.Error(err, "unable to load rest config")
+		os.Exit(1)
+	}
 
 	ctx := ctrl.SetupSignalHandler()
 
