@@ -144,3 +144,37 @@ func counterValue(t *testing.T, counter prometheus.Counter) float64 {
 	}
 	return metric.GetCounter().GetValue()
 }
+
+func TestServiceSetupSuccessRecordsDurationAndActivation(t *testing.T) {
+	const service = "setup-success-test.miloapis.com"
+	completedAt := time.Now()
+	entitlement := &servicesv1alpha1.ServiceEntitlement{}
+	entitlement.Status.Setup = &servicesv1alpha1.ServiceSetupStatus{
+		RequestedAt:  metav1.NewTime(completedAt.Add(-3 * time.Second)),
+		AuthorizedAt: &metav1.Time{Time: completedAt.Add(-time.Second)},
+	}
+	activations := serviceActivations.WithLabelValues(service, serviceActivationSucceeded)
+	start := counterValue(t, activations)
+
+	observeServiceSetupSuccess(service, entitlement, completedAt)
+	// A backfilled attempt has no trustworthy request time and is not counted.
+	backfilled := entitlement.DeepCopy()
+	backfilled.Status.Setup.Backfilled = true
+	observeServiceSetupSuccess(service, backfilled, completedAt)
+
+	if got := counterValue(t, activations) - start; got != 1 {
+		t.Fatalf("activations counted = %v, want 1", got)
+	}
+	for clock, want := range map[string]float64{setupClockUser: 3, setupClockPlatform: 1} {
+		var metric dto.Metric
+		if err := serviceSetupDuration.WithLabelValues(service, clock).(prometheus.Histogram).Write(&metric); err != nil {
+			t.Fatal(err)
+		}
+		if got := metric.GetHistogram().GetSampleCount(); got != 1 {
+			t.Errorf("%s clock observations = %d, want 1", clock, got)
+		}
+		if got := metric.GetHistogram().GetSampleSum(); got < want-0.01 || got > want+0.01 {
+			t.Errorf("%s clock duration = %v, want %v", clock, got, want)
+		}
+	}
+}
