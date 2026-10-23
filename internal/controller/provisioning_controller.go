@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,14 +41,31 @@ import (
 const labelServiceName = "services.miloapis.com/service-name"
 
 const (
-	// provisioningResyncInterval bounds how long a change no watch here observes
-	// takes to reach consumer projects. Declaration edits do not wait for it,
-	// because SetupWithManager watches ServiceConfiguration.
-	provisioningResyncInterval = 5 * time.Minute
+	// provisioningResyncInterval is how often a settled entitlement is
+	// provisioned again with nothing having changed. Changes to the entitlement
+	// and to its declaration arrive as events and do not wait for it. What
+	// does is drift in the installed objects themselves, a customer editing or
+	// deleting one: this operator does not watch those kinds, because each
+	// would cost a watch per project on Milo, so the resync is what repairs
+	// them.
+	provisioningResyncInterval = time.Hour
+
+	// provisioningResyncJitter spreads each resync over up to this fraction
+	// of the interval, so entitlements engaged together at startup do not all
+	// come due in the same minute an hour later.
+	provisioningResyncJitter = 0.1
+
+	// provisioningBlockedRetryInterval is how soon an entitlement with a
+	// declaration that could not be installed is tried again. Failures retry
+	// sooner on their own schedule, but at most this long apart. A
+	// declaration blocked by something the project has to change, such as a
+	// name an object of the customer's already holds, is tried this often
+	// too, because no watch here sees that name being freed.
+	provisioningBlockedRetryInterval = 5 * time.Minute
 
 	// provisioningHeartbeatInterval caps how stale LastProvisioningEvaluation
 	// may get when nothing else changed, so a dead fan-out stays detectable
-	// without patching on every five-minute resync.
+	// without patching on every resync.
 	provisioningHeartbeatInterval = time.Hour
 
 	// provisioningFailureRetryMin is how soon a declaration that failed to
@@ -60,7 +78,7 @@ const (
 
 	// provisioningFailureRetryFraction sets the retry delay to this fraction
 	// of how long the entitlement has been failing, between
-	// provisioningFailureRetryMin and provisioningResyncInterval. The retry
+	// provisioningFailureRetryMin and provisioningBlockedRetryInterval. The retry
 	// after the cause clears therefore comes at most about a tenth later than
 	// it could have. A doubling backoff instead waited up to as long again:
 	// a webhook that recovered after 70s was retried at 126s.
@@ -189,7 +207,7 @@ func (r *ProvisioningReconciler) now() time.Time {
 // failureRetryDelay records another failed pass for the entitlement and
 // returns how long to wait before the next one: a tenth of how long it has
 // been failing, but at least provisioningFailureRetryMin and at most
-// provisioningResyncInterval.
+// provisioningBlockedRetryInterval.
 func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration {
 	now := r.now()
 	r.failingSinceMu.Lock()
@@ -204,7 +222,7 @@ func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration 
 	r.failingSinceMu.Unlock()
 
 	delay := now.Sub(since) / provisioningFailureRetryFraction
-	return min(max(delay, provisioningFailureRetryMin), provisioningResyncInterval)
+	return min(max(delay, provisioningFailureRetryMin), provisioningBlockedRetryInterval)
 }
 
 // clearFailureRetry forgets an entitlement's failure history once nothing it
@@ -221,6 +239,21 @@ func (r *ProvisioningReconciler) clearFailureRetry(uid types.UID) {
 			delete(r.failingSince, other)
 		}
 	}
+}
+
+// resyncDelay is how long a settled entitlement waits for its next resync.
+func resyncDelay() time.Duration {
+	return wait.Jitter(provisioningResyncInterval, provisioningResyncJitter)
+}
+
+// allInstalled reports whether every declaration in the ledger was installed.
+func allInstalled(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
+	for i := range ledger {
+		if ledger[i].State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+			return false
+		}
+	}
+	return true
 }
 
 func hasFailedResource(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
@@ -320,7 +353,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		// Nothing declares what this project is owed yet. Do not prune on the
 		// strength of a lookup that found nothing; retry.
 		logger.V(1).Info("no published ServiceConfiguration for service yet, requeuing", "service", serviceRefName)
-		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, nil
+		return ctrl.Result{RequeueAfter: resyncDelay()}, nil
 	}
 
 	serviceName := sc.Status.ServiceName
@@ -337,7 +370,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, r.writeStatus(
+		return ctrl.Result{RequeueAfter: resyncDelay()}, r.writeStatus(
 			ctx, consumerClient, &entitlement, nil,
 			servicesv1alpha1.ReasonNothingToProvision,
 			fmt.Sprintf("%s does not install any resources into projects.", serviceName))
@@ -381,11 +414,15 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// A failed install is retried on its own short schedule. Waiting for the
 	// resync left setup stalled for minutes behind failures that cleared within
 	// seconds, because nothing else re-triggers this entitlement once it settles.
-	requeue := provisioningResyncInterval
+	// A declaration blocked for another reason is retried on a slower one.
+	requeue := resyncDelay()
 	if hasFailedResource(ledger) {
 		requeue = r.failureRetryDelay(entitlement.UID)
 	} else {
 		r.clearFailureRetry(entitlement.UID)
+		if !allInstalled(ledger) {
+			requeue = provisioningBlockedRetryInterval
+		}
 	}
 	return ctrl.Result{RequeueAfter: requeue},
 		r.writeStatus(ctx, consumerClient, &entitlement, ledger, "", "")
@@ -1133,7 +1170,13 @@ func activePublishedConfiguration(
 // The primary watch is ServiceEntitlement, scoped to engaged project clusters.
 // A root-cluster watch on ServiceConfiguration sits on top: without it a
 // selector change would reach entitled projects only on the next resync, up to
-// provisioningResyncInterval later. The map function fans a root event into
+// provisioningResyncInterval later. Only spec changes and the canonical
+// service name pass; the rest of its status is the configuration controller's
+// progress report.
+//
+// Entitlement updates pass only when they change what provisioning acts on,
+// so the status writes every controller makes on the entitlement, this one's
+// ledger included, do not each set off another full pass. The map function fans a root event into
 // project-scoped requests, so it needs the root manager's cache directly;
 // mchandler would overwrite ClusterName with the local cluster.
 //
@@ -1145,7 +1188,10 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-provisioning").
-		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		For(&servicesv1alpha1.ServiceEntitlement{},
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(provisioningEntitlementPredicate()),
+		).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceConfiguration{},
@@ -1153,6 +1199,7 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 				func(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) []mcreconcile.Request {
 					return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
 				}),
+			serviceConfigurationPredicate(),
 		)).
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: provisioningMaxConcurrentReconciles,

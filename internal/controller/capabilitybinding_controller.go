@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -20,8 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -45,14 +48,6 @@ var capabilityBindingGVK = schema.GroupVersionKind{
 }
 
 const (
-	// capabilityBindingResyncInterval bounds how long a change on the root
-	// cluster (an agent publishing, a new reviewed configuration) takes to show
-	// up in customer projects. The trigger we do get is the ServiceEntitlement
-	// watch; multicluster-runtime gives us no clean way to turn a root-cluster
-	// event into a project-scoped reconcile, so a periodic pass covers the rest
-	// — the same trade-off Location projection makes.
-	capabilityBindingResyncInterval = 5 * time.Minute
-
 	// Labels recording what a projected binding came from, so it can be found
 	// and pruned without reading the catalog. Only bindings carrying the shared
 	// managed-by label are ever deleted, which is what keeps a hand-written
@@ -221,7 +216,7 @@ func (r *CapabilityBindingReconciler) Reconcile(ctx context.Context, req mcrecon
 
 	logger.V(1).Info("reconciled capability bindings",
 		"activeEntitlements", len(active), "bindings", len(desired))
-	return ctrl.Result{RequeueAfter: capabilityBindingResyncInterval}, nil
+	return ctrl.Result{}, nil
 }
 
 // latestPublishedAgentConfiguration returns the newest Published configuration
@@ -392,11 +387,13 @@ func (r *CapabilityBindingReconciler) pruneCapabilityBindings(
 
 // SetupWithManager registers the reconciler on the multicluster manager.
 //
-// The watch is ServiceEntitlement in engaged project clusters, via Watches
-// rather than For so every entitlement in a project collapses onto one
-// reconcile. The agent and configuration gates live on the root cluster, which
-// we have no clean way to enqueue from, so they are picked up by the periodic
-// pass instead.
+// The project watch is ServiceEntitlement in engaged project clusters, via
+// Watches rather than For so every entitlement in a project collapses onto one
+// reconcile. The catalog side (the Service, its agents and their
+// configurations) lives on the root cluster; those watches fan out to every
+// project entitled to the service, so a newly published agent reaches
+// customers without a periodic pass. Only spec changes count: nothing here
+// reads their status.
 func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr manager.Manager) error {
 	r.rootClient = rootMgr.GetClient()
 	r.rootAPIReader = rootMgr.GetAPIReader()
@@ -407,11 +404,116 @@ func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, ro
 			&servicesv1alpha1.ServiceEntitlement{},
 			mchandler.TypedEnqueueRequestsFromMapFunc[client.Object, mcreconcile.Request](mapServiceEntitlementToProjectRequest),
 			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(capabilityEntitlementPredicate()),
 		).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.Service{},
+			handler.TypedEnqueueRequestsFromMapFunc(
+				func(ctx context.Context, svc *servicesv1alpha1.Service) []mcreconcile.Request {
+					return enqueueProjectsForServiceName(ctx, r.rootClient, r.Manager, svc.Spec.ServiceName)
+				}),
+			predicate.TypedGenerationChangedPredicate[*servicesv1alpha1.Service]{},
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.ServiceAgent{},
+			handler.TypedEnqueueRequestsFromMapFunc(
+				func(ctx context.Context, agent *servicesv1alpha1.ServiceAgent) []mcreconcile.Request {
+					// The event carries the agent, so a deleted one still names
+					// the projects whose bindings must go.
+					return r.enqueueProjectsForServiceRef(ctx, agent.Spec.ServiceRef.Name)
+				}),
+			predicate.TypedGenerationChangedPredicate[*servicesv1alpha1.ServiceAgent]{},
+		)).
+		WatchesRawSource(source.TypedKind(
+			rootMgr.GetCache(),
+			&servicesv1alpha1.ServiceAgentConfiguration{},
+			handler.TypedEnqueueRequestsFromMapFunc(
+				func(ctx context.Context, sac *servicesv1alpha1.ServiceAgentConfiguration) []mcreconcile.Request {
+					return r.enqueueProjectsForAgent(ctx, sac.Spec.ServiceAgentRef.Name)
+				}),
+			predicate.TypedGenerationChangedPredicate[*servicesv1alpha1.ServiceAgentConfiguration]{},
+		)).
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
 			MaxConcurrentReconciles: capabilityBindingMaxConcurrentReconciles,
 		}).
 		Complete(r)
+}
+
+// capabilityEntitlementPredicate passes the entitlement changes that decide
+// which bindings a project gets: whether it is Active, deleting, and which
+// service it names. The status writes other controllers make on every
+// entitlement, provisioning's ledger among them, do not.
+func capabilityEntitlementPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldEntitlement, okOld := e.ObjectOld.(*servicesv1alpha1.ServiceEntitlement)
+			newEntitlement, okNew := e.ObjectNew.(*servicesv1alpha1.ServiceEntitlement)
+			if !okOld || !okNew {
+				return true
+			}
+			return oldEntitlement.Status.Phase != newEntitlement.Status.Phase ||
+				oldEntitlement.Spec.ServiceRef != newEntitlement.Spec.ServiceRef ||
+				oldEntitlement.DeletionTimestamp.IsZero() != newEntitlement.DeletionTimestamp.IsZero()
+		},
+	}
+}
+
+// enqueueProjectsForAgent turns a change to one of an agent's configurations
+// into one request per project entitled to the agent's service.
+func (r *CapabilityBindingReconciler) enqueueProjectsForAgent(ctx context.Context, agentName string) []mcreconcile.Request {
+	if agentName == "" {
+		return nil
+	}
+	var agent servicesv1alpha1.ServiceAgent
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: agentName}, &agent); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "get ServiceAgent for capability fan-out", "agent", agentName)
+		}
+		// Without the agent no project projects this configuration anyway.
+		return nil
+	}
+	return r.enqueueProjectsForServiceRef(ctx, agent.Spec.ServiceRef.Name)
+}
+
+// enqueueProjectsForServiceRef resolves a Service by name to its canonical
+// service name and enqueues every project entitled to it.
+func (r *CapabilityBindingReconciler) enqueueProjectsForServiceRef(ctx context.Context, serviceRefName string) []mcreconcile.Request {
+	if serviceRefName == "" {
+		return nil
+	}
+	var svc servicesv1alpha1.Service
+	if err := r.rootClient.Get(ctx, types.NamespacedName{Name: serviceRefName}, &svc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "get Service for capability fan-out", "serviceRef", serviceRefName)
+		}
+		return nil
+	}
+	return enqueueProjectsForServiceName(ctx, r.rootClient, r.Manager, svc.Spec.ServiceName)
+}
+
+// enqueueProjectsForServiceName collapses the entitlement fan-out for a
+// service onto one project-scoped request per project, the key this
+// reconciler works on.
+func enqueueProjectsForServiceName(
+	ctx context.Context,
+	rootClient client.Client,
+	mgr mcmanager.Manager,
+	canonical string,
+) []mcreconcile.Request {
+	seen := make(map[multicluster.ClusterName]struct{})
+	var out []mcreconcile.Request
+	for _, req := range enqueueEntitlementsForServiceName(ctx, rootClient, mgr, canonical) {
+		if _, ok := seen[req.ClusterName]; ok {
+			continue
+		}
+		seen[req.ClusterName] = struct{}{}
+		project := mapServiceEntitlementToProjectRequest(ctx, nil)[0]
+		project.ClusterName = req.ClusterName
+		out = append(out, project)
+	}
+	return out
 }
 
 // warnUnresolvableAgents reports a Published agent whose serviceRef names no

@@ -214,8 +214,8 @@ func TestCapabilityBinding_AllGatesOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.RequeueAfter != capabilityBindingResyncInterval {
-		t.Fatalf("RequeueAfter = %v, want %v", res.RequeueAfter, capabilityBindingResyncInterval)
+	if res.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %v, want none: catalog changes arrive as events", res.RequeueAfter)
 	}
 
 	u, ok := getCapabilityBinding(t, consumer, cbAgent)

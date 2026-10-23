@@ -301,14 +301,14 @@ func TestServiceEntitlementReconciler_GatedPendingApproval(t *testing.T) {
 
 	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
 
-	// Pin the bounded requeue for pending approvals (see
-	// pendingApprovalRequeueInterval).
+	// A pending entitlement waits for the ServiceConsumer controller to
+	// propagate the provider's decision; it is not polled.
 	res, err := r.Reconcile(context.Background(), entitlementRequest(testConsumerProject, testServiceSlug))
 	if err != nil {
 		t.Fatalf("reconcile pending entitlement: %v", err)
 	}
-	if res != (ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}) {
-		t.Errorf("pending reconcile result = %+v, want RequeueAfter=%v", res, pendingApprovalRequeueInterval)
+	if res != (ctrl.Result{}) {
+		t.Errorf("pending reconcile result = %+v, want no requeue", res)
 	}
 
 	var got servicesv1alpha1.ServiceEntitlement
