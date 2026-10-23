@@ -22,7 +22,10 @@ import (
 // the fake client takes from the generated CRD schema. Without one it deduces
 // a schema and treats every list as atomic, so two managers applying different
 // conditions would replace each other's instead of merging per type.
-var crdTypeConvertedResources = []string{"services.miloapis.com_serviceentitlements.yaml"}
+var crdTypeConvertedResources = []string{
+	"services.miloapis.com_serviceentitlements.yaml",
+	"services.miloapis.com_serviceconsumers.yaml",
+}
 
 var (
 	crdTypeConverterOnce sync.Once
@@ -70,6 +73,19 @@ func newCRDTypeConverter() (managedfields.TypeConverter, error) {
 			if err := json.Unmarshal(props, &schema); err != nil {
 				return nil, fmt.Errorf("convert %s schema: %w", file, err)
 			}
+			// The API server merges a custom resource's metadata by the
+			// ObjectMeta schema, not the CRD's bare "type: object", which
+			// would make finalizers atomic.
+			metadata := schema.Properties["metadata"]
+			metadata.Properties = map[string]spec.Schema{"finalizers": {
+				SchemaProps: spec.SchemaProps{
+					Type:  []string{"array"},
+					Items: &spec.SchemaOrArray{Schema: spec.StringProperty()},
+				},
+				VendorExtensible: spec.VendorExtensible{Extensions: spec.Extensions{"x-kubernetes-list-type": "set"}},
+			}}
+			metadata.AddExtension("x-kubernetes-preserve-unknown-fields", true)
+			schema.Properties["metadata"] = metadata
 			schema.AddExtension("x-kubernetes-group-version-kind", []any{map[string]any{
 				"group":   crd.Spec.Group,
 				"version": version.Name,

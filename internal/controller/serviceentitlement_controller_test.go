@@ -1445,3 +1445,103 @@ func TestServiceEntitlementReconciler_DeleteRemovesProvisionedObjects(t *testing
 		t.Errorf("expected the entitlement to finish deleting, got err=%v", err)
 	}
 }
+
+// TestServiceEntitlementReconciler_EnrollsSelfServiceChainInOnePass proves the
+// top entitlement's reconcile enrolls the whole self-service chain at once,
+// labelled exactly as each middle entitlement's own reconcile would label it,
+// and stops at a gated service whose dependencies wait for approval.
+func TestServiceEntitlementReconciler_EnrollsSelfServiceChainInOnePass(t *testing.T) {
+	const (
+		midSlug   = "networking"
+		leafSlug  = "ipam"
+		gatedSlug = "gated"
+		afterSlug = "after-gated"
+	)
+	topSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", midSlug, gatedSlug)
+	midSvc := newPublishedService(midSlug, "networking.miloapis.com", testProviderProject, "", leafSlug)
+	leafSvc := newPublishedService(leafSlug, "ipam.miloapis.com", testProviderProject, "")
+	gatedSvc := newPublishedService(gatedSlug, "gated.miloapis.com", testProviderProject, servicesv1alpha1.EnablementModeGatedByProvider, afterSlug)
+	afterSvc := newPublishedService(afterSlug, "after-gated.miloapis.com", testProviderProject, "")
+	topEnt := newEntitlement(testServiceSlug, testServiceSlug)
+
+	rootClient := newServiceRootClient(topSvc, midSvc, leafSvc, gatedSvc, afterSvc)
+	consumerClient := newAdmissionFakeClient(rootClient, topEnt)
+	mgr := newTestManager()
+	mgr.add(testConsumerProject, consumerClient)
+	mgr.add(testProviderProject, newFakeClient())
+	r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+	var leafEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: leafSlug}, &leafEnt); err != nil {
+		t.Fatalf("second-hop dependency not enrolled by the top entitlement's reconcile: %v", err)
+	}
+	if got := leafEnt.Labels[dependencyOfLabel]; got != midSlug {
+		t.Errorf("leaf %s label = %q, want %q", dependencyOfLabel, got, midSlug)
+	}
+	if leafEnt.Status.DependencyOf != midSlug {
+		t.Errorf("leaf dependencyOf = %q, want %q", leafEnt.Status.DependencyOf, midSlug)
+	}
+	if !controllerutil.ContainsFinalizer(&leafEnt, serviceEntitlementFinalizer) {
+		t.Errorf("leaf finalizers = %v, want %q set at create", leafEnt.Finalizers, serviceEntitlementFinalizer)
+	}
+	var afterEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: afterSlug}, &afterEnt); !apierrors.IsNotFound(err) {
+		t.Errorf("dependency of a gated service enrolled before approval: err=%v", err)
+	}
+
+	// The middle entitlement's own reconcile then agrees with what was created.
+	reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, midSlug), 5)
+	var midEnt servicesv1alpha1.ServiceEntitlement
+	if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: midSlug}, &midEnt); err != nil {
+		t.Fatal(err)
+	}
+	if cond := apimeta.FindStatusCondition(midEnt.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("middle DependenciesSatisfied = %v, want True", cond)
+	}
+}
+
+// TestServiceEntitlementReconciler_DoesNotEnrollPastAnInactiveDependency
+// proves early enrollment keeps each dependency's own Active gate: a
+// dependency that is rejected or deleting never gets its own dependencies.
+func TestServiceEntitlementReconciler_DoesNotEnrollPastAnInactiveDependency(t *testing.T) {
+	const (
+		midSlug  = "networking"
+		leafSlug = "ipam"
+	)
+	for name, mutate := range map[string]func(*servicesv1alpha1.ServiceEntitlement){
+		"rejected": func(e *servicesv1alpha1.ServiceEntitlement) {
+			e.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+		},
+		"deleting": func(e *servicesv1alpha1.ServiceEntitlement) {
+			now := metav1.Now()
+			e.DeletionTimestamp = &now
+			e.Finalizers = []string{serviceEntitlementFinalizer}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			topSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", midSlug)
+			midSvc := newPublishedService(midSlug, "networking.miloapis.com", testProviderProject, "", leafSlug)
+			leafSvc := newPublishedService(leafSlug, "ipam.miloapis.com", testProviderProject, "")
+			topEnt := newEntitlement(testServiceSlug, testServiceSlug)
+			midEnt := newEntitlement(midSlug, midSlug)
+			midEnt.Labels = map[string]string{dependencyOfLabel: testServiceSlug}
+			mutate(midEnt)
+
+			rootClient := newServiceRootClient(topSvc, midSvc, leafSvc)
+			consumerClient := newAdmissionFakeClient(rootClient, topEnt, midEnt)
+			mgr := newTestManager()
+			mgr.add(testConsumerProject, consumerClient)
+			mgr.add(testProviderProject, newFakeClient())
+			r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+			reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+			var leafEnt servicesv1alpha1.ServiceEntitlement
+			if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: leafSlug}, &leafEnt); !apierrors.IsNotFound(err) {
+				t.Errorf("dependency of a %s dependency was enrolled early: err=%v", name, err)
+			}
+		})
+	}
+}

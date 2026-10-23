@@ -28,6 +28,15 @@ const (
 	// approvalRereadInterval re-reads the object periodically during `--wait` to
 	// cover a deployed operator that predates the pending-requeue hardening.
 	approvalRereadInterval = 60 * time.Second
+
+	// rewatchMinDelay and rewatchMaxDelay bound how soon `--wait` re-reads and
+	// reopens a watch the server closed. Some API servers end a watch after
+	// its first event, so waiting a full re-read interval would turn a setup
+	// that finishes in a second into a minute's wait. The delay doubles while
+	// watches keep closing without delivering a change, so a server that
+	// can't watch at all degrades to polling rather than a hot loop.
+	rewatchMinDelay = 100 * time.Millisecond
+	rewatchMaxDelay = 5 * time.Second
 )
 
 // waitForFirstStatus watches a single entitlement for its first status write,
@@ -79,6 +88,13 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 
 	ticker := time.NewTicker(approvalRereadInterval)
 	defer ticker.Stop()
+	rewatchDelay := rewatchMinDelay
+	// seen is the last resourceVersion observed. A reopened watch replays the
+	// current object as ADDED, so only a newer version counts as progress.
+	seen := ""
+	if e != nil {
+		seen = e.ResourceVersion
+	}
 
 	for {
 		w, werr := ec.Watch(ctx, name, "")
@@ -113,17 +129,19 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 
 			case ev, ok := <-events:
 				if !ok {
-					// Watch closed (or was never established); re-establish after
-					// the next tick to avoid a hot loop when watch is unsupported.
-					if w != nil {
-						w.Stop()
-					}
+					// The server closed the watch. Re-read so a change made
+					// while no watch was open isn't missed, then reopen it.
+					w.Stop()
 					reestablish = true
 					continue
 				}
 				ent, matched := entitlementFromEvent(ev, name)
 				if !matched {
 					continue
+				}
+				if ent.ResourceVersion != seen {
+					seen = ent.ResourceVersion
+					rewatchDelay = rewatchMinDelay
 				}
 				state, e = Classify(Observation{Entitlement: ent}), ent
 				if isResolved(state, e) {
@@ -133,22 +151,43 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 			}
 		}
 
-		if werr != nil {
-			// No watch available: wait out one re-read interval before retrying so
-			// the loop degrades to polling rather than spinning.
+		if werr == nil {
 			select {
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return state, e, true, nil
 				}
 				return state, e, false, ctx.Err()
-			case <-ticker.C:
-				st, ent, gerr := getAndClassify(ctx, ec, name)
-				if gerr == nil {
-					state, e = st, ent
-					if isResolved(state, e) {
-						return state, e, false, nil
-					}
+			case <-time.After(rewatchDelay):
+			}
+			rewatchDelay = min(2*rewatchDelay, rewatchMaxDelay)
+			st, ent, gerr := getAndClassify(ctx, ec, name)
+			if gerr == nil {
+				state, e = st, ent
+				if ent != nil {
+					seen = ent.ResourceVersion
+				}
+				if isResolved(state, e) {
+					return state, e, false, nil
+				}
+			}
+			continue
+		}
+
+		// No watch available: wait out one re-read interval before retrying so
+		// the loop degrades to polling rather than spinning.
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return state, e, true, nil
+			}
+			return state, e, false, ctx.Err()
+		case <-ticker.C:
+			st, ent, gerr := getAndClassify(ctx, ec, name)
+			if gerr == nil {
+				state, e = st, ent
+				if isResolved(state, e) {
+					return state, e, false, nil
 				}
 			}
 		}
