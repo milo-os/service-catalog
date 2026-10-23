@@ -148,7 +148,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
-		if err := addFinalizerLive(ctx, consumerClient, consumerCluster.GetAPIReader(), &entitlement, serviceEntitlementFinalizer); err != nil {
+		if err := applyFinalizer(ctx, consumerClient, &entitlement, serviceEntitlementGVK, serviceEntitlementFinalizer); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		// The entitlement now holds the server's latest copy, so carry on with
@@ -196,44 +196,11 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	gated := svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider
 
 	consumerName := serviceConsumerName(svc.Spec.ServiceName, string(consumerProject))
-	consumer := &servicesv1alpha1.ServiceConsumer{
-		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
-	}
-	mutateConsumer := func() error {
-		// Mirror the caller's ref verbatim; the canonical name lives on
-		// status.serviceName. Both fields are immutable after creation — the
-		// webhook enforces this for everyone, including this controller — so
-		// only set them on create.
-		if consumer.CreationTimestamp.IsZero() {
-			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
-			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
-		}
-		consumer.Spec.RequestMessage = entitlement.Spec.RequestMessage
-		// A provider-initiated activation is itself the provider's affirmative
-		// decision. For a gated service, record that approval without requiring
-		// the initiating provider to approve the same request a second time.
-		// Never overwrite a decision already present: it may have been written
-		// concurrently by the provider after the ServiceConsumer was created.
-		if gated && entitlement.Spec.ProviderActivation != nil && consumer.Spec.Approval == nil {
-			consumer.Spec.Approval = &servicesv1alpha1.ProviderApproval{
-				Decision: servicesv1alpha1.ApprovalDecisionApproved,
-				Message:  "Approved because the service provider initiated activation.",
-			}
-		}
-		return nil
-	}
-	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, mutateConsumer)
-	if apierrors.IsAlreadyExists(err) {
-		// Another pass created the ServiceConsumer after the cached read. Update
-		// the live object now instead of erroring into workqueue backoff while
-		// the cache catches up.
-		*consumer = servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: consumerName}}
-		op, err = updateLive(ctx, providerClient, providerCluster.GetAPIReader(), consumer, mutateConsumer)
-	}
+	consumer, err := r.applyServiceConsumer(ctx, providerClient, consumerName, string(consumerProject), &entitlement, gated)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to upsert ServiceConsumer %q in provider %q: %w", consumerName, providerProject, err)
 	}
-	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
+	logger.V(1).Info("applied ServiceConsumer", "name", consumerName, "providerProject", providerProject)
 
 	// If the provider already approved or denied the request, reflect that
 	// decision on both objects.
@@ -392,6 +359,66 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// serviceConsumerRequestManager owns the fields of a ServiceConsumer that
+// mirror the consumer's request.
+const serviceConsumerRequestManager = "services-consumer-request"
+
+// providerActivationApprovalManager owns the approval this controller records
+// when the provider itself initiated activation. It is a separate manager
+// applied at most once, so later request applies never carry the approval and
+// can never remove or overwrite a decision the provider writes afterwards.
+const providerActivationApprovalManager = "services-provider-activation-approval"
+
+// applyServiceConsumer server-side applies the provider-side record of a
+// consumer's request. Apply creates or updates in one call, so two passes that
+// both miss the record in the cache can't race to create it.
+func (r *ServiceEntitlementReconciler) applyServiceConsumer(ctx context.Context, providerClient client.Client, name, consumerProject string, entitlement *servicesv1alpha1.ServiceEntitlement, gated bool) (*servicesv1alpha1.ServiceConsumer, error) {
+	// Mirror the caller's ref verbatim; the canonical name lives on
+	// status.serviceName. Both refs are immutable after creation, so an
+	// existing record keeps the refs it was created with.
+	spec := servicesv1alpha1.ServiceConsumerSpec{
+		ServiceRef:         entitlement.Spec.ServiceRef,
+		ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: consumerProject},
+		RequestMessage:     entitlement.Spec.RequestMessage,
+	}
+	var existing servicesv1alpha1.ServiceConsumer
+	err := providerClient.Get(ctx, client.ObjectKey{Name: name}, &existing)
+	switch {
+	case err == nil:
+		spec.ServiceRef = existing.Spec.ServiceRef
+		spec.ConsumerProjectRef = existing.Spec.ConsumerProjectRef
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&spec)
+	if err != nil {
+		return nil, err
+	}
+	// Forced: this controller is the one writer of these fields, and records
+	// written before it used apply belong to an older Update manager.
+	consumer := &servicesv1alpha1.ServiceConsumer{}
+	if err := applySpec(ctx, providerClient, serviceConsumerGVK, name, content, serviceConsumerRequestManager, true, consumer); err != nil {
+		return nil, err
+	}
+
+	// A provider-initiated activation is itself the provider's affirmative
+	// decision. For a gated service, record that approval without requiring
+	// the initiating provider to approve the same request a second time. The
+	// apply isn't forced, so a different decision the provider wrote first
+	// makes it fail with a conflict rather than being overwritten.
+	if gated && entitlement.Spec.ProviderActivation != nil && consumer.Spec.Approval == nil {
+		approval := map[string]any{"approval": map[string]any{
+			"decision": string(servicesv1alpha1.ApprovalDecisionApproved),
+			"message":  "Approved because the service provider initiated activation.",
+		}}
+		if err := applySpec(ctx, providerClient, serviceConsumerGVK, name, approval, providerActivationApprovalManager, false, consumer); err != nil {
+			return nil, err
+		}
+	}
+	return consumer, nil
 }
 
 // maxDependencyPrefetchDepth bounds how many levels below a direct dependency

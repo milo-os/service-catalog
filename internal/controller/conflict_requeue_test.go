@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -47,10 +46,8 @@ func TestRequeueOnConflictRetriesQuietly(t *testing.T) {
 	}
 }
 
-func TestAddFinalizerLiveRecoversFromStaleCopy(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(availabilityScheme()).
-		WithObjects(&servicesv1alpha1.ServiceEntitlement{ObjectMeta: metav1.ObjectMeta{Name: "compute"}}).
-		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).Build()
+func TestApplyFinalizerIgnoresUnrelatedWrites(t *testing.T) {
+	c := newFakeClient(&servicesv1alpha1.ServiceEntitlement{ObjectMeta: metav1.ObjectMeta{Name: "compute"}})
 	ctx := context.Background()
 
 	var stale servicesv1alpha1.ServiceEntitlement
@@ -67,8 +64,11 @@ func TestAddFinalizerLiveRecoversFromStaleCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := addFinalizerLive(ctx, c, c, &stale, serviceEntitlementFinalizer); err != nil {
-		t.Fatalf("addFinalizerLive: %v", err)
+	if err := applyFinalizer(ctx, c, &stale, serviceEntitlementGVK, serviceEntitlementFinalizer); err != nil {
+		t.Fatalf("applyFinalizer: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&stale, serviceEntitlementFinalizer) || stale.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
+		t.Errorf("object after apply = finalizers %v, phase %q; want the server's latest copy", stale.Finalizers, stale.Status.Phase)
 	}
 	var got servicesv1alpha1.ServiceEntitlement
 	if err := c.Get(ctx, client.ObjectKey{Name: "compute"}, &got); err != nil {
@@ -82,29 +82,17 @@ func TestAddFinalizerLiveRecoversFromStaleCopy(t *testing.T) {
 	}
 }
 
-func TestUpdateLiveAppliesMutationToExistingObject(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(availabilityScheme()).
-		WithObjects(&servicesv1alpha1.ServiceConsumer{
-			ObjectMeta: metav1.ObjectMeta{Name: "sc-1"},
-			Spec:       servicesv1alpha1.ServiceConsumerSpec{RequestMessage: "old"},
-		}).Build()
+func TestApplyFinalizerKeepsOtherFinalizers(t *testing.T) {
+	c := newFakeClient(&servicesv1alpha1.ServiceEntitlement{ObjectMeta: metav1.ObjectMeta{Name: "compute", Finalizers: []string{"example.com/other"}}})
 	ctx := context.Background()
-
-	consumer := &servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: "sc-1"}}
-	mutate := func() error { consumer.Spec.RequestMessage = "new"; return nil }
-	op, err := updateLive(ctx, c, c, consumer, mutate)
-	if err != nil || op != controllerutil.OperationResultUpdated {
-		t.Fatalf("updateLive = %v, %v; want updated", op, err)
-	}
-	op, err = updateLive(ctx, c, c, &servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: "sc-1"}}, func() error { return nil })
-	if err != nil || op != controllerutil.OperationResultNone {
-		t.Fatalf("second updateLive = %v, %v; want no change", op, err)
-	}
-	var got servicesv1alpha1.ServiceConsumer
-	if err := c.Get(ctx, client.ObjectKey{Name: "sc-1"}, &got); err != nil {
+	var e servicesv1alpha1.ServiceEntitlement
+	if err := c.Get(ctx, client.ObjectKey{Name: "compute"}, &e); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.RequestMessage != "new" {
-		t.Errorf("requestMessage = %q, want new", got.Spec.RequestMessage)
+	if err := applyFinalizer(ctx, c, &e, serviceEntitlementGVK, serviceEntitlementFinalizer); err != nil {
+		t.Fatalf("applyFinalizer: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&e, "example.com/other") || !controllerutil.ContainsFinalizer(&e, serviceEntitlementFinalizer) {
+		t.Errorf("finalizers = %v, want both", e.Finalizers)
 	}
 }

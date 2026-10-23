@@ -7,11 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -51,45 +47,4 @@ func (r *conflictRequeueReconciler[request]) Reconcile(ctx context.Context, req 
 
 func (r *conflictRequeueReconciler[request]) String() string {
 	return fmt.Sprintf("%v", r.wrapped)
-}
-
-// addFinalizerLive adds a finalizer, retrying a lost update race against a
-// live read instead of the cache. A new object's status is written by several
-// controllers at once, so the cached copy is routinely a version behind and
-// each conflict would otherwise cost a requeue.
-func addFinalizerLive(ctx context.Context, c client.Client, reader client.Reader, obj client.Object, finalizer string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// A deleting object takes no new finalizers; the caller sees the
-		// deletion timestamp and stops.
-		if !obj.GetDeletionTimestamp().IsZero() || !controllerutil.AddFinalizer(obj, finalizer) {
-			return nil
-		}
-		err := c.Update(ctx, obj)
-		if apierrors.IsConflict(err) {
-			if getErr := reader.Get(ctx, client.ObjectKeyFromObject(obj), obj); getErr != nil {
-				return getErr
-			}
-		}
-		return err
-	})
-}
-
-// updateLive applies mutate to the live object and updates it if anything
-// changed. It recovers a create that lost to another writer the cache hadn't
-// seen yet. obj must carry only its key.
-func updateLive(ctx context.Context, c client.Client, reader client.Reader, obj client.Object, mutate controllerutil.MutateFn) (controllerutil.OperationResult, error) {
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
-		return controllerutil.OperationResultNone, err
-	}
-	before := obj.DeepCopyObject()
-	if err := mutate(); err != nil {
-		return controllerutil.OperationResultNone, err
-	}
-	if equality.Semantic.DeepEqual(before, obj) {
-		return controllerutil.OperationResultNone, nil
-	}
-	if err := c.Update(ctx, obj); err != nil {
-		return controllerutil.OperationResultNone, err
-	}
-	return controllerutil.OperationResultUpdated, nil
 }
