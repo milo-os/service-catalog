@@ -118,6 +118,15 @@ const (
 	// releasing them would itself be an ownership change nobody asked for.
 	reasonObjectAdopted = "ObjectAdopted"
 
+	// reasonProvidedByProducer marks a declaration whose objects, in the
+	// service's own producer project, are already held by objects the platform
+	// did not install. A declaration usually hands consumers a reference to
+	// something the producer defines, and the producer project holds the
+	// definition itself under the same name. That object is left exactly as it
+	// is, and the declaration counts as delivered rather than blocking setup
+	// forever on a conflict nobody needs resolved.
+	reasonProvidedByProducer = "ProvidedByProducer"
+
 	// reasonStatusNotApplied marks a declaration whose objects are installed
 	// but whose declared status did not reach at least one of them. The state
 	// stays Installed, because delivery succeeded and only the status is
@@ -319,6 +328,11 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		serviceName = serviceRefName
 	}
 
+	inProducerProject, err := r.isProducerProject(ctx, serviceRefName, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
 		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
@@ -337,7 +351,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	for i := range sc.Spec.Provisioning.Resources {
 		decl := &sc.Spec.Provisioning.Resources[i]
 		ledger = append(ledger, r.reconcileResource(
-			ctx, consumerClient, consumerReader, &entitlement, serviceName, decl, installed[decl.Name]))
+			ctx, consumerClient, consumerReader, &entitlement, serviceName, decl, installed[decl.Name], inProducerProject))
 	}
 
 	// Objects installed by a declaration that is no longer there. The
@@ -384,6 +398,10 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 // installed is what this declaration put in this project on the last pass. It
 // is carried on any path that does not converge, so a declaration that stops
 // resolving does not erase the record teardown depends on.
+//
+// inProducerProject is true when this project is the service's own producer
+// project. There, a declared name already held by an object the platform did
+// not install is the producer's own definition, and counts as delivered.
 func (r *ProvisioningReconciler) reconcileResource(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -392,6 +410,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 	serviceName string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
 	installed []schema.GroupVersionKind,
+	inProducerProject bool,
 ) servicesv1alpha1.ProvisionedResourceStatus {
 	entry := servicesv1alpha1.ProvisionedResourceStatus{Name: decl.Name, Kinds: kindRefs(installed)}
 
@@ -420,7 +439,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 		objects = append(objects, obj)
 	}
 
-	var statusNotes, adoptedNotes, conflicts []string
+	var statusNotes, adoptedNotes, conflicts, provided []string
 	desired := make(map[schema.GroupVersionKind]map[string]struct{}, len(objects))
 	for _, obj := range objects {
 		result, err := r.upsert(ctx, consumerClient, consumerReader, entitlement, serviceName, decl.Name, obj)
@@ -431,6 +450,12 @@ func (r *ProvisioningReconciler) reconcileResource(
 			adoptedNotes = append(adoptedNotes, result.adoptedNote)
 		}
 		var exists *objectExistsError
+		if errors.As(err, &exists) && inProducerProject && !exists.platform {
+			// The producer's own object. Left alone like any other conflict,
+			// but it is what the declaration points at, so nothing is missing.
+			provided = append(provided, fmt.Sprintf("%s %q", obj.GVK.Kind, obj.Name))
+			continue
+		}
 		if errors.As(err, &exists) {
 			// Not a reason to abandon the declaration: the object is left
 			// alone and kept out of desired, and pruning cannot reach it
@@ -479,7 +504,7 @@ func (r *ProvisioningReconciler) reconcileResource(
 	}
 
 	entry.Kinds = kindRefs(kindsOf(objects))
-	entry.ObjectCount = int32(len(objects) - len(conflicts))
+	entry.ObjectCount = int32(len(objects) - len(conflicts) - len(provided))
 
 	// A name the project already uses will not free itself on a retry, so the
 	// declaration is Unprovisionable until the customer renames or removes
@@ -529,8 +554,31 @@ func (r *ProvisioningReconciler) reconcileResource(
 		entry.Reason = reasonObjectAdopted
 		entry.Message = truncateMessage(
 			strings.Join(append(adoptedNotes, statusNotes...), " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
+		return entry
+	}
+
+	if len(provided) > 0 {
+		entry.Reason = reasonProvidedByProducer
+		entry.Message = truncateMessage(fmt.Sprintf(
+			"This is %s's producer project, which already holds %s, so the platform left them unchanged.",
+			serviceName, strings.Join(provided, ", ")), maxLedgerMessageBytes)
 	}
 	return entry
+}
+
+// isProducerProject reports whether project is the producer project of the
+// service an entitlement names. A Service that cannot be found makes no project
+// its producer: provisioning then treats every project as a consumer, as it did
+// before producer projects were recognised.
+func (r *ProvisioningReconciler) isProducerProject(ctx context.Context, serviceRefName, project string) (bool, error) {
+	svc, err := resolveService(ctx, r.rootClient, serviceRefName)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve Service %q: %w", serviceRefName, err)
+	}
+	return svc.Spec.Owner.ProducerProjectRef.Name == project, nil
 }
 
 // objectExistsError reports a declared object whose name is already taken in
@@ -539,6 +587,9 @@ type objectExistsError struct {
 	kind, name string
 	// owner says who holds the name, for the consumer reading the ledger.
 	owner string
+	// platform is true when the platform installed the holder, for another
+	// entitlement or an earlier enablement of this one.
+	platform bool
 }
 
 func (e *objectExistsError) Error() string {
@@ -577,13 +628,14 @@ func claimExisting(
 			return nil
 		}
 		owner := "is managed by something other than the platform"
-		if ref.Kind == "ServiceEntitlement" {
+		platform := ref.Kind == "ServiceEntitlement"
+		if platform {
 			owner = "was installed by the platform for another service"
 			if ref.Name == entitlement.Name {
 				owner = "belongs to an earlier enablement of this service that is still being removed"
 			}
 		}
-		return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner}
+		return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner, platform: platform}
 	}
 	if labels[labelManagedBy] == labelManagedByValue &&
 		labels[labelEntitlementName] == entitlement.Name &&
@@ -591,10 +643,11 @@ func claimExisting(
 		return nil
 	}
 	owner := "was not installed by the platform"
-	if labels[labelManagedBy] == labelManagedByValue {
+	platform := labels[labelManagedBy] == labelManagedByValue
+	if platform {
 		owner = "was installed by the platform for another service"
 	}
-	return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner}
+	return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner, platform: platform}
 }
 
 // upsert writes one declared object into the consumer project, and its declared
