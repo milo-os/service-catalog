@@ -79,7 +79,24 @@ func provClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
 		WithObjects(objs...).
+		WithIndex(&servicesv1alpha1.Service{}, "spec.serviceName", func(obj client.Object) []string {
+			return []string{obj.(*servicesv1alpha1.Service).Spec.ServiceName}
+		}).
 		Build()
+}
+
+// provService is the Service the provisioning fixtures entitle, owned by
+// producer.
+func provService(producer string) *servicesv1alpha1.Service {
+	return &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: provConfigName},
+		Spec: servicesv1alpha1.ServiceSpec{
+			ServiceName: provServiceName,
+			Owner: servicesv1alpha1.ServiceOwner{
+				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: producer},
+			},
+		},
+	}
 }
 
 // provConsumerClient keeps ServiceEntitlement's status subresource enabled so
@@ -1236,6 +1253,94 @@ func TestProvisioningLeavesAnExistingUnmanagedObjectUnchanged(t *testing.T) {
 		t.Fatalf("teardown should remove only the installed class, left %d", len(list.Items))
 	}
 	assertUntouched(t, &list.Items[0])
+}
+
+// In the service's own producer project, a declared name is usually held by the
+// definition the declaration points at. That object is left alone, as anywhere
+// else, but the declaration is delivered instead of blocking setup forever.
+func TestProvisioningTreatsTheProducersOwnObjectAsDelivered(t *testing.T) {
+	root := provClient(
+		provService(provConsumerProject),
+		provConfig(ipClassRef("tenant-endpoint-ipv6"), ipClassRef("tenant-vpc-ipv6")),
+	)
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	assertUntouched(t, getClass(t, consumer, "tenant-endpoint-ipv6"))
+	if !ownedBy(getClass(t, consumer, "tenant-vpc-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the declaration's free name was not installed")
+	}
+
+	ent := getEntitlement(t, consumer)
+	entry := ent.Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled ||
+		entry.Reason != reasonProvidedByProducer || entry.ObjectCount != 1 {
+		t.Fatalf("expected Installed/ProvidedByProducer with one object installed, got %+v", entry)
+	}
+	want := `This is networking.datumapis.com's producer project, which already holds IPClass "tenant-endpoint-ipv6", so the platform left them unchanged.`
+	if entry.Message != want {
+		t.Errorf("ledger message = %q, want %q", entry.Message, want)
+	}
+	cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("expected Provisioned=True, got %+v", cond)
+	}
+
+	// Disabling the service removes what it installed and never the
+	// producer's own object.
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement phase: %v", err)
+	}
+	provReconcile(t, r)
+	list := listClasses(t, consumer)
+	if len(list.Items) != 1 || list.Items[0].GetName() != "tenant-endpoint-ipv6" {
+		t.Fatalf("teardown should remove only the installed class, left %d", len(list.Items))
+	}
+	assertUntouched(t, &list.Items[0])
+}
+
+// Being the producer does not settle a conflict with another service's
+// platform-installed object: that one is still reported.
+func TestProvisioningStillReportsAnotherEntitlementsObjectInTheProducerProject(t *testing.T) {
+	root := provClient(provService(provConsumerProject), provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+			u.SetLabels(map[string]string{labelManagedBy: labelManagedByValue, labelEntitlementName: "dns"})
+		}),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
+		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
+}
+
+// A project that only consumes the service still reports a name it already
+// uses, even when the Service names some other producer.
+func TestProvisioningReportsAnExistingObjectOutsideTheProducerProject(t *testing.T) {
+	root := provClient(provService(provSourceProject), provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
+		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
 }
 
 // Two services that declare the same name do not trade the object between
