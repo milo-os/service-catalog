@@ -8,7 +8,7 @@ all of them, "the unentitled project received nothing" and "the entitled project
 received something" are claims about the same storage.
 
 This environment exists for the claims the other one cannot make. It runs a real
-Milo control plane and three real `Project`s, and the operator runs with the Milo
+Milo control plane and real `Project`s, and the operator runs with the Milo
 multicluster provider — no single-cluster flag. Each project is addressed at
 `/apis/resourcemanager.miloapis.com/v1alpha1/projects/<id>/control-plane`, and
 Milo routes each path to its own etcd prefix, so the projects are separate
@@ -79,6 +79,14 @@ the one the single-cluster environment cannot show. Each operation names the con
 plane it addresses, and the provider-side ones — the `ServiceConsumer` a
 provider approves on — address the provider's project rather than a shared
 cluster.
+
+`concurrent-enablement` lives here too. It times setup in several projects at
+once, and it needs those projects to be separate control planes, each reconciled
+as its own cluster, for the measurement to match production. It has three
+projects of its own (`e2e-enablement-1` to `-3`) and enforces a time budget
+documented in its `chainsaw-test.yaml`. CI runs it once with the other suites
+and then five more times in a row (`task e2e-milo:timing`), so a budget that
+only passes sometimes fails there.
 
 `test/e2e` keeps `service-lifecycle`, `serviceconfiguration-lifecycle` and
 `project-suspension-propagation`, and the single-cluster mode they depend on is

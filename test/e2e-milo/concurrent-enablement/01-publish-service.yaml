@@ -1,0 +1,40 @@
+# The service every project in this suite enables. It declares one provisioned
+# object so that setup does real work in each project's control plane: an
+# entitlement for a service with nothing to provision completes without the
+# provisioning reconciler ever writing to the consumer, and contention there is
+# one of the things this suite exists to catch.
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: e2e-concurrent-enablement
+spec:
+  serviceName: concurrent-enablement.e2e.datumapis.com
+  phase: Published
+  displayName: Concurrent Enablement
+  description: E2E fixture for timing service setup across several projects at once.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform
+---
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: e2e-concurrent-enablement
+spec:
+  serviceRef:
+    name: e2e-concurrent-enablement
+  phase: Published
+  provisioning:
+    resources:
+      - name: address-classes
+        objects:
+          - apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPClass
+            metadata:
+              # Distinct from the provisioning suites' object, so nothing this
+              # suite leaves behind can be mistaken for theirs.
+              name: e2e-concurrent-unicast
+            spec:
+              source:
+                project: e2e-provisioning-platform
+                name: e2e-public-unicast

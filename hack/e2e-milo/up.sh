@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Stands up the multi-project e2e environment: a kind cluster hosting a real
-# Milo control plane, the operator wired to it, and three real Projects.
+# Milo control plane, the operator wired to it, and real Projects.
 #
 # config/overlays/e2e runs the operator with
 # --enable-single-cluster-for-e2e-tests, where every project name resolves to
@@ -41,10 +41,18 @@ PROJECT_PATH="/apis/resourcemanager.miloapis.com/v1alpha1/projects"
 # The provider project owning the source objects, and two consumer projects.
 # The suites entitle only the first consumer. The second measures "unentitled",
 # and the isolation suite entitles it at the end to show it was never inert.
+#
+# The e2e-enablement projects belong to the concurrent-enablement suite alone.
+# It times setup across several projects at once, and sharing projects with
+# the isolation suites would make each suite's claims depend on the other's
+# cleanup.
 PROJECTS=(
   e2e-provisioning-platform
   e2e-provisioning-consumer-a
   e2e-provisioning-consumer-b
+  e2e-enablement-1
+  e2e-enablement-2
+  e2e-enablement-3
 )
 
 log() { echo "==> $*"; }
