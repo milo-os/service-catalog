@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/prewarm"
 )
 
 var _ multicluster.Provider = &Provider{}
@@ -115,6 +116,10 @@ type Provider struct {
 	// serviceNames is the canonical Service.spec.serviceName set, for O(1) match.
 	serviceNames map[string]struct{}
 
+	// watchedKinds prewarms each consumer project's informers before Engage;
+	// see the prewarm package.
+	watchedKinds *prewarm.WatchedKinds
+
 	lock      sync.Mutex
 	aware     multicluster.Aware
 	clusters  map[string]cluster.Cluster
@@ -160,6 +165,7 @@ func New(providerMgr manager.Manager, opts Options) (*Provider, error) {
 		newCluster:         opts.newCluster,
 		newClient:          opts.newClient,
 		serviceNames:       serviceNames,
+		watchedKinds:       prewarm.NewWatchedKinds(),
 		clusters:           map[string]cluster.Cluster{},
 		cancelFns:          map[string]context.CancelFunc{},
 		tearingDown:        map[string]struct{}{},
@@ -309,7 +315,7 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 		if _, ok := engaged[project]; ok {
 			continue
 		}
-		if err := p.engage(ctx, project); err != nil {
+		if err := p.engage(ctx, aware, project); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to engage consumer project %q: %w", project, err)
 		}
 	}
@@ -494,13 +500,25 @@ func (p *Provider) releaseTeardownFinalizers(ctx context.Context, consumers []se
 // provider rest.Config to its control plane), starts its cache, waits for a
 // bounded sync, and engages it with the multicluster manager. Mirrors Milo's
 // engage path.
-func (p *Provider) engage(ctx context.Context, consumerProject string) error {
+//
+// The sync also prewarms: it starts and syncs informers for every kind the
+// operator's controllers watched on earlier projects, all at once. Engage then
+// hands each controller an informer that has already listed, instead of
+// letting each one list the new project in turn while holding its own lock.
+//
+// The project is published to Get once its cache has synced, before Engage,
+// and p.lock is not held across Engage. A webhook or reconciler that looks the
+// project up while its controllers are still engaging gets a working cluster
+// rather than "not engaged", and is never stuck behind another project's
+// engagement.
+func (p *Provider) engage(ctx context.Context, aware multicluster.Aware, consumerProject string) error {
 	cfg, err := p.consumerRestConfig(consumerProject)
 	if err != nil {
 		return err
 	}
 
-	cl, err := p.newCluster(cfg, p.opts.ClusterOptions...)
+	opts := append(append([]cluster.Option(nil), p.opts.ClusterOptions...), p.watchedKinds.ClusterOption())
+	cl, err := p.newCluster(cfg, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create cluster: %w", err)
 	}
@@ -528,15 +546,23 @@ func (p *Provider) engage(ctx context.Context, consumerProject string) error {
 		return fmt.Errorf("cache sync failed or timed out for consumer project %q", consumerProject)
 	}
 
+	// Reconcile runs one at a time, so nothing else engages or disengages this
+	// project between publishing it and Engage returning.
 	p.lock.Lock()
-	defer p.lock.Unlock()
-	if err := p.aware.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
-		cancel()
-		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
-	}
 	p.clusters[consumerProject] = cl
 	p.cancelFns[consumerProject] = cancel
 	setEngagedClusters(len(p.clusters))
+	p.lock.Unlock()
+
+	if err := aware.Engage(clusterCtx, multicluster.ClusterName(consumerProject), cl); err != nil {
+		cancel()
+		p.lock.Lock()
+		delete(p.clusters, consumerProject)
+		delete(p.cancelFns, consumerProject)
+		setEngagedClusters(len(p.clusters))
+		p.lock.Unlock()
+		return fmt.Errorf("failed to engage with multicluster manager: %w", err)
+	}
 	p.log.Info("engaged consumer project", "consumerProject", consumerProject, "endpoint", cfg.Host)
 	return nil
 }
