@@ -129,6 +129,17 @@
 // multicluster.ErrClusterNotFound) rather than string-matching. A project that
 // is engaged but tearing down reports not-engaged via the same sentinel.
 //
+// Get returns a project as soon as its cache has started and synced, before
+// the operator's controllers have finished engaging it. The provider does not
+// hold its lock while they engage, so Get never waits on an engagement.
+//
+// # Prewarming
+//
+// Each project cache is built with prewarm.WatchedKinds. Before a project is
+// engaged, its cache starts and syncs, all at once, informers for every kind
+// the controllers watched on earlier projects. Without this, a leader's
+// controllers list a new project one kind at a time during Engage.
+//
 // # Readiness gate
 //
 // WaitProviderProjectReady blocks until the provider Project reports

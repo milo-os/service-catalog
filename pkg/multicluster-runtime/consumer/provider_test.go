@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/prewarm"
 )
 
 // --- test scheme & fixtures ---------------------------------------------------
@@ -197,6 +199,7 @@ func newTestProvider(providerClient client.Client, serviceNames []string, opts .
 			return fake.NewClientBuilder().Build(), nil
 		},
 		serviceNames: sn,
+		watchedKinds: prewarm.NewWatchedKinds(),
 		clusters:     map[string]cluster.Cluster{},
 		cancelFns:    map[string]context.CancelFunc{},
 		tearingDown:  map[string]struct{}{},
@@ -1549,4 +1552,168 @@ func containsString(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- engage: publish before Engage, prewarm ----------------------------------
+
+// blockingMCMgr is a multicluster.Aware whose Engage waits until release is
+// closed, like a leader whose controllers are listing the new project.
+type blockingMCMgr struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingMCMgr) Engage(context.Context, multicluster.ClusterName, cluster.Cluster) error {
+	close(m.entered)
+	<-m.release
+	return nil
+}
+
+// While the operator's controllers are still engaging a project, Get must
+// already return it, and must not wait for Engage to finish. A webhook asking
+// for the project in that window used to get "not engaged" or block on the
+// provider's lock.
+func TestEngage_GetReturnsProjectWhileControllersEngage(t *testing.T) {
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	mcMgr := &blockingMCMgr{entered: make(chan struct{}), release: make(chan struct{})}
+	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical}, withMCMgr(mcMgr))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Reconcile(context.Background(), ctrl.Request{})
+		done <- err
+	}()
+	<-mcMgr.entered
+
+	got := make(chan error, 1)
+	go func() {
+		_, err := p.Get(context.Background(), "proj-a")
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Errorf("Get during Engage = %v, want the project's cluster", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Get blocked while the project's controllers were engaging")
+	}
+
+	close(mcMgr.release)
+	if err := <-done; err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if _, err := p.Get(context.Background(), "proj-a"); err != nil {
+		t.Errorf("Get after Engage = %v, want the project's cluster", err)
+	}
+}
+
+// After a failed Engage the project must not stay visible to Get.
+func TestEngage_FailedEngageUnpublishesProject(t *testing.T) {
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	mcMgr := newFakeMCMgr()
+	mcMgr.engageErr = errors.New("engage boom")
+	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical}, withMCMgr(mcMgr))
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err == nil {
+		t.Fatal("expected reconcile to surface the engage error")
+	}
+	if _, err := p.Get(context.Background(), "proj-a"); !errors.Is(err, multicluster.ErrClusterNotFound) {
+		t.Errorf("Get after failed Engage = %v, want ErrClusterNotFound", err)
+	}
+}
+
+// informerRecordingCache records the informers asked of it and whether each
+// call blocks until synced.
+type informerRecordingCache struct {
+	cache.Cache
+	mu      sync.Mutex
+	started []string
+}
+
+func (c *informerRecordingCache) GetInformer(_ context.Context, obj client.Object, opts ...cache.InformerGetOption) (cache.Informer, error) {
+	var o cache.InformerGetOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.started = append(c.started, fmt.Sprintf("%T blocking=%t", obj, o.BlockUntilSynced == nil || *o.BlockUntilSynced))
+	return nil, nil
+}
+
+func (c *informerRecordingCache) WaitForCacheSync(context.Context) bool { return true }
+func (c *informerRecordingCache) IndexField(context.Context, client.Object, string, client.IndexerFunc) error {
+	return nil
+}
+
+// cachedCluster is a fakeCluster whose cache is built through the cluster
+// options the provider passes, the way cluster.New builds it.
+type cachedCluster struct {
+	fakeCluster
+	cache cache.Cache
+}
+
+func (c *cachedCluster) GetCache() cache.Cache { return c.cache }
+
+// Engage must build each project's cache with prewarming, so a kind the
+// controllers watched on one project is started, without blocking, on the
+// next project before it is engaged.
+func TestEngage_PrewarmsKindsWatchedOnEarlierProjects(t *testing.T) {
+	scheme := testScheme(t)
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	providerClient := newProviderClient(t, objs...)
+
+	var inner []*informerRecordingCache
+	newCluster := func(_ *rest.Config, opts ...cluster.Option) (cluster.Cluster, error) {
+		rec := &informerRecordingCache{}
+		inner = append(inner, rec)
+		o := &cluster.Options{NewCache: func(*rest.Config, cache.Options) (cache.Cache, error) { return rec, nil }}
+		for _, opt := range opts {
+			opt(o)
+		}
+		c, err := o.NewCache(&rest.Config{}, cache.Options{Scheme: scheme})
+		if err != nil {
+			return nil, err
+		}
+		return &cachedCluster{cache: c}, nil
+	}
+	p := newTestProvider(providerClient, []string{computeCanonical}, withMCMgr(newFakeMCMgr()), withNewCluster(newCluster))
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	first, err := p.Get(context.Background(), "proj-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// A controller watches ServiceEntitlement on the first project.
+	if _, err := first.GetCache().GetInformer(context.Background(), &servicesv1alpha1.ServiceEntitlement{}); err != nil {
+		t.Fatalf("GetInformer: %v", err)
+	}
+
+	if err := providerClient.Create(context.Background(),
+		newConsumer("c-proj-b", computeObject, "proj-b", servicesv1alpha1.ConsumerPhaseActive)); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if len(inner) != 2 {
+		t.Fatalf("built %d project caches, want 2", len(inner))
+	}
+	want := []string{"*v1alpha1.ServiceEntitlement blocking=false"}
+	if got := inner[1].started; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("informers started on proj-b before Engage = %v, want %v", got, want)
+	}
 }
