@@ -316,10 +316,10 @@ local panels = [
     'Throttled and retried requests by verb',
     [
       prom('sum by (method) (rate(rest_client_requests_total{%s,code="429"}[$__rate_interval]))' % job, '429 {{method}}'),
-      prom('sum by (code, verb) (rate(rest_client_request_retries_total{%s}[$__rate_interval]))' % job, 'retried after {{code}} {{verb}}'),
+      prom('sum by (code, verb) (rate(rest_client_request_retries_total{%s}[$__rate_interval]))' % job, 'retry attempt returned {{code}} {{verb}}'),
     ],
     'reqps', { h: 7, w: 12, x: 12, y: 68 },
-    'Requests the API server throttled (HTTP 429) and requests client-go retried, by HTTP verb. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit. Retries after 5xx or connection errors point at an unhealthy API server rather than throttling.',
+    'Responses the API server throttled (HTTP 429, counted per attempt) and the retry attempts client-go made, by HTTP verb. A retry\'s code is what that retry attempt returned, not what triggered it: 200 means the retry succeeded, and a 429 retry means the server throttled it again. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit.',
     noValue='No 429 responses or client retries in range'),
 
   section('Leadership, restarts and reconnection', 500, 75),
