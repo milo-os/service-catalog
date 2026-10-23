@@ -143,7 +143,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !entitlement.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, req, string(consumerProject), consumerClient, &entitlement)
+		return r.reconcileDelete(ctx, req, string(consumerProject), consumerClient, consumerCluster.GetAPIReader(), &entitlement)
 	}
 
 	if project == nil || !project.DeletionTimestamp.IsZero() {
@@ -512,7 +512,7 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 	return nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req mcreconcile.Request, consumerProject string, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
+func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req mcreconcile.Request, consumerProject string, consumerClient client.Client, consumerReader client.Reader, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(entitlement, serviceEntitlementFinalizer) {
@@ -639,6 +639,14 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req 
 	// Clean up any ResourceGrants that were provisioned for this entitlement.
 	if err := r.pruneQuotaGrants(ctx, consumerClient, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to prune quota grants: %w", err)
+	}
+
+	// Remove what spec.provisioning installed. The provisioning controller
+	// prunes too, but nothing orders it before this finalizer comes off, and
+	// once the entitlement is gone only garbage collection could reclaim the
+	// objects, which does not reliably happen in project control planes.
+	if err := pruneProvisioned(ctx, consumerReader, consumerClient, entitlement); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to prune provisioned resources: %w", err)
 	}
 
 	// Deprovisioning gate: hold the finalizer until the provider has confirmed

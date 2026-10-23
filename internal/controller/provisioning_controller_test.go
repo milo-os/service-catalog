@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	testingclock "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1344,7 +1345,7 @@ func TestProvisioningReportsAnObjectTakenOverInThePast(t *testing.T) {
 // up by something that clears within seconds, such as the owning service's
 // webhook not yet serving the new project. Waiting for the five-minute resync
 // left setup stalled long after the cause was gone.
-func TestProvisioningRetriesFailedResourcesWithBackoff(t *testing.T) {
+func TestProvisioningRetriesFailedResourcesSoonAfterTheCauseClears(t *testing.T) {
 	failing := true
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
@@ -1365,18 +1366,28 @@ func TestProvisioningRetriesFailedResourcesWithBackoff(t *testing.T) {
 
 	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
 	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	clk := testingclock.NewFakeClock(time.Now())
+	r.clock = clk
 
+	// Each step advances the clock by elapse, then runs one pass. The retry
+	// delay is a tenth of how long the entitlement has been failing, never
+	// under a second. A doubling backoff from 2s retried at 2, 6, 14, 30, 62
+	// and 126s, so a cause that cleared at 70s held setup until 126s.
 	steps := []struct {
+		elapse  time.Duration
 		failing bool
 		want    time.Duration
 	}{
-		{failing: true, want: provisioningFailureRetryInitial},
-		{failing: true, want: 2 * provisioningFailureRetryInitial},
-		{failing: false, want: provisioningResyncInterval},
+		{failing: true, want: provisioningFailureRetryMin},
+		{elapse: 5 * time.Second, failing: true, want: provisioningFailureRetryMin},
+		{elapse: 25 * time.Second, failing: true, want: 3 * time.Second},
+		{elapse: 40 * time.Second, failing: true, want: 7 * time.Second},
+		{elapse: 7 * time.Second, failing: false, want: provisioningResyncInterval},
 		// After a success, a new failure starts again from the short delay.
-		{failing: true, want: provisioningFailureRetryInitial},
+		{elapse: time.Minute, failing: true, want: provisioningFailureRetryMin},
 	}
 	for i, step := range steps {
+		clk.Step(step.elapse)
 		failing = step.failing
 		if got := provReconcile(t, r).RequeueAfter; got != step.want {
 			t.Errorf("pass %d (failing=%v): requeueAfter = %s, want %s", i+1, step.failing, got, step.want)
@@ -1385,12 +1396,65 @@ func TestProvisioningRetriesFailedResourcesWithBackoff(t *testing.T) {
 }
 
 func TestProvisioningFailureRetryIsCappedAtTheResyncInterval(t *testing.T) {
-	r := &ProvisioningReconciler{}
-	var got time.Duration
-	for i := 0; i < 20; i++ {
-		got = r.failureRetryDelay("entitlement-uid")
+	clk := testingclock.NewFakeClock(time.Now())
+	r := &ProvisioningReconciler{clock: clk}
+	r.failureRetryDelay("entitlement-uid")
+	clk.Step(provisioningFailureRetryFraction * provisioningResyncInterval * 2)
+	if got := r.failureRetryDelay("entitlement-uid"); got != provisioningResyncInterval {
+		t.Errorf("retry delay after a long run of failures = %s, want the %s resync cap", got, provisioningResyncInterval)
 	}
-	if got != provisioningResyncInterval {
-		t.Errorf("retry delay after repeated failures = %s, want the %s resync cap", got, provisioningResyncInterval)
+}
+
+// Entitlements deleted while failing never clear their own entry, so clearing
+// any entitlement drops entries that are far older than a retry cycle.
+func TestProvisioningFailureRetryForgetsStaleEntitlements(t *testing.T) {
+	clk := testingclock.NewFakeClock(time.Now())
+	r := &ProvisioningReconciler{clock: clk}
+	r.failureRetryDelay("deleted-uid")
+	r.failureRetryDelay("recent-uid")
+	clk.Step(25 * time.Hour)
+	r.failureRetryDelay("new-uid")
+	r.clearFailureRetry("other-uid")
+	if _, ok := r.failingSince["deleted-uid"]; ok {
+		t.Errorf("a failure entry older than a day was kept")
+	}
+	if _, ok := r.failingSince["new-uid"]; !ok {
+		t.Errorf("a current failure entry was dropped")
+	}
+}
+
+// Disabling a service while a pass is installing used to leave the object
+// behind. Teardown swept the project before the install landed and released
+// the entitlement, and the object then pointed at an owner that no longer
+// existed, which garbage collection in a project control plane did not reclaim.
+func TestProvisioningRemovesWhatItInstalledWhenTheEntitlementIsDeletedMidPass(t *testing.T) {
+	var once sync.Once
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if err := c.Apply(ctx, obj, opts...); err != nil {
+					return err
+				}
+				// The customer disables the service, and teardown completes,
+				// between this pass reading the entitlement and finishing.
+				var err error
+				once.Do(func() {
+					err = c.Delete(ctx, provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+				})
+				return err
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if got := listClasses(t, consumer).Items; len(got) != 0 {
+		t.Errorf("objects outlived their entitlement: %+v", names(got))
 	}
 }

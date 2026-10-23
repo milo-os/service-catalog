@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Stands up the multi-project e2e environment: a kind cluster hosting a real
-# Milo control plane, the operator wired to it, and three real Projects.
+# Milo control plane, the operator wired to it, and real Projects.
 #
 # config/overlays/e2e runs the operator with
 # --enable-single-cluster-for-e2e-tests, where every project name resolves to
@@ -41,10 +41,18 @@ PROJECT_PATH="/apis/resourcemanager.miloapis.com/v1alpha1/projects"
 # The provider project owning the source objects, and two consumer projects.
 # The suites entitle only the first consumer. The second measures "unentitled",
 # and the isolation suite entitles it at the end to show it was never inert.
+#
+# The e2e-enablement projects belong to the concurrent-enablement suite alone.
+# It times setup across several projects at once, and sharing projects with
+# the isolation suites would make each suite's claims depend on the other's
+# cleanup.
 PROJECTS=(
   e2e-provisioning-platform
   e2e-provisioning-consumer-a
   e2e-provisioning-consumer-b
+  e2e-enablement-1
+  e2e-enablement-2
+  e2e-enablement-3
 )
 
 log() { echo "==> $*"; }
@@ -55,7 +63,7 @@ khost() { kubectl --kubeconfig "${HOST_KUBECONFIG}" "$@"; }
 # --- cluster ----------------------------------------------------------------
 
 mkdir -p "$(dirname "${HOST_KUBECONFIG}")"
-if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+if grep -qx "${CLUSTER_NAME}" <<<"$(kind get clusters 2>/dev/null)"; then
   log "kind cluster ${CLUSTER_NAME} already exists"
   kind export kubeconfig --name "${CLUSTER_NAME}" --kubeconfig "${HOST_KUBECONFIG}"
 else
@@ -257,13 +265,13 @@ for p in "${PROJECTS[@]}"; do
     manager_pod="$(khost -n services-system get pods -l control-plane=services \
       --field-selector=status.phase=Running \
       --sort-by=.metadata.creationTimestamp -o name | tail -1)"
-    # Logs are captured before matching rather than piped into `grep -q`: under
-    # `pipefail`, grep closes the pipe on its first match, kubectl dies of
-    # SIGPIPE, and the successful match reads as a failed pipeline. The wait
-    # then never ends, however long the thing it waits for has been true.
+    # Logs are captured and fed to `grep -q` through a here-string, never a
+    # pipe: under `pipefail`, grep exits on its first match, the writer dies of
+    # SIGPIPE once the log outgrows the 64 KB pipe buffer, and the successful
+    # match reads as a failed pipeline. The wait then never ends, however long
+    # the thing it waits for has been true.
     manager_log="$([ -n "${manager_pod}" ] && khost -n services-system logs "${manager_pod}" --tail=-1 2>/dev/null || true)"
-    if printf '%s' "${manager_log}" |
-      grep -q "Successfully registered and engaged new cluster.*${p}"; then
+    if grep -q "Successfully registered and engaged new cluster.*${p}" <<<"${manager_log}"; then
       engaged=yes
       break
     fi

@@ -77,6 +77,8 @@ func main() {
 	var probeAddr string
 	var serverConfigFile string
 	var enableSingleClusterForE2ETests bool
+	var kubeAPIQPS float64
+	var kubeAPIBurst int
 
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -92,6 +94,11 @@ func main() {
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 2*time.Minute,
 		"How long each controller waits for its caches to sync at startup before the manager exits.")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
+	flag.Float64Var(&kubeAPIQPS, "kube-api-qps", float64(defaultKubeAPIQPS),
+		"Requests per second each Milo client may sustain. Clients are per kind per project, so this limits "+
+			"one kind in one project, not the whole operator. A negative value turns client-side throttling off; 0 is rejected.")
+	flag.IntVar(&kubeAPIBurst, "kube-api-burst", defaultKubeAPIBurst,
+		"Requests each Milo client may send at once before --kube-api-qps applies. Must be positive unless --kube-api-qps is negative.")
 	flag.BoolVar(&enableSingleClusterForE2ETests, "enable-single-cluster-for-e2e-tests", false,
 		"DANGEROUS outside e2e: replaces the Milo multicluster provider with one that resolves every "+
 			"project name (consumer and provider alike) to this single cluster, so ServiceEntitlement/"+
@@ -145,7 +152,11 @@ func main() {
 	// that hosts the controller pod. Connect directly to Milo using the
 	// configured kubeconfig, falling back to ctrl.GetConfig() for local /
 	// in-cluster development where they happen to be the same cluster.
-	cfg, err := serverConfig.RestConfig()
+	if err := validateClientRateLimits(float32(kubeAPIQPS), kubeAPIBurst); err != nil {
+		setupLog.Error(err, "invalid client rate limits")
+		os.Exit(1)
+	}
+	cfg, err := miloRestConfig(&serverConfig, float32(kubeAPIQPS), kubeAPIBurst)
 	if err != nil {
 		setupLog.Error(err, "unable to load rest config")
 		os.Exit(1)

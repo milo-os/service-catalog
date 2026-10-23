@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -50,11 +50,21 @@ const (
 	// without patching on every five-minute resync.
 	provisioningHeartbeatInterval = time.Hour
 
-	// provisioningFailureRetryInitial is how soon a declaration that failed to
-	// install is tried again. Failures right after enablement are usually brief:
-	// the owning service's API or webhook may not have reached the new project
-	// yet. Each further failure doubles the wait, up to provisioningResyncInterval.
-	provisioningFailureRetryInitial = 2 * time.Second
+	// provisioningFailureRetryMin is how soon a declaration that failed to
+	// install is tried again while its failures are recent. Failures right
+	// after enablement are usually brief: the owning service's API or webhook
+	// may not have reached the new project yet. Compute's InstanceType webhook,
+	// for one, refuses the install until the compute operator has engaged the
+	// project.
+	provisioningFailureRetryMin = time.Second
+
+	// provisioningFailureRetryFraction sets the retry delay to this fraction
+	// of how long the entitlement has been failing, between
+	// provisioningFailureRetryMin and provisioningResyncInterval. The retry
+	// after the cause clears therefore comes at most about a tenth later than
+	// it could have. A doubling backoff instead waited up to as long again:
+	// a webhook that recovered after 70s was retried at 126s.
+	provisioningFailureRetryFraction = 10
 
 	// provisioningMaxConcurrentReconciles is how many entitlements this
 	// controller provisions at once. A reconcile spends most of its time on API
@@ -152,30 +162,56 @@ type ProvisioningReconciler struct {
 	Manager       mcmanager.Manager
 	Scheme        *runtime.Scheme
 
-	// failureRetries paces retries of entitlements whose ledger holds a Failed
-	// declaration, keyed by entitlement UID.
-	failureRetries     *flowcontrol.Backoff
-	failureRetriesOnce sync.Once
+	// failingSince records when each entitlement's current run of provisioning
+	// failures began, keyed by UID. It paces retries; see failureRetryDelay.
+	failingSinceMu sync.Mutex
+	failingSince   map[types.UID]time.Time
+	// clock is the time source for failingSince; nil means the real clock.
+	clock clock.PassiveClock
+}
+
+func (r *ProvisioningReconciler) now() time.Time {
+	if r.clock == nil {
+		return time.Now()
+	}
+	return r.clock.Now()
 }
 
 // failureRetryDelay records another failed pass for the entitlement and
-// returns how long to wait before the next one.
+// returns how long to wait before the next one: a tenth of how long it has
+// been failing, but at least provisioningFailureRetryMin and at most
+// provisioningResyncInterval.
 func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration {
-	r.failureRetriesOnce.Do(r.initFailureRetries)
-	r.failureRetries.Next(string(uid), r.failureRetries.Clock.Now())
-	return r.failureRetries.Get(string(uid))
+	now := r.now()
+	r.failingSinceMu.Lock()
+	if r.failingSince == nil {
+		r.failingSince = make(map[types.UID]time.Time)
+	}
+	since, ok := r.failingSince[uid]
+	if !ok {
+		since = now
+		r.failingSince[uid] = now
+	}
+	r.failingSinceMu.Unlock()
+
+	delay := now.Sub(since) / provisioningFailureRetryFraction
+	return min(max(delay, provisioningFailureRetryMin), provisioningResyncInterval)
 }
 
 // clearFailureRetry forgets an entitlement's failure history once nothing it
 // declares is failing, so a later failure starts again from the short delay.
 func (r *ProvisioningReconciler) clearFailureRetry(uid types.UID) {
-	r.failureRetriesOnce.Do(r.initFailureRetries)
-	r.failureRetries.Reset(string(uid))
-	r.failureRetries.GC()
-}
-
-func (r *ProvisioningReconciler) initFailureRetries() {
-	r.failureRetries = flowcontrol.NewBackOff(provisioningFailureRetryInitial, provisioningResyncInterval)
+	now := r.now()
+	r.failingSinceMu.Lock()
+	defer r.failingSinceMu.Unlock()
+	delete(r.failingSince, uid)
+	// An entitlement deleted while failing never clears its own entry. Drop
+	// entries far older than any retry cycle so they do not accumulate.
+	for other, since := range r.failingSince {
+		if now.Sub(since) > provisioningHeartbeatInterval*24 {
+			delete(r.failingSince, other)
+		}
+	}
 }
 
 func hasFailedResource(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
@@ -237,8 +273,8 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	var entitlement servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(ctx, req.NamespacedName, &entitlement); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Projected objects carry a controller owner reference to the
-			// entitlement and are reclaimed by garbage collection.
+			// The entitlement's finalizer is released only after its
+			// provisioned objects were swept, so nothing is left to do.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get ServiceEntitlement: %w", err)
@@ -248,7 +284,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// than Active tears down: pending approval, rejected, deleting.
 	if !entitlement.DeletionTimestamp.IsZero() ||
 		entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 		if !entitlement.DeletionTimestamp.IsZero() {
@@ -284,7 +320,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	}
 
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, r.writeStatus(
@@ -310,6 +346,22 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// every kind provisioning has ever written.
 	if err := r.pruneUndeclared(ctx, consumerClient, &entitlement, sc.Spec.Provisioning.Resources); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// The entitlement was read before this pass installed anything. If it was
+	// deleted meanwhile, teardown may already have swept the project and
+	// released the entitlement, so an object written after that sweep would be
+	// left behind: garbage collection cannot be relied on to reclaim it. Check
+	// again, live, and remove what this pass wrote.
+	if withdrawn, err := entitlementWithdrawn(ctx, consumerReader, &entitlement); err != nil {
+		return ctrl.Result{}, err
+	} else if withdrawn {
+		logger.Info("entitlement was deleted while provisioning; removing what was installed")
+		kinds := allInstalledKinds(&entitlement)
+		for i := range ledger {
+			kinds = union(kinds, gvksOf(ledger[i].Kinds))
+		}
+		return ctrl.Result{}, sweepProvisioned(ctx, consumerReader, consumerClient, &entitlement, kinds, nil)
 	}
 
 	// A failed install is retried on its own short schedule. Waiting for the
@@ -749,18 +801,40 @@ func (r *ProvisioningReconciler) prune(
 	return nil
 }
 
-// pruneAll removes everything provisioned for this entitlement.
+// pruneProvisioned removes everything provisioned for this entitlement.
 //
 // The kinds come from the entitlement's own ledger, not from the configuration:
 // teardown runs when the entitlement stops being Active, which includes the
 // case where nothing declares anything any more. What was installed here is
 // what this project recorded receiving.
-func (r *ProvisioningReconciler) pruneAll(
+//
+// Objects are listed through reader, which should read live. Teardown often
+// follows an install by moments, and a cache that has not seen the install
+// yet would let the object outlive the entitlement.
+func pruneProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 ) error {
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+	return sweepProvisioned(ctx, reader, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+}
+
+// entitlementWithdrawn reports whether the entitlement has been deleted, or
+// replaced by a new one of the same name, since it was read.
+func entitlementWithdrawn(
+	ctx context.Context,
+	reader client.Reader,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+) (bool, error) {
+	var live servicesv1alpha1.ServiceEntitlement
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(entitlement), &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to re-read ServiceEntitlement: %w", err)
+	}
+	return live.UID != entitlement.UID || !live.DeletionTimestamp.IsZero(), nil
 }
 
 // pruneUndeclared removes objects installed by a declaration the configuration
@@ -779,13 +853,14 @@ func (r *ProvisioningReconciler) pruneUndeclared(
 	// The ledger still describes the previous reconcile at this point, and a
 	// withdrawn declaration names no kind, so the ledger is the only record of
 	// what it installed.
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
+	return sweepProvisioned(ctx, consumerClient, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
 }
 
-// sweep deletes every object this entitlement owns, of the given kinds, whose
-// declaration is not in keep. A nil keep removes everything.
-func (r *ProvisioningReconciler) sweep(
+// sweepProvisioned deletes every object this entitlement owns, of the given
+// kinds, whose declaration is not in keep. A nil keep removes everything.
+func sweepProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	kinds []schema.GroupVersionKind,
@@ -794,7 +869,7 @@ func (r *ProvisioningReconciler) sweep(
 	for _, gvk := range kinds {
 		var list unstructured.UnstructuredList
 		list.SetGroupVersionKind(provisioning.ListGVK(gvk))
-		if err := consumerClient.List(ctx, &list, client.MatchingLabels{
+		if err := reader.List(ctx, &list, client.MatchingLabels{
 			labelManagedBy:       labelManagedByValue,
 			labelEntitlementName: entitlement.Name,
 		}); err != nil {

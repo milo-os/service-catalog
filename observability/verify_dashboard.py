@@ -91,10 +91,25 @@ throttle_expression = throttle["targets"][0]["expr"]
 if "absent(rest_client_rate_limiter_duration_seconds_bucket" not in throttle_expression or "* -1" not in throttle_expression:
     fail("missing client-throttle telemetry must render unavailable rather than zero")
 
+for title in ("Client throttle wait p95", "Request time spent throttled"):
+    if "service_catalog_client_rate_limit" not in require_panel(title)["targets"][0]["expr"]:
+        fail(f"{title!r} must tell an unlimited client apart from missing rate-limiter telemetry")
+    if "and on() absent(service_catalog_client_rate_limit" not in require_panel(title)["targets"][0]["expr"]:
+        fail(f"{title!r} must not read as not exported while the rate limit is exported but no request has been throttled yet")
+
+limit = require_panel("Client rate limit")["targets"][0]["expr"]
+if "absent(service_catalog_client_rate_limit" not in limit or "* -1" not in limit:
+    fail("missing client rate-limit telemetry must render unavailable rather than unlimited")
+
 for title in ("API round-trip p95 by verb and scope", "Client throttle wait p95 by verb and scope"):
     no_value = require_panel(title)["fieldConfig"]["defaults"]["noValue"]
-    if "not registered" not in no_value:
-        fail(f"{title!r} must explain that client-go metrics are missing rather than idle")
+    if "No requests in range" not in no_value or "not exported yet" not in no_value:
+        fail(f"{title!r} must cover both an idle client and missing client-go metrics")
+
+stalled_unavailable = "absent(service_catalog_setup_stalled) * -1 and on() count(service_catalog_setup_inflight)"
+for title in ("Stalled (>1h)", "Stalled setups by blocking stage"):
+    if stalled_unavailable not in require_panel(title)["targets"][0]["expr"]:
+        fail(f"{title!r} must render unavailable, not zero, while unfinished work lacks the stalled gauge")
 
 for expected_y, title in enumerate(("Observer and scrape health", "Rollout and version"), start=89):
     panel = require_panel(title)

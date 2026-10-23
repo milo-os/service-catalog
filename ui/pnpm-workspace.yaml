@@ -1,2 +1,6 @@
 packages:
   - '.'
+
+# esbuild's postinstall fetches its platform-specific binary.
+allowBuilds:
+  esbuild: true

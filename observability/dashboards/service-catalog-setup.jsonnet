@@ -34,7 +34,28 @@ local unfinishedByStage = '(sum by (blocking_stage) (service_catalog_setup_infli
 // hour past authorization. Releases before the stalled gauge count every
 // overdue attempt here.
 local slowByStage = '((sum by (service_class, blocking_stage) (service_catalog_setup_overdue) - (sum by (service_class, blocking_stage) (service_catalog_setup_stalled) or sum by (service_class, blocking_stage) (service_catalog_setup_overdue) * 0)) > 0) ' + observerHealthy;
+// The stalled gauge is absent both when nothing is unfinished and on releases
+// that predate it. Unfinished work without the gauge means the latter, which
+// must read as unavailable rather than as zero stalled setups.
+local stalledUnavailable = '(absent(service_catalog_setup_stalled) * -1 and on() count(service_catalog_setup_inflight))';
 local clientMetricsPending = 'Not exported yet';
+local clientRateLimitQPS = 'service_catalog_client_rate_limit{%s,limit="qps"}' % job;
+// The rate-limiter histogram is never observed when the clients have no
+// limiter, so its absence alone cannot mean "not exported". -2 marks a
+// controller that reports no client-side limit.
+local noClientLimit = '((max(%s) == 0) - 2)' % clientRateLimitQPS;
+// The histogram also stays absent after a restart until the first request.
+// Only report "not exported" when the release exports no rate limit either.
+local throttleNotExported(series) = '((sum(absent(%s{%s})) * -1) and on() absent(%s))' % [series, job, clientRateLimitQPS];
+local throttleMappings = [
+  { type: 'value', options: {
+    '-1': { text: clientMetricsPending, color: 'purple' },
+    '-2': { text: 'No client limit', color: 'green' },
+  } },
+  { type: 'special', options: { match: 'null', result: { text: 'No throttle observations', color: 'text' } } },
+  { type: 'special', options: { match: 'nan', result: { text: 'No throttle observations', color: 'text' } } },
+];
+local clientMetricsIdleOrPending = 'No requests in range, or client-go %s metrics not exported yet';
 
 local prom(expr, legend='') =
   prometheus.new(ds, expr)
@@ -110,10 +131,10 @@ local timePanel(title, targets, unit, gridPos, description, stacking='none', leg
 local stalledTable(gridPos) =
   table.new('Stalled setups by blocking stage')
   + pos(gridPos.h, gridPos.w, gridPos.x, gridPos.y)
-  + table.panelOptions.withDescription('Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first.')
+  + table.panelOptions.withDescription('Setups still unfinished more than an hour after authorization. Retrying does not fix these: they wait on configuration such as a service with no available locations or provider resources that cannot be installed. Each row is a service class and the first incomplete setup stage, with the age of its oldest attempt. Empty also while the setup observer is unhealthy; check Setup observer first. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([
-    prom('sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) ' + observerHealthy)
+    prom('(sum by (service_class, blocking_stage) (service_catalog_setup_stalled > 0) ' + observerHealthy + ') or label_replace(' + stalledUnavailable + ', "blocking_stage", "Telemetry unavailable", "", "")')
     + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('stalled'),
     prom('max by (service_class, blocking_stage) (service_catalog_setup_oldest_inflight_seconds and on(service_class, operation, blocking_stage) (service_catalog_setup_stalled > 0)) ' + observerHealthy)
     + prometheus.withInstant(true) + prometheus.withFormat('table') + prometheus.withRefId('oldest'),
@@ -129,6 +150,9 @@ local stalledTable(gridPos) =
   + table.standardOptions.withNoValue('No stalled setups')
   + table.standardOptions.withOverrides([
     { matcher: { id: 'byName', options: 'Oldest' }, properties: [{ id: 'unit', value: 'dtdurations' }] },
+    { matcher: { id: 'byName', options: 'Stalled' }, properties: [{ id: 'mappings', value: [
+      { type: 'value', options: { '-1': { text: 'Telemetry unavailable', color: 'purple' } } },
+    ] }] },
     { matcher: { id: 'byName', options: 'Blocked at' }, properties: [{ id: 'mappings', value: [
       { type: 'value', options: {
         Authorization: { text: 'Authorization: access not approved, or project suspended' },
@@ -187,9 +211,9 @@ local panels = [
     observedAggregate('sum(service_catalog_setup_overdue) - (sum(service_catalog_setup_stalled) or vector(0))'), 'slow', 'short',
     [['purple', null], ['green', 0], ['yellow', 1], ['red', 5]], { h: 5, w: 4, x: 12, y: 1 },
     'Unfinished setups between one minute and one hour past authorization: work that should finish but has not yet. This is the number to act on. Stalled setups are counted separately. Releases without the stalled gauge count every overdue setup here.', telemetryMappings()),
-  statPanel('Stalled (>1h)', observedAggregate('sum(service_catalog_setup_stalled)'), 'stalled', 'short',
+  statPanel('Stalled (>1h)', '%s or (%s)' % [stalledUnavailable, observedAggregate('sum(service_catalog_setup_stalled)')], 'stalled', 'short',
     [['purple', null], ['green', 0], ['orange', 1]], { h: 5, w: 4, x: 16, y: 1 },
-    'Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs.', telemetryMappings()),
+    'Unfinished setups more than an hour past authorization. These wait on a known blocker, not on controller speed; see Stalled setups by blocking stage for what each one needs. Telemetry unavailable means setups are unfinished but the deployed release does not report which are stalled.', telemetryMappings()),
   statPanel('Setup observer', 'max(service_catalog_setup_observer_healthy) or vector(-1)', 'observer', 'short',
     [['purple', null], ['red', 0], ['green', 1]], { h: 5, w: 4, x: 20, y: 1 },
     'Whether all source caches needed to interpret setup state are synchronized on the projection owner. The unfinished-work numbers are trustworthy only while this is Healthy.', observerMappings),
@@ -252,35 +276,51 @@ local panels = [
     'Successful setup attempts per interval and service class. Each completion is counted once. Zero means no completion was recorded; observer health shows whether coverage is trustworthy.', 'normal'),
 
   section('Kubernetes API: slow server or client throttling?', 400, 54),
+  statPanel('Client rate limit', '(max by (limit) (service_catalog_client_rate_limit{%s})) or label_replace(absent(%s) * -1, "limit", "qps", "", "")' % [job, clientRateLimitQPS], '{{limit}}', 'short',
+    [['blue', null]], { h: 5, w: 4, x: 0, y: 55 },
+    'Sustained requests per second (qps) and burst size each of the controller\'s API clients may send before client-go makes it wait (one client per resource kind per project). A limit near the request rate below caps setup speed; client-go defaults to 5 qps with a burst of 10 when nothing sets a limit. No client limit leaves throttling to the API server.',
+    [{ type: 'value', options: {
+      '-1': { text: clientMetricsPending, color: 'purple' },
+      '0': { text: 'No client limit', color: 'green' },
+    } }]),
   statPanel('API round-trip p95', 'histogram_quantile(0.95, sum by (le) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval]))) or (absent(rest_client_request_duration_seconds_bucket{%s}) * -1)' % [job, job], 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 6, x: 0, y: 55 },
+    [['purple', null], ['green', 0], ['yellow', 0.5], ['red', 2]], { h: 5, w: 5, x: 4, y: 55 },
     'Controller-wide Kubernetes API round-trip latency, excluding time waiting on the client rate limiter. High values mean the API servers are slow. Not exported yet means the deployed release does not register client-go latency metrics.', telemetryMappings('No request observations', clientMetricsPending), 'area'),
-  statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or (sum(absent(rest_client_rate_limiter_duration_seconds_bucket{%s})) * -1)' % [job, job], 'p95', 's',
-    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 6, x: 6, y: 55 },
-    'Controller-wide time requests wait for a client-side rate-limit token before being sent. High values mean the controller is throttling itself, not that the API is slow. Not exported yet must not be read as zero wait.', telemetryMappings('No throttle observations', clientMetricsPending), 'area'),
-  statPanel('Request time spent throttled', '(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) / clamp_min(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) + sum(rate(rest_client_request_duration_seconds_sum{%s}[$__rate_interval])), 1e-9)) or (absent(rest_client_rate_limiter_duration_seconds_sum{%s}) * -1)' % [job, job, job, job], 'throttled', 'percentunit',
-    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 0.3]], { h: 5, w: 6, x: 12, y: 55 },
-    'Share of total request time spent waiting on the client rate limiter rather than on the API server. Above roughly 10% the controller limits itself; below it, slowness comes from the server.', telemetryMappings('No request observations', clientMetricsPending), 'area'),
+  statPanel('Client throttle wait p95', '(histogram_quantile(0.95, sum by (le) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))) or %s or %s' % [job, noClientLimit, throttleNotExported('rest_client_rate_limiter_duration_seconds_bucket')], 'p95', 's',
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 1]], { h: 5, w: 5, x: 9, y: 55 },
+    'Controller-wide time requests wait for a client-side rate-limit token before being sent. High values mean the controller is throttling itself, not that the API is slow. No client limit means requests never wait here. Not exported yet must not be read as zero wait.', throttleMappings, 'area'),
+  statPanel('Request time spent throttled', '(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) / clamp_min(sum(rate(rest_client_rate_limiter_duration_seconds_sum{%s}[$__rate_interval])) + sum(rate(rest_client_request_duration_seconds_sum{%s}[$__rate_interval])), 1e-9)) or %s or %s' % [job, job, job, noClientLimit, throttleNotExported('rest_client_rate_limiter_duration_seconds_sum')], 'throttled', 'percentunit',
+    [['purple', null], ['green', 0], ['yellow', 0.1], ['red', 0.3]], { h: 5, w: 5, x: 14, y: 55 },
+    'Share of total request time spent waiting on the client rate limiter rather than on the API server. Above roughly 10% the controller limits itself; below it, slowness comes from the server.', throttleMappings, 'area'),
   statPanel('HTTP 429 rate', 'sum(rate(rest_client_requests_total{%s,code="429"}[$__rate_interval])) or vector(0)' % job, '429/s', 'reqps',
-    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 6, x: 18, y: 55 },
-    'Kubernetes API responses rejected by server-side throttling (API priority and fairness).', [], 'area'),
+    [['green', null], ['yellow', 0.01], ['red', 0.1]], { h: 5, w: 5, x: 19, y: 55 },
+    'Kubernetes API responses rejected by server-side throttling (API priority and fairness). client-go retries these after the server\'s Retry-After delay; see Throttled and retried requests by verb.', [], 'area'),
   timePanel(
     'API round-trip p95 by verb and scope',
     [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_request_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 0, y: 60 },
     'Controller-wide p95 API round-trip latency by scope (root is the platform API, project is any project control plane) and HTTP verb. Client metrics have no reconciler label; compare with Reconcile time p95 by controller.',
-    noValue=clientMetricsPending + ': client-go latency metrics are not registered by this release'),
+    noValue=clientMetricsIdleOrPending % 'latency'),
   timePanel(
     'Client throttle wait p95 by verb and scope',
     [prom('histogram_quantile(0.95, sum by (le, scope, verb) (rate(rest_client_rate_limiter_duration_seconds_bucket{%s}[$__rate_interval])))' % job, '{{scope}} {{verb}}')],
     's', { h: 8, w: 12, x: 12, y: 60 },
-    'Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb.',
-    noValue=clientMetricsPending + ': client-go rate-limiter metrics are not registered by this release'),
+    'Controller-wide p95 wait for a client-side rate-limit token by scope (root is the platform API, project is any project control plane) and HTTP verb. Empty when Client rate limit shows No client limit, because requests then never wait on the client.',
+    noValue='No requests in range, no client limit, or client-go rate-limiter metrics not exported yet'),
   timePanel(
     'Kubernetes API request rate by response code',
     [prom('(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) or label_replace(absent(sum by (code) (rate(rest_client_requests_total{%s}[$__rate_interval]))) * 0, "code", "none", "", "")' % [job, job], '{{code}}')],
-    'reqps', { h: 7, w: 24, x: 0, y: 68 },
+    'reqps', { h: 7, w: 12, x: 0, y: 68 },
     'Controller-wide REST traffic grouped by HTTP response code.', 'normal'),
+  timePanel(
+    'Throttled and retried requests by verb',
+    [
+      prom('sum by (method) (rate(rest_client_requests_total{%s,code="429"}[$__rate_interval]))' % job, '429 {{method}}'),
+      prom('sum by (code, verb) (rate(rest_client_request_retries_total{%s}[$__rate_interval]))' % job, 'retry attempt returned {{code}} {{verb}}'),
+    ],
+    'reqps', { h: 7, w: 12, x: 12, y: 68 },
+    'Responses the API server throttled (HTTP 429, counted per attempt) and the retry attempts client-go made, by HTTP verb. A retry\'s code is what that retry attempt returned, not what triggered it: 200 means the retry succeeded, and a 429 retry means the server throttled it again. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit.',
+    noValue='No 429 responses or client retries in range'),
 
   section('Leadership, restarts and reconnection', 500, 75),
   statPanel('Leader changes', '(sum(count_over_time((leader_election_master_status{%s} == 1 unless leader_election_master_status{%s} offset 1m == 1)[$__range:1m]))) or vector(0)' % [job, job], 'acquisitions', 'short',
