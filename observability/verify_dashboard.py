@@ -54,6 +54,12 @@ for panel in panels:
             if "label_replace(vector(" in expression or "label_replace(label_replace(vector(" in expression:
                 fail(f"{panel.get('title')!r} has an unconditional labeled vector fallback")
 
+# The checks above apply to every dashboard; the rest pin the setup dashboard's
+# panels.
+if dashboard.get("uid") != "service-catalog-setup":
+    print(f"verified {len(panels)} panels in {path}")
+    raise SystemExit(0)
+
 for title in ("User setup p95", "Platform setup p95"):
     expression = require_panel(title)["targets"][0]["expr"]
     if "increase(" not in expression or "$__range" not in expression or "$__rate_interval" in expression:

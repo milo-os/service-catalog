@@ -30,6 +30,7 @@ func (ProjectionTeardown) TeardownConsumer(
 	// its observer state here rather than waiting for a reconcile that may never
 	// arrive.
 	setupInflight.removeProject(consumerProject)
+	serviceUsage.removeProject(consumerProject)
 
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)

@@ -11,6 +11,14 @@ configMapGenerator:
       labels:
         grafana_dashboard: "1"
       disableNameSuffixHash: true
+  - name: service-catalog-adoption-dashboard
+    files:
+      - generated/service-catalog-adoption.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      disableNameSuffixHash: true
 
 resources:
   - service-catalog-setup-grafanadashboard.yaml
+  - service-catalog-adoption-grafanadashboard.yaml

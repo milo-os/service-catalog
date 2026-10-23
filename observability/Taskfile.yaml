@@ -10,10 +10,11 @@ tasks:
       - jb install
 
   build:
-    desc: Generate the Service Catalog setup dashboard
+    desc: Generate the Service Catalog dashboards
     cmds:
       - mkdir -p "{{.ROOT_DIR}}/config/components/observability/dashboards/generated"
-      - jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json"
+      - for: [service-catalog-setup, service-catalog-adoption]
+        cmd: jsonnet -J vendor dashboards/{{.ITEM}}.jsonnet > "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/{{.ITEM}}.json"
 
   verify:
     desc: Verify generated dashboard content and semantic empty states
@@ -22,7 +23,9 @@ tasks:
         set -eu
         output="$(mktemp)"
         trap 'rm -f "$output"' EXIT
-        jsonnet -J vendor dashboards/service-catalog-setup.jsonnet > "$output"
-        diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/service-catalog-setup.json" "$output"
-        jq empty "$output"
-        python3 verify_dashboard.py "$output"
+        for dashboard in service-catalog-setup service-catalog-adoption; do
+          jsonnet -J vendor "dashboards/$dashboard.jsonnet" > "$output"
+          diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/$dashboard.json" "$output"
+          jq empty "$output"
+          python3 verify_dashboard.py "$output"
+        done
