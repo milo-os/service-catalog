@@ -7,6 +7,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
+	k8stesting "k8s.io/client-go/testing"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
@@ -131,5 +133,37 @@ func TestRequestAlreadyActiveStands(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "Active") {
 		t.Fatalf("missing active status:\n%s", errb.String())
+	}
+}
+
+// TestRequestWaitRereadsWhenTheServerClosesTheWatch covers API servers that
+// end a watch after its first event: --wait must re-read and finish promptly
+// rather than sit out the minute-long re-read interval.
+func TestRequestWaitRereadsWhenTheServerClosesTheWatch(t *testing.T) {
+	pending := entitlement("compute", servicesv1alpha1.EntitlementPhasePendingApproval, servicesv1alpha1.ReasonEntitlementPendingApproval, "Waiting for approval.", nil)
+	active := entitlement("compute", servicesv1alpha1.EntitlementPhaseActive, servicesv1alpha1.ReasonEntitlementActive, "Access granted.", ptrNow())
+	cs := buildFakeClientset(withObjects(pending))
+	watches := 0
+	cs.PrependWatchReactor(entitlementResource, func(k8stesting.Action) (bool, watch.Interface, error) {
+		watches++
+		fw := watch.NewFakeWithChanSize(1, false)
+		fw.Modify(pending.DeepCopy())
+		fw.Stop()
+		if watches == 1 {
+			// The entitlement completes while no watch is open.
+			if _, err := cs.Tracker().Get(entitlementGVR, "", "compute"); err == nil {
+				_ = cs.Tracker().Update(entitlementGVR, active.DeepCopy(), "")
+			}
+		}
+		return true, fw, nil
+	})
+	io, _, _ := testIO("", false)
+
+	start := time.Now()
+	if err := requesterWith(NewClient(cs), io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 30 * time.Second}); err != nil {
+		t.Fatalf("Request(--wait) = %v, want nil once Active", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("--wait took %s after the watch closed, want a prompt re-read", elapsed)
 	}
 }
