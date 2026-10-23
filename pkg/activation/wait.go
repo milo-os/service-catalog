@@ -33,7 +33,7 @@ const (
 	// reopens a watch the server closed. Some API servers end a watch after
 	// its first event, so waiting a full re-read interval would turn a setup
 	// that finishes in a second into a minute's wait. The delay doubles while
-	// watches keep closing without delivering anything, so a server that
+	// watches keep closing without delivering a change, so a server that
 	// can't watch at all degrades to polling rather than a hot loop.
 	rewatchMinDelay = 100 * time.Millisecond
 	rewatchMaxDelay = 5 * time.Second
@@ -89,6 +89,12 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 	ticker := time.NewTicker(approvalRereadInterval)
 	defer ticker.Stop()
 	rewatchDelay := rewatchMinDelay
+	// seen is the last resourceVersion observed. A reopened watch replays the
+	// current object as ADDED, so only a newer version counts as progress.
+	seen := ""
+	if e != nil {
+		seen = e.ResourceVersion
+	}
 
 	for {
 		w, werr := ec.Watch(ctx, name, "")
@@ -133,7 +139,10 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 				if !matched {
 					continue
 				}
-				rewatchDelay = rewatchMinDelay
+				if ent.ResourceVersion != seen {
+					seen = ent.ResourceVersion
+					rewatchDelay = rewatchMinDelay
+				}
 				state, e = Classify(Observation{Entitlement: ent}), ent
 				if isResolved(state, e) {
 					w.Stop()
@@ -155,6 +164,9 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 			st, ent, gerr := getAndClassify(ctx, ec, name)
 			if gerr == nil {
 				state, e = st, ent
+				if ent != nil {
+					seen = ent.ResourceVersion
+				}
 				if isResolved(state, e) {
 					return state, e, false, nil
 				}

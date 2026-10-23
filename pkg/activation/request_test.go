@@ -167,3 +167,33 @@ func TestRequestWaitRereadsWhenTheServerClosesTheWatch(t *testing.T) {
 		t.Fatalf("--wait took %s after the watch closed, want a prompt re-read", elapsed)
 	}
 }
+
+// TestRequestWaitBacksOffWhileWatchesCloseWithoutChange covers a server that
+// replays the current object as ADDED on every new watch and then closes it.
+// The replay is not progress, so --wait must back off instead of reopening
+// the watch ten times a second.
+func TestRequestWaitBacksOffWhileWatchesCloseWithoutChange(t *testing.T) {
+	pending := entitlement("compute", servicesv1alpha1.EntitlementPhasePendingApproval, servicesv1alpha1.ReasonEntitlementPendingApproval, "Waiting for approval.", nil)
+	cs := buildFakeClientset(withObjects(pending))
+	watches := 0
+	cs.PrependWatchReactor(entitlementResource, func(k8stesting.Action) (bool, watch.Interface, error) {
+		watches++
+		current, err := cs.Tracker().Get(entitlementGVR, "", "compute")
+		if err != nil {
+			return true, nil, err
+		}
+		fw := watch.NewFakeWithChanSize(1, false)
+		fw.Add(current)
+		fw.Stop()
+		return true, fw, nil
+	})
+	io, _, _ := testIO("", false)
+
+	err := requesterWith(NewClient(cs), io).Request(context.Background(), RequestOptions{Wait: true, Timeout: 1500 * time.Millisecond})
+	wantExit(t, err, ExitPending, StatePendingApproval)
+	// Delays of 100, 200, 400, and 800ms fit about five watches in 1.5s; a
+	// delay that never grows would open about fifteen.
+	if watches > 6 {
+		t.Fatalf("opened %d watches in 1.5s, want the reopen delay to back off", watches)
+	}
+}

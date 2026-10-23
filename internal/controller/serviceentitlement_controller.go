@@ -434,7 +434,8 @@ const maxDependencyPrefetchDepth = 4
 // reconcile would label them, so ownership, delete protection, and teardown
 // don't change; that reconcile later finds them by name and makes no write.
 // A gated dependency is skipped: its dependencies wait for the provider's
-// approval, as ensureDependencies requires. Failures are only logged, since
+// approval, as ensureDependencies requires. So is one that is deleting or
+// not Active. Failures are only logged, since
 // the dependency's own reconcile enrolls the same entitlements and reports
 // any failure on its own DependenciesSatisfied condition.
 func (r *ServiceEntitlementReconciler) prefetchDependencies(ctx context.Context, consumerClient client.Client, svc *servicesv1alpha1.Service, entitlement *servicesv1alpha1.ServiceEntitlement, visited map[string]bool, depth int) {
@@ -444,6 +445,13 @@ func (r *ServiceEntitlementReconciler) prefetchDependencies(ctx context.Context,
 	visited[svc.Name] = true
 	if svc.Spec.Phase != servicesv1alpha1.PhasePublished ||
 		(svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider) {
+		return
+	}
+	// Stand in for the dependency's own Active gate: go on only while it is
+	// new or Active. A deleting, rejected, or pending dependency would never
+	// enroll its own dependencies, so neither does this.
+	if !entitlement.DeletionTimestamp.IsZero() ||
+		(entitlement.Status.Phase != "" && entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive) {
 		return
 	}
 	for _, dep := range svc.Spec.Dependencies {

@@ -1501,3 +1501,47 @@ func TestServiceEntitlementReconciler_EnrollsSelfServiceChainInOnePass(t *testin
 		t.Errorf("middle DependenciesSatisfied = %v, want True", cond)
 	}
 }
+
+// TestServiceEntitlementReconciler_DoesNotEnrollPastAnInactiveDependency
+// proves early enrollment keeps each dependency's own Active gate: a
+// dependency that is rejected or deleting never gets its own dependencies.
+func TestServiceEntitlementReconciler_DoesNotEnrollPastAnInactiveDependency(t *testing.T) {
+	const (
+		midSlug  = "networking"
+		leafSlug = "ipam"
+	)
+	for name, mutate := range map[string]func(*servicesv1alpha1.ServiceEntitlement){
+		"rejected": func(e *servicesv1alpha1.ServiceEntitlement) {
+			e.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+		},
+		"deleting": func(e *servicesv1alpha1.ServiceEntitlement) {
+			now := metav1.Now()
+			e.DeletionTimestamp = &now
+			e.Finalizers = []string{serviceEntitlementFinalizer}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			topSvc := newPublishedService(testServiceSlug, testServiceName, testProviderProject, "", midSlug)
+			midSvc := newPublishedService(midSlug, "networking.miloapis.com", testProviderProject, "", leafSlug)
+			leafSvc := newPublishedService(leafSlug, "ipam.miloapis.com", testProviderProject, "")
+			topEnt := newEntitlement(testServiceSlug, testServiceSlug)
+			midEnt := newEntitlement(midSlug, midSlug)
+			midEnt.Labels = map[string]string{dependencyOfLabel: testServiceSlug}
+			mutate(midEnt)
+
+			rootClient := newServiceRootClient(topSvc, midSvc, leafSvc)
+			consumerClient := newAdmissionFakeClient(rootClient, topEnt, midEnt)
+			mgr := newTestManager()
+			mgr.add(testConsumerProject, consumerClient)
+			mgr.add(testProviderProject, newFakeClient())
+			r := &ServiceEntitlementReconciler{rootClient: rootClient, Manager: mgr, Scheme: testScheme()}
+
+			reconcileUntilStable(t, r, entitlementRequest(testConsumerProject, testServiceSlug), 5)
+
+			var leafEnt servicesv1alpha1.ServiceEntitlement
+			if err := consumerClient.Get(context.Background(), types.NamespacedName{Name: leafSlug}, &leafEnt); !apierrors.IsNotFound(err) {
+				t.Errorf("dependency of a %s dependency was enrolled early: err=%v", name, err)
+			}
+		})
+	}
+}
