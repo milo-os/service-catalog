@@ -172,7 +172,9 @@ func (r *ServiceActivationRequestReconciler) Reconcile(ctx context.Context, req 
 		}
 
 		entitlement = servicesv1alpha1.ServiceEntitlement{
-			ObjectMeta: metav1.ObjectMeta{Name: entitlementName},
+			// The finalizer is set at create so the entitlement's first
+			// reconcile needn't race other writers with a separate update.
+			ObjectMeta: metav1.ObjectMeta{Name: entitlementName, Finalizers: []string{serviceEntitlementFinalizer}},
 			Spec: servicesv1alpha1.ServiceEntitlementSpec{
 				ServiceRef:     servicesv1alpha1.ServiceRef{Name: svc.Name},
 				RequestMessage: activation.Spec.RequestMessage,

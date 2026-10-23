@@ -148,11 +148,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
-		controllerutil.AddFinalizer(&entitlement, serviceEntitlementFinalizer)
-		if err := consumerClient.Update(ctx, &entitlement); err != nil {
+		if err := addFinalizerLive(ctx, consumerClient, consumerCluster.GetAPIReader(), &entitlement, serviceEntitlementFinalizer); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// The entitlement now holds the server's latest copy, so carry on with
+		// setup in this pass rather than waiting for the update event.
+		if !entitlement.DeletionTimestamp.IsZero() {
+			return ctrl.Result{}, nil
+		}
 	}
 
 	svc, err := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
@@ -196,7 +199,7 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	consumer := &servicesv1alpha1.ServiceConsumer{
 		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
 	}
-	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
+	mutateConsumer := func() error {
 		// Mirror the caller's ref verbatim; the canonical name lives on
 		// status.serviceName. Both fields are immutable after creation — the
 		// webhook enforces this for everyone, including this controller — so
@@ -218,7 +221,15 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 			}
 		}
 		return nil
-	})
+	}
+	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, mutateConsumer)
+	if apierrors.IsAlreadyExists(err) {
+		// Another pass created the ServiceConsumer after the cached read. Update
+		// the live object now instead of erroring into workqueue backoff while
+		// the cache catches up.
+		*consumer = servicesv1alpha1.ServiceConsumer{ObjectMeta: metav1.ObjectMeta{Name: consumerName}}
+		op, err = updateLive(ctx, providerClient, providerCluster.GetAPIReader(), consumer, mutateConsumer)
+	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to upsert ServiceConsumer %q in provider %q: %w", consumerName, providerProject, err)
 	}
@@ -422,6 +433,9 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 			// time is the one record of "this controller created this to
 			// satisfy that parent" that nothing else can race.
 			Labels: map[string]string{dependencyOfLabel: parent.Name},
+			// Set at create so its first reconcile needn't race other writers
+			// with a separate finalizer update.
+			Finalizers: []string{serviceEntitlementFinalizer},
 		},
 		Spec: servicesv1alpha1.ServiceEntitlementSpec{
 			ServiceRef: servicesv1alpha1.ServiceRef{Name: depSvc.Name},

@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -385,6 +386,14 @@ func TestServiceActivationRequestReconcilerDoesNotRecreateConsumerDeletedEntitle
 	var entitlement servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(context.Background(), client.ObjectKey{Name: testServiceSlug}, &entitlement); err != nil {
 		t.Fatalf("get entitlement: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
+		t.Errorf("finalizers = %v, want %q set at create", entitlement.Finalizers, serviceEntitlementFinalizer)
+	}
+	// Stand in for the entitlement controller releasing its finalizer.
+	entitlement.Finalizers = nil
+	if err := consumerClient.Update(context.Background(), &entitlement); err != nil {
+		t.Fatalf("release finalizer: %v", err)
 	}
 	if err := consumerClient.Delete(context.Background(), &entitlement); err != nil {
 		t.Fatalf("delete entitlement: %v", err)
