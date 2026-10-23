@@ -2043,7 +2043,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Requests the API server throttled (HTTP 429) and requests client-go retried, by HTTP verb. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit. Retries after 5xx or connection errors point at an unhealthy API server rather than throttling.",
+         "description": "Responses the API server throttled (HTTP 429, counted per attempt) and the retry attempts client-go made, by HTTP verb. A retry's code is what that retry attempt returned, not what triggered it: 200 means the retry succeeded, and a 429 retry means the server throttled it again. Each retry waits for the Retry-After delay, so sustained 429s slow setup even with no client limit.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -2100,7 +2100,7 @@
                   "uid": "${datasource}"
                },
                "expr": "sum by (code, verb) (rate(rest_client_request_retries_total{job=\"services-system/services-controller-manager\"}[$__rate_interval]))",
-               "legendFormat": "retried after {{code}} {{verb}}"
+               "legendFormat": "retry attempt returned {{code}} {{verb}}"
             }
          ],
          "title": "Throttled and retried requests by verb",

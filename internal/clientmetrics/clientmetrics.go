@@ -51,7 +51,7 @@ var (
 
 	requestRetries = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rest_client_request_retries_total",
-		Help: "API requests the operator's client retried, by the status code that triggered the retry, verb and host. 429 means the API server throttled the request.",
+		Help: "Retry attempts made by the operator's API clients, by the status code the retry attempt returned, verb and host. The first attempt is not counted; client-go retries after a 429 or a Retry-After response.",
 	}, []string{"code", "verb", "host"})
 
 	// rateLimit is the client-side limit every client built from the
