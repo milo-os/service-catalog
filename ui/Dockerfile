@@ -1,6 +1,8 @@
 FROM node:26.12.1-alpine3.24 AS builder
 
-RUN npm install -g pnpm@10.29.3
+RUN npm install -g pnpm@12.15.0
+
+ENV CI=true
 
 WORKDIR /app
 
@@ -16,7 +18,7 @@ FROM node:26.12.1-alpine3.24 AS runtime
 RUN apk add --no-cache --upgrade 'ca-certificates>=20261020-r0'
 RUN ! grep -q MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG /etc/ssl/certs/ca-certificates.crt
 
-RUN npm install -g pnpm@10.29.3
+RUN npm install -g pnpm@12.15.0
 
 WORKDIR /app
 

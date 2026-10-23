@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -50,11 +50,21 @@ const (
 	// without patching on every five-minute resync.
 	provisioningHeartbeatInterval = time.Hour
 
-	// provisioningFailureRetryInitial is how soon a declaration that failed to
-	// install is tried again. Failures right after enablement are usually brief:
-	// the owning service's API or webhook may not have reached the new project
-	// yet. Each further failure doubles the wait, up to provisioningResyncInterval.
-	provisioningFailureRetryInitial = 2 * time.Second
+	// provisioningFailureRetryMin is how soon a declaration that failed to
+	// install is tried again while its failures are recent. Failures right
+	// after enablement are usually brief: the owning service's API or webhook
+	// may not have reached the new project yet. Compute's InstanceType webhook,
+	// for one, refuses the install until the compute operator has engaged the
+	// project.
+	provisioningFailureRetryMin = time.Second
+
+	// provisioningFailureRetryFraction sets the retry delay to this fraction
+	// of how long the entitlement has been failing, between
+	// provisioningFailureRetryMin and provisioningResyncInterval. The retry
+	// after the cause clears therefore comes at most about a tenth later than
+	// it could have. A doubling backoff instead waited up to as long again:
+	// a webhook that recovered after 70s was retried at 126s.
+	provisioningFailureRetryFraction = 10
 
 	// provisioningMaxConcurrentReconciles is how many entitlements this
 	// controller provisions at once. A reconcile spends most of its time on API
@@ -152,30 +162,56 @@ type ProvisioningReconciler struct {
 	Manager       mcmanager.Manager
 	Scheme        *runtime.Scheme
 
-	// failureRetries paces retries of entitlements whose ledger holds a Failed
-	// declaration, keyed by entitlement UID.
-	failureRetries     *flowcontrol.Backoff
-	failureRetriesOnce sync.Once
+	// failingSince records when each entitlement's current run of provisioning
+	// failures began, keyed by UID. It paces retries; see failureRetryDelay.
+	failingSinceMu sync.Mutex
+	failingSince   map[types.UID]time.Time
+	// clock is the time source for failingSince; nil means the real clock.
+	clock clock.PassiveClock
+}
+
+func (r *ProvisioningReconciler) now() time.Time {
+	if r.clock == nil {
+		return time.Now()
+	}
+	return r.clock.Now()
 }
 
 // failureRetryDelay records another failed pass for the entitlement and
-// returns how long to wait before the next one.
+// returns how long to wait before the next one: a tenth of how long it has
+// been failing, but at least provisioningFailureRetryMin and at most
+// provisioningResyncInterval.
 func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration {
-	r.failureRetriesOnce.Do(r.initFailureRetries)
-	r.failureRetries.Next(string(uid), r.failureRetries.Clock.Now())
-	return r.failureRetries.Get(string(uid))
+	now := r.now()
+	r.failingSinceMu.Lock()
+	if r.failingSince == nil {
+		r.failingSince = make(map[types.UID]time.Time)
+	}
+	since, ok := r.failingSince[uid]
+	if !ok {
+		since = now
+		r.failingSince[uid] = now
+	}
+	r.failingSinceMu.Unlock()
+
+	delay := now.Sub(since) / provisioningFailureRetryFraction
+	return min(max(delay, provisioningFailureRetryMin), provisioningResyncInterval)
 }
 
 // clearFailureRetry forgets an entitlement's failure history once nothing it
 // declares is failing, so a later failure starts again from the short delay.
 func (r *ProvisioningReconciler) clearFailureRetry(uid types.UID) {
-	r.failureRetriesOnce.Do(r.initFailureRetries)
-	r.failureRetries.Reset(string(uid))
-	r.failureRetries.GC()
-}
-
-func (r *ProvisioningReconciler) initFailureRetries() {
-	r.failureRetries = flowcontrol.NewBackOff(provisioningFailureRetryInitial, provisioningResyncInterval)
+	now := r.now()
+	r.failingSinceMu.Lock()
+	defer r.failingSinceMu.Unlock()
+	delete(r.failingSince, uid)
+	// An entitlement deleted while failing never clears its own entry. Drop
+	// entries far older than any retry cycle so they do not accumulate.
+	for other, since := range r.failingSince {
+		if now.Sub(since) > provisioningHeartbeatInterval*24 {
+			delete(r.failingSince, other)
+		}
+	}
 }
 
 func hasFailedResource(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
