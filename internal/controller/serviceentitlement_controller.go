@@ -367,11 +367,25 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	// can have, and DependenciesSatisfied should name every one it can't.
 	var failed []string
 	var errs []error
+	type held struct {
+		svc         *servicesv1alpha1.Service
+		entitlement *servicesv1alpha1.ServiceEntitlement
+	}
+	var next []held
 	for _, dep := range svc.Spec.Dependencies {
-		if err := r.ensureDependency(ctx, consumerClient, dep, parent); err != nil {
+		depSvc, depEntitlement, err := r.ensureDependency(ctx, consumerClient, dep, parent)
+		if err != nil {
 			failed = append(failed, dep.ServiceRef.Name)
 			errs = append(errs, err)
+			continue
 		}
+		if depEntitlement != nil {
+			next = append(next, held{depSvc, depEntitlement})
+		}
+	}
+	visited := map[string]bool{svc.Name: true}
+	for _, h := range next {
+		r.prefetchDependencies(ctx, consumerClient, h.svc, h.entitlement, visited, maxDependencyPrefetchDepth)
 	}
 
 	if err := r.setDependenciesCondition(ctx, consumerClient, parent, len(svc.Spec.Dependencies), failed, errs); err != nil {
@@ -380,12 +394,53 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	return errors.Join(errs...)
 }
 
+// maxDependencyPrefetchDepth bounds how many levels below a direct dependency
+// prefetchDependencies enrolls in one pass.
+const maxDependencyPrefetchDepth = 4
+
+// prefetchDependencies enrolls a self-service dependency's own dependencies
+// now, on that dependency's behalf, instead of waiting for its reconcile to go
+// Active first. Each hop of a chain such as compute → networking → ipam
+// otherwise costs a full reconcile round trip before the next level starts.
+//
+// The entitlements it creates are labelled exactly as the dependency's own
+// reconcile would label them, so ownership, delete protection, and teardown
+// don't change; that reconcile later finds them by name and makes no write.
+// A gated dependency is skipped: its dependencies wait for the provider's
+// approval, as ensureDependencies requires. Failures are only logged, since
+// the dependency's own reconcile enrolls the same entitlements and reports
+// any failure on its own DependenciesSatisfied condition.
+func (r *ServiceEntitlementReconciler) prefetchDependencies(ctx context.Context, consumerClient client.Client, svc *servicesv1alpha1.Service, entitlement *servicesv1alpha1.ServiceEntitlement, visited map[string]bool, depth int) {
+	if depth == 0 || visited[svc.Name] || len(svc.Spec.Dependencies) == 0 {
+		return
+	}
+	visited[svc.Name] = true
+	if svc.Spec.Phase != servicesv1alpha1.PhasePublished ||
+		(svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider) {
+		return
+	}
+	for _, dep := range svc.Spec.Dependencies {
+		depSvc, depEntitlement, err := r.ensureDependency(ctx, consumerClient, dep, entitlement)
+		if err != nil {
+			log.FromContext(ctx).V(1).Info("could not enroll dependency early; its parent's reconcile will retry",
+				"parent", entitlement.Name, "dependency", dep.ServiceRef.Name, "reason", err.Error())
+			continue
+		}
+		if depEntitlement != nil {
+			r.prefetchDependencies(ctx, consumerClient, depSvc, depEntitlement, visited, depth-1)
+		}
+	}
+}
+
 // ensureDependency enrolls the consumer project in a single declared
 // dependency, creating the derived ServiceEntitlement if it isn't there yet.
-func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, consumerClient client.Client, dep servicesv1alpha1.ServiceDependency, parent *servicesv1alpha1.ServiceEntitlement) error {
+//
+// When this parent holds the dependency open, it returns the dependency's
+// Service and entitlement so the caller can enroll the next level early.
+func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, consumerClient client.Client, dep servicesv1alpha1.ServiceDependency, parent *servicesv1alpha1.ServiceEntitlement) (*servicesv1alpha1.Service, *servicesv1alpha1.ServiceEntitlement, error) {
 	depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
 	if err != nil {
-		return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+		return nil, nil, fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
 	}
 	depCanonical := depSvc.Spec.ServiceName
 
@@ -404,12 +459,12 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 		// created directly is left alone even if it happens to satisfy this
 		// dependency: it isn't ours to hold open on the parent's behalf.
 		if existing.Labels[dependencyOfLabel] == parent.Name {
-			return r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
+			return depSvc, &existing, r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
 		}
-		return nil
+		return nil, nil, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
+		return nil, nil, fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
 	}
 
 	// The Get returned NotFound, but an entitlement for the same dependency
@@ -419,10 +474,10 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	var existingByCanonical servicesv1alpha1.ServiceEntitlementList
 	if err := consumerClient.List(ctx, &existingByCanonical,
 		client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
-		return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
+		return nil, nil, fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
 	}
 	if len(existingByCanonical.Items) > 0 {
-		return nil
+		return nil, nil, nil
 	}
 
 	depEntitlement := &servicesv1alpha1.ServiceEntitlement{
@@ -443,16 +498,16 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	}
 	if err := consumerClient.Create(ctx, depEntitlement); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
+			return nil, nil, fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
 		}
 		// Lost a create race; the next pass finds it by name and stamps it.
-		return nil
+		return nil, nil, nil
 	}
 
 	// Stamp from the object the API server just returned rather than reading
 	// it back: the consumer client is cache-backed and the create hasn't
 	// reached that cache yet, so a read-back here returns NotFound.
-	return r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
+	return depSvc, depEntitlement, r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
 }
 
 // stampDependencyOrigin records on status that this entitlement is held open
