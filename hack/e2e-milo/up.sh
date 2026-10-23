@@ -63,7 +63,7 @@ khost() { kubectl --kubeconfig "${HOST_KUBECONFIG}" "$@"; }
 # --- cluster ----------------------------------------------------------------
 
 mkdir -p "$(dirname "${HOST_KUBECONFIG}")"
-if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+if grep -qx "${CLUSTER_NAME}" <<<"$(kind get clusters 2>/dev/null)"; then
   log "kind cluster ${CLUSTER_NAME} already exists"
   kind export kubeconfig --name "${CLUSTER_NAME}" --kubeconfig "${HOST_KUBECONFIG}"
 else
@@ -265,13 +265,13 @@ for p in "${PROJECTS[@]}"; do
     manager_pod="$(khost -n services-system get pods -l control-plane=services \
       --field-selector=status.phase=Running \
       --sort-by=.metadata.creationTimestamp -o name | tail -1)"
-    # Logs are captured before matching rather than piped into `grep -q`: under
-    # `pipefail`, grep closes the pipe on its first match, kubectl dies of
-    # SIGPIPE, and the successful match reads as a failed pipeline. The wait
-    # then never ends, however long the thing it waits for has been true.
+    # Logs are captured and fed to `grep -q` through a here-string, never a
+    # pipe: under `pipefail`, grep exits on its first match, the writer dies of
+    # SIGPIPE once the log outgrows the 64 KB pipe buffer, and the successful
+    # match reads as a failed pipeline. The wait then never ends, however long
+    # the thing it waits for has been true.
     manager_log="$([ -n "${manager_pod}" ] && khost -n services-system logs "${manager_pod}" --tail=-1 2>/dev/null || true)"
-    if printf '%s' "${manager_log}" |
-      grep -q "Successfully registered and engaged new cluster.*${p}"; then
+    if grep -q "Successfully registered and engaged new cluster.*${p}" <<<"${manager_log}"; then
       engaged=yes
       break
     fi
