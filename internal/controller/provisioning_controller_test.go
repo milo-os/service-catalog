@@ -1335,11 +1335,16 @@ func TestProvisioningReportsAnExistingObjectOutsideTheProducerProject(t *testing
 	)
 
 	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
-	provReconcile(t, r)
+	result := provReconcile(t, r)
 
 	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
 	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
 		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
+	// Nothing watched here sees the customer free the name, so the blocked
+	// declaration is retried well before the hourly resync.
+	if result.RequeueAfter != provisioningBlockedRetryInterval {
+		t.Errorf("requeueAfter = %s, want the %s blocked retry", result.RequeueAfter, provisioningBlockedRetryInterval)
 	}
 }
 
@@ -1494,19 +1499,30 @@ func TestProvisioningRetriesFailedResourcesSoonAfterTheCauseClears(t *testing.T)
 	for i, step := range steps {
 		clk.Step(step.elapse)
 		failing = step.failing
-		if got := provReconcile(t, r).RequeueAfter; got != step.want {
+		got := provReconcile(t, r).RequeueAfter
+		if step.want == provisioningResyncInterval {
+			// The resync is jittered upward.
+			jitter := provisioningResyncJitter
+			maxResync := provisioningResyncInterval + time.Duration(jitter*float64(provisioningResyncInterval))
+			if got < provisioningResyncInterval || got > maxResync {
+				t.Errorf("pass %d (failing=%v): requeueAfter = %s, want between %s and %s",
+					i+1, step.failing, got, provisioningResyncInterval, maxResync)
+			}
+			continue
+		}
+		if got != step.want {
 			t.Errorf("pass %d (failing=%v): requeueAfter = %s, want %s", i+1, step.failing, got, step.want)
 		}
 	}
 }
 
-func TestProvisioningFailureRetryIsCappedAtTheResyncInterval(t *testing.T) {
+func TestProvisioningFailureRetryIsCappedAtTheBlockedRetryInterval(t *testing.T) {
 	clk := testingclock.NewFakeClock(time.Now())
 	r := &ProvisioningReconciler{clock: clk}
 	r.failureRetryDelay("entitlement-uid")
-	clk.Step(provisioningFailureRetryFraction * provisioningResyncInterval * 2)
-	if got := r.failureRetryDelay("entitlement-uid"); got != provisioningResyncInterval {
-		t.Errorf("retry delay after a long run of failures = %s, want the %s resync cap", got, provisioningResyncInterval)
+	clk.Step(provisioningFailureRetryFraction * provisioningBlockedRetryInterval * 2)
+	if got := r.failureRetryDelay("entitlement-uid"); got != provisioningBlockedRetryInterval {
+		t.Errorf("retry delay after a long run of failures = %s, want the %s cap", got, provisioningBlockedRetryInterval)
 	}
 }
 

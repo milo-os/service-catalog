@@ -41,14 +41,6 @@ const (
 	reasonServiceNotPublished = servicesv1alpha1.ReasonServiceNotPublished
 )
 
-// pendingApprovalRequeueInterval bounds the latency between a provider
-// recording an approval decision and the entitlement reflecting it. The
-// decision lives on a ServiceConsumer in the provider project's control
-// plane, which this controller doesn't watch; the consumer controller
-// normally propagates it, but if that write is missed the only other
-// trigger is the multi-hour cache resync.
-const pendingApprovalRequeueInterval = 2 * time.Minute
-
 // providerTeardownRequeueInterval bounds how often the finalize path re-checks
 // whether the provider has finished tearing down the resources it created for
 // this project. The entitlement's finalizer is held until the shared
@@ -268,10 +260,9 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 	}
 
-	// Bound approval latency while waiting on the provider's decision.
-	if desiredPhase == servicesv1alpha1.EntitlementPhasePendingApproval {
-		return ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}, nil
-	}
+	// A pending entitlement is not polled. The provider's decision lands on the
+	// ServiceConsumer, whose controller writes it onto this entitlement and
+	// retries that write until it lands; the write re-runs this reconcile.
 	return ctrl.Result{}, nil
 }
 
@@ -822,27 +813,34 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 
 	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
-		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		For(&servicesv1alpha1.ServiceEntitlement{},
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(serviceEntitlementPredicate()),
+		).
 		WatchesRawSource(r.wakeups.source()).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.BillingEntitlement{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingEntitlementToServiceEntitlements),
+			billingEntitlementPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.BillingAccountBinding{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingAccountBindingToServiceEntitlements),
+			billingAccountBindingPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.Offer{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapOfferToServiceEntitlements),
+			offerPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceConfiguration{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceConfigurationToServiceEntitlements),
+			serviceConfigurationPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
