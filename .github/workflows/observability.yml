@@ -32,5 +32,13 @@ jobs:
           cd observability
           jb install
           task --taskfile Taskfile.yaml verify ROOT_DIR="$GITHUB_WORKSPACE"
+      - name: Install promtool
+        run: |
+          curl -sSL https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/prometheus-3.5.0.linux-amd64" >> "$GITHUB_PATH"
+      - name: Test alert rules
+        run: |
+          cd observability
+          task --taskfile Taskfile.yaml test-alerts ROOT_DIR="$GITHUB_WORKSPACE"
       - name: Validate observability component
         run: kubectl kustomize config/components/observability >/dev/null
