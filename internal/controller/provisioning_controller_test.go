@@ -1335,11 +1335,16 @@ func TestProvisioningReportsAnExistingObjectOutsideTheProducerProject(t *testing
 	)
 
 	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
-	provReconcile(t, r)
+	result := provReconcile(t, r)
 
 	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
 	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
 		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
+	// Nothing watched here sees the customer free the name, so the blocked
+	// declaration is retried well before the hourly resync.
+	if result.RequeueAfter != provisioningBlockedRetryInterval {
+		t.Errorf("requeueAfter = %s, want the %s blocked retry", result.RequeueAfter, provisioningBlockedRetryInterval)
 	}
 }
 

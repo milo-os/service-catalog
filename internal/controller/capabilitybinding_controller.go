@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -15,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -48,6 +51,18 @@ var capabilityBindingGVK = schema.GroupVersionKind{
 }
 
 const (
+	// capabilityBindingResyncInterval is how often a settled project's
+	// bindings are rebuilt with nothing having changed. Catalog and
+	// entitlement changes arrive as events and do not wait for it. What does
+	// is a binding a customer edits or deletes, which no watch here sees, and
+	// a fan-out event that was missed.
+	capabilityBindingResyncInterval = time.Hour
+
+	// capabilityBindingResyncJitter spreads each resync over up to this
+	// fraction of the interval, so projects engaged together at startup do
+	// not all come due at once.
+	capabilityBindingResyncJitter = 0.1
+
 	// Labels recording what a projected binding came from, so it can be found
 	// and pruned without reading the catalog. Only bindings carrying the shared
 	// managed-by label are ever deleted, which is what keeps a hand-written
@@ -216,7 +231,7 @@ func (r *CapabilityBindingReconciler) Reconcile(ctx context.Context, req mcrecon
 
 	logger.V(1).Info("reconciled capability bindings",
 		"activeEntitlements", len(active), "bindings", len(desired))
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: wait.Jitter(capabilityBindingResyncInterval, capabilityBindingResyncJitter)}, nil
 }
 
 // latestPublishedAgentConfiguration returns the newest Published configuration
@@ -392,8 +407,8 @@ func (r *CapabilityBindingReconciler) pruneCapabilityBindings(
 // reconcile. The catalog side (the Service, its agents and their
 // configurations) lives on the root cluster; those watches fan out to every
 // project entitled to the service, so a newly published agent reaches
-// customers without a periodic pass. Only spec changes count: nothing here
-// reads their status.
+// customers without waiting for the resync. Only spec changes count: nothing
+// here reads their status.
 func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr manager.Manager) error {
 	r.rootClient = rootMgr.GetClient()
 	r.rootAPIReader = rootMgr.GetAPIReader()
@@ -429,10 +444,7 @@ func (r *CapabilityBindingReconciler) SetupWithManager(mgr mcmanager.Manager, ro
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceAgentConfiguration{},
-			handler.TypedEnqueueRequestsFromMapFunc(
-				func(ctx context.Context, sac *servicesv1alpha1.ServiceAgentConfiguration) []mcreconcile.Request {
-					return r.enqueueProjectsForAgent(ctx, sac.Spec.ServiceAgentRef.Name)
-				}),
+			r.agentConfigurationHandler(),
 			predicate.TypedGenerationChangedPredicate[*servicesv1alpha1.ServiceAgentConfiguration]{},
 		)).
 		WithOptions(controller.TypedOptions[mcreconcile.Request]{
@@ -458,6 +470,56 @@ func capabilityEntitlementPredicate() predicate.Predicate {
 				oldEntitlement.DeletionTimestamp.IsZero() != newEntitlement.DeletionTimestamp.IsZero()
 		},
 	}
+}
+
+// agentConfigurationHandler enqueues the projects of the agent a
+// configuration belongs to. serviceAgentRef can be edited, so an update
+// enqueues the projects of the agent it left as well as the one it joined: the
+// former may need a binding withdrawn.
+func (r *CapabilityBindingReconciler) agentConfigurationHandler() handler.TypedEventHandler[*servicesv1alpha1.ServiceAgentConfiguration, mcreconcile.Request] {
+	type queue = workqueue.TypedRateLimitingInterface[mcreconcile.Request]
+	enqueue := func(ctx context.Context, q queue, configs ...*servicesv1alpha1.ServiceAgentConfiguration) {
+		for _, req := range r.agentConfigurationRequests(ctx, configs...) {
+			q.Add(req)
+		}
+	}
+	return handler.TypedFuncs[*servicesv1alpha1.ServiceAgentConfiguration, mcreconcile.Request]{
+		CreateFunc: func(ctx context.Context, e event.TypedCreateEvent[*servicesv1alpha1.ServiceAgentConfiguration], q queue) {
+			enqueue(ctx, q, e.Object)
+		},
+		UpdateFunc: func(ctx context.Context, e event.TypedUpdateEvent[*servicesv1alpha1.ServiceAgentConfiguration], q queue) {
+			enqueue(ctx, q, e.ObjectOld, e.ObjectNew)
+		},
+		DeleteFunc: func(ctx context.Context, e event.TypedDeleteEvent[*servicesv1alpha1.ServiceAgentConfiguration], q queue) {
+			enqueue(ctx, q, e.Object)
+		},
+		GenericFunc: func(ctx context.Context, e event.TypedGenericEvent[*servicesv1alpha1.ServiceAgentConfiguration], q queue) {
+			enqueue(ctx, q, e.Object)
+		},
+	}
+}
+
+// agentConfigurationRequests returns one request per project entitled to the
+// service of any agent the configurations name, without duplicates.
+func (r *CapabilityBindingReconciler) agentConfigurationRequests(
+	ctx context.Context,
+	configs ...*servicesv1alpha1.ServiceAgentConfiguration,
+) []mcreconcile.Request {
+	seen := make(map[mcreconcile.Request]struct{})
+	var out []mcreconcile.Request
+	for _, sac := range configs {
+		if sac == nil {
+			continue
+		}
+		for _, req := range r.enqueueProjectsForAgent(ctx, sac.Spec.ServiceAgentRef.Name) {
+			if _, ok := seen[req]; ok {
+				continue
+			}
+			seen[req] = struct{}{}
+			out = append(out, req)
+		}
+	}
+	return out
 }
 
 // enqueueProjectsForAgent turns a change to one of an agent's configurations
