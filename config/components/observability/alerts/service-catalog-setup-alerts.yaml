@@ -35,13 +35,23 @@ spec:
         # unfinished work: overdue is more than a minute past authorization,
         # stalled is more than an hour. This alert reports work that is overdue
         # but not yet stalled, which is the slow-right-now case.
+        #
+        # On a rollout or leader change the gauges vanish for about a minute and
+        # then refill project by project. Read raw, every rollout would restart
+        # the alert's hold, so a real stall could stay silent through repeated
+        # deploys. Each gauge is therefore read as its 5-minute maximum, taken
+        # per series before the max across pods, so that the outgoing and
+        # incoming leader are not counted twice.
         - alert: ServiceActivationOverdue
           expr: |
             (
-              sum by (service_class, blocking_stage) (service_catalog_setup_overdue)
-              - (sum by (service_class, blocking_stage) (service_catalog_setup_stalled) or sum by (service_class, blocking_stage) (service_catalog_setup_overdue) * 0)
+              sum by (service_class, blocking_stage) (max by (service_class, operation, blocking_stage) (max_over_time(service_catalog_setup_overdue[5m])))
+              - (
+                sum by (service_class, blocking_stage) (max by (service_class, operation, blocking_stage) (max_over_time(service_catalog_setup_stalled[5m])))
+                or sum by (service_class, blocking_stage) (max by (service_class, operation, blocking_stage) (max_over_time(service_catalog_setup_overdue[5m]))) * 0
+              )
             ) > 0
-            and on () (max(service_catalog_setup_observer_healthy) == 1)
+            and on () (max(max_over_time(service_catalog_setup_observer_healthy[5m])) == 1)
           for: 5m
           labels:
             severity: warning
@@ -55,11 +65,12 @@ spec:
 
         # A setup unfinished an hour after authorization is waiting on something
         # retries will not fix, such as a service with no ServiceConfiguration or
-        # no available locations.
+        # no available locations. The gauge is read as its 5-minute maximum for
+        # the reason given on ServiceActivationOverdue.
         - alert: ServiceActivationStalled
           expr: |
-            sum by (service_class, blocking_stage) (service_catalog_setup_stalled) > 0
-            and on () (max(service_catalog_setup_observer_healthy) == 1)
+            sum by (service_class, blocking_stage) (max by (service_class, operation, blocking_stage) (max_over_time(service_catalog_setup_stalled[5m]))) > 0
+            and on () (max(max_over_time(service_catalog_setup_observer_healthy[5m])) == 1)
           for: 15m
           labels:
             severity: warning
