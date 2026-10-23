@@ -19,6 +19,10 @@ local var = g.dashboard.variable;
 
 local ds = '${datasource}';
 local svc = 'service=~"$service"';
+// A healthy observer with nothing to count reports zero; a missing or
+// unhealthy one reports nothing, so the stat shows its empty state rather than
+// a reassuring zero.
+local orObservedZero(expr) = '(%s) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)' % expr;
 local entitlements(selector) = 'sum by (service) (service_catalog_service_entitlements{%s,%s})' % [svc, selector];
 
 local prom(expr, legend='') =
@@ -123,7 +127,7 @@ local panels = [
   statPanel('Services in use', 'count(%s > 0)' % entitlements('phase="Active"'), 'short',
     [['blue', null]], { h: 4, w: 4, x: 4, y: 1 },
     'Catalog services with at least one Active entitlement.', 'Not reported'),
-  statPanel('Awaiting provider approval', 'sum(service_catalog_service_entitlements{%s,phase="PendingApproval"}) or vector(0)' % svc, 'short',
+  statPanel('Awaiting provider approval', orObservedZero('sum(service_catalog_service_entitlements{%s,phase="PendingApproval"})' % svc), 'short',
     [['green', null], ['yellow', 1], ['orange', 10]], { h: 4, w: 4, x: 8, y: 1 },
     'Entitlements for gated services that are waiting on the provider to approve or deny them.', 'Not reported'),
   statPanel('Activated in range', 'sum(increase(service_catalog_service_activations_total{%s,outcome="succeeded"}[$__range]))' % svc, 'short',
@@ -170,10 +174,10 @@ local panels = [
     'histogram_quantile(0.95, sum by (le) (increase(service_catalog_service_setup_duration_seconds_bucket{%s,clock="user"}[$__range])))' % svc,
     's', [['green', null], ['yellow', 1], ['red', 10]], { h: 4, w: 6, x: 6, y: 23 },
     'Request to first successful setup, 95th percentile over the selected range.', 'No completed setups'),
-  statPanel('In progress', 'sum(service_catalog_service_setup_inflight{%s}) or vector(0)' % svc, 'short',
+  statPanel('In progress', orObservedZero('sum(service_catalog_service_setup_inflight{%s})' % svc), 'short',
     [['green', null], ['yellow', 5]], { h: 4, w: 6, x: 12, y: 23 },
     'Entitlements whose first setup has not finished yet, including ones waiting on provider approval.', 'Not reported'),
-  statPanel('Stalled (>1h)', 'sum(service_catalog_service_setup_stalled{%s}) or vector(0)' % svc, 'short',
+  statPanel('Stalled (>1h)', orObservedZero('sum(service_catalog_service_setup_stalled{%s})' % svc), 'short',
     [['green', null], ['orange', 1]], { h: 4, w: 6, x: 18, y: 23 },
     'Setups more than an hour past authorization. The Service Catalog Setup dashboard breaks these down by blocking stage.', 'Not reported'),
   serviceTable(

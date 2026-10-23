@@ -193,7 +193,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "sum(service_catalog_service_entitlements{service=~\"$service\",phase=\"PendingApproval\"}) or vector(0)",
+               "expr": "(sum(service_catalog_service_entitlements{service=~\"$service\",phase=\"PendingApproval\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
                "legendFormat": ""
             }
          ],
@@ -831,7 +831,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "sum(service_catalog_service_setup_inflight{service=~\"$service\"}) or vector(0)",
+               "expr": "(sum(service_catalog_service_setup_inflight{service=~\"$service\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
                "legendFormat": ""
             }
          ],
@@ -890,7 +890,7 @@
                   "type": "prometheus",
                   "uid": "${datasource}"
                },
-               "expr": "sum(service_catalog_service_setup_stalled{service=~\"$service\"}) or vector(0)",
+               "expr": "(sum(service_catalog_service_setup_stalled{service=~\"$service\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
                "legendFormat": ""
             }
          ],

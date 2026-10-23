@@ -12,7 +12,9 @@ The adoption dashboard answers the product questions: which services projects
 use, how adoption changes over time, and how well each service activates
 (success, rejections, time to activate, and work in progress). Its metrics are
 labelled by service and never by project, so their series count grows with the
-catalog, not with the number of projects.
+catalog, not with the number of projects. `verify_dashboard.py` runs its
+generic checks (semantic empty states, unique titles) on both dashboards; its
+panel-specific assertions cover only the setup dashboard.
 
 Install Python 3 (available as `python3`), `jsonnet`, and `jb`, then run:
 
