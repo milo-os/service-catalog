@@ -13,6 +13,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/priorityqueue"
@@ -26,15 +27,25 @@ import (
 	miloprovider "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/prewarm"
 )
 
-// projectEngagementWorkers bounds how many project control planes a Milo
-// provider connects to at once. The provider's own controller engages one
-// project at a time, so a freshly started operator spent well over a minute
-// working through every project before it could serve the last one. Each
-// engagement is dominated by round trips to that project's control plane, so
-// running them side by side brings the whole pass down to a few seconds.
-const projectEngagementWorkers = 16
+// defaultProjectEngagementWorkers is the default for
+// --project-engagement-workers, which bounds how many project control planes
+// a Milo provider connects to at once. The provider's own controller engages
+// one project at a time, so a freshly started operator spent well over a
+// minute working through every project before it could serve the last one.
+// Each engagement is dominated by round trips to that project's control
+// plane, so running them side by side brings the whole pass down to seconds.
+//
+// Each worker lists every kind its manager's controllers watch in one
+// project, so this also caps how many of those lists the operator has in
+// flight against Milo at startup. Eight keeps that burst modest while still
+// connecting a few hundred projects in well under a minute.
+const defaultProjectEngagementWorkers = 8
+
+// projectEngagementWorkers is set from --project-engagement-workers.
+var projectEngagementWorkers = defaultProjectEngagementWorkers
 
 // providerProjectPriority queues projects that own a Service ahead of the
 // initial list of every other project. Entitlements in any consumer project
@@ -63,6 +74,10 @@ func newMiloProvider(localMgr manager.Manager, opts miloprovider.Options) (*milo
 	if opts.InternalServiceDiscovery || opts.LabelSelector != nil {
 		return nil, fmt.Errorf("newMiloProvider supports Project discovery without a label selector only")
 	}
+
+	// Each provider learns the kinds its own controllers watch; see
+	// prewarm.WatchedKinds.
+	opts.ClusterOptions = append(append([]cluster.Option(nil), opts.ClusterOptions...), prewarm.NewWatchedKinds().ClusterOption())
 
 	withheld := &controllerWithholdingManager{Manager: localMgr}
 	provider, err := miloprovider.New(withheld, opts)
