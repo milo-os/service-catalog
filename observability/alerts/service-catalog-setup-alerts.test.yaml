@@ -117,6 +117,42 @@ tests:
         alertname: ServiceCatalogSetupObserverDown
         exp_alerts: []
 
+  # A rollout: the outgoing leader stops reporting after minute 7, nothing is
+  # reported at minute 8, and the incoming leader refills the gauge (5, 7, then
+  # 12). The 5-minute maximum carries the alert's hold across the gap, and the
+  # two leaders are not added together.
+  - interval: 1m
+    input_series:
+      - series: 'service_catalog_setup_stalled{pod="services-controller-manager-a",service_class="other",operation="initial",blocking_stage="Projection"}'
+        values: '12x7 stale'
+      - series: 'service_catalog_setup_stalled{pod="services-controller-manager-b",service_class="other",operation="initial",blocking_stage="Projection"}'
+        values: '_x9 5 7 12x20'
+      - series: 'service_catalog_setup_observer_healthy{pod="services-controller-manager-a"}'
+        values: '1x7 stale'
+      - series: 'service_catalog_setup_observer_healthy{pod="services-controller-manager-b"}'
+        values: '_x9 1x21'
+    promql_expr_test:
+      - expr: sum by (service_class, blocking_stage) (max by (service_class, operation, blocking_stage) (max_over_time(service_catalog_setup_stalled[5m])))
+        eval_time: 10m
+        exp_samples:
+          - labels: '{service_class="other",blocking_stage="Projection"}'
+            value: 12
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ServiceActivationStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: service-catalog
+              team: platform
+              service_class: other
+              blocking_stage: Projection
+            exp_annotations:
+              runbook_url: "https://github.com/milo-os/service-catalog/blob/main/docs/runbooks/service-setup.md"
+              dashboard_url: "/d/service-catalog-setup"
+              summary: "12 other activation(s) stalled at the Projection stage"
+              description: "12 other activation(s) are still unfinished more than an hour after authorization, blocked at the Projection stage. Retries will not fix these. Find them with the ServiceEntitlement setup status and resolve the blocker, for example a missing ServiceConfiguration."
+
   # Releases before the stalled gauge export only the overdue gauge; every
   # overdue attempt counts as overdue.
   - interval: 1m

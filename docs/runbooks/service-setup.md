@@ -82,7 +82,9 @@ authorization. Retries will not fix it; something must change first.
 - `Provisioning`: a declared resource failed to install. The entitlement's
   `status.provisionedResources` names the resource and the error.
 
-Once the blocker is fixed, the operator completes setup without further action.
+Once the blocker is fixed, the operator completes setup without further action. The
+alert reads each gauge's 5-minute maximum, so it keeps firing for up to five
+minutes after the setup completes.
 If the consumer no longer needs the service, deleting the entitlement removes
 it from the count.
 
