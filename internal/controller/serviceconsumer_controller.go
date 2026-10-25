@@ -26,11 +26,17 @@ import (
 // reconcile call carries the *provider* project name as req.ClusterName. The
 // reconciler reacts to provider approval decisions (spec.approval) and
 // propagates the result onto the matching ServiceEntitlement in the consumer
-// project's virtual control plane.
+// project's virtual control plane. It also deletes a ServiceConsumer whose
+// consumer Project no longer exists.
 type ServiceConsumerReconciler struct {
 	Manager mcmanager.Manager
 	Scheme  *runtime.Scheme
 	wakeups *engagementWakeups
+
+	// rootClient and rootAPIReader read Projects from the root key space. The
+	// orphan sweep is skipped when they are unset.
+	rootClient    client.Reader
+	rootAPIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
@@ -65,6 +71,10 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		// The entitlement reconciler is the sole creator/deleter of consumer
 		// records; nothing to do on delete here.
 		return ctrl.Result{}, nil
+	}
+
+	if deleted, err := r.deleteIfProjectGone(ctx, providerClient, &consumer); err != nil || deleted {
+		return ctrl.Result{}, err
 	}
 
 	// Without an approval decision, leave the consumer status untouched. The
@@ -145,6 +155,30 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	return ctrl.Result{}, nil
 }
 
+// deleteIfProjectGone deletes a ServiceConsumer whose consumer Project no
+// longer exists. The entitlement finalizer normally deletes the consumer
+// before its Project goes. A consumer left behind by a Project deleted
+// without that step would otherwise stay Active, and every provider would keep
+// serving the deleted Project. The delete runs the provider-teardown hold like
+// any other. The entitlement reconciler never creates a consumer for an absent
+// Project, so the consumer is not recreated.
+func (r *ServiceConsumerReconciler) deleteIfProjectGone(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer) (bool, error) {
+	consumerProject := consumer.Spec.ConsumerProjectRef.Name
+	if r.rootClient == nil || consumerProject == "" {
+		return false, nil
+	}
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, consumerProject)
+	if err != nil || project != nil {
+		return false, err
+	}
+	if err := providerClient.Delete(ctx, consumer); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("failed to delete ServiceConsumer %q of deleted project %q: %w", consumer.Name, consumerProject, err)
+	}
+	log.FromContext(ctx).Info("deleted ServiceConsumer of deleted project",
+		"serviceConsumer", consumer.Name, "consumerProject", consumerProject)
+	return true, nil
+}
+
 func readyStatusForEntitlementPhase(phase servicesv1alpha1.EntitlementPhase) metav1.ConditionStatus {
 	if phase == servicesv1alpha1.EntitlementPhaseActive {
 		return metav1.ConditionTrue
@@ -188,9 +222,11 @@ func updateConsumerStatus(ctx context.Context, providerClient client.Client, con
 
 // SetupWithManager registers the reconciler on the multicluster manager.
 // WithEngageWithProviderClusters(true) — ServiceConsumers live in provider
-// project virtual control planes, not the root cluster.
-func (r *ServiceConsumerReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+// project virtual control planes, not the root cluster. rootMgr reads Projects.
+func (r *ServiceConsumerReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.Manager = mgr
+	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.wakeups = newEngagementWakeups()
 	if err := mgr.Add(r.wakeups); err != nil {
 		return fmt.Errorf("failed to register consumer engagement wakeups: %w", err)

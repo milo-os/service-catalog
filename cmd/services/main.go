@@ -309,7 +309,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceActivationRequest")
 		os.Exit(1)
 	}
-	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr); err != nil {
+	if err = (&controller.ServiceConsumerReconciler{Scheme: scheme}).SetupWithManager(electedMcMgr, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceConsumer")
 		os.Exit(1)
 	}
