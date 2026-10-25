@@ -713,5 +713,9 @@ type ServiceConfigurationList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceConfiguration{}, &ServiceConfigurationList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceConfiguration{}, &ServiceConfigurationList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

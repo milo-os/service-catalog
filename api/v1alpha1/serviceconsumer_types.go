@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ConsumerPhase describes the lifecycle state of a ServiceConsumer.
@@ -153,5 +154,9 @@ type ServiceConsumerList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceConsumer{}, &ServiceConsumerList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceConsumer{}, &ServiceConsumerList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }
