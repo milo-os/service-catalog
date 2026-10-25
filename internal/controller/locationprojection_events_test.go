@@ -966,14 +966,14 @@ func TestProjectionRootDispatcherStartWiresServiceUpdates(t *testing.T) {
 	scheme := testScheme()
 	location := &unstructured.Unstructured{}
 	location.SetGroupVersionKind(LocationGVK)
-	serviceInformer := &controllertest.FakeInformer{Synced: true}
+	serviceInformer := controllertest.NewFakeInformer(controllertest.Synced)
 	informers := &informertest.FakeInformers{
 		Scheme: scheme,
 		InformersByGVK: map[schema.GroupVersionKind]toolscache.SharedIndexInformer{
 			servicesv1alpha1.GroupVersion.WithKind("Service"):              serviceInformer,
-			servicesv1alpha1.GroupVersion.WithKind("ServiceAvailability"):  &controllertest.FakeInformer{Synced: true},
-			servicesv1alpha1.GroupVersion.WithKind("ServiceConfiguration"): &controllertest.FakeInformer{Synced: true},
-			LocationGVK: &controllertest.FakeInformer{Synced: true},
+			servicesv1alpha1.GroupVersion.WithKind("ServiceAvailability"):  controllertest.NewFakeInformer(controllertest.Synced),
+			servicesv1alpha1.GroupVersion.WithKind("ServiceConfiguration"): controllertest.NewFakeInformer(controllertest.Synced),
+			LocationGVK: controllertest.NewFakeInformer(controllertest.Synced),
 		},
 	}
 	rootCache := &syncSignalingCache{FakeInformers: informers, synced: make(chan struct{})}
