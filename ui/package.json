@@ -27,7 +27,7 @@
     "react-dom": "^19.2.5",
     "@tanstack/react-virtual": ">=3",
     "sonner": ">=2",
-    "zod": ">=4",
+    "zod": ">=4.6.6",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7"
   },
