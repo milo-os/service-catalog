@@ -68,7 +68,7 @@ importers:
         specifier: ^1.0.7
         version: 1.0.7(tailwindcss@4.2.4)
       zod:
-        specifier: '>=4'
+        specifier: '>=4.6.6'
         version: 4.6.6
     devDependencies:
       '@playwright/test':
