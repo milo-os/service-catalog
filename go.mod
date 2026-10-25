@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.2
 	go.miloapis.com/billing v0.4.2
-	go.miloapis.com/milo v0.36.10
+	go.miloapis.com/milo v0.36.9
 	golang.org/x/term v0.46.0
 	k8s.io/api v0.37.1
 	k8s.io/apiextensions-apiserver v0.37.1
