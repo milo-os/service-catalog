@@ -99,9 +99,9 @@ func TestMigratedStatusManagedFieldsSplitsByOwner(t *testing.T) {
 	}
 	byManager := map[string]string{}
 	for _, e := range out {
-		byManager[e.Manager+"/"+string(e.Operation)+"/"+e.Subresource] = string(e.FieldsV1.Raw)
+		byManager[e.Manager+"/"+string(e.Operation)+"/"+e.Subresource] = e.FieldsV1.GetRawString()
 	}
-	if got := byManager["services/Update/"]; got != string(spec.FieldsV1.Raw) {
+	if got := byManager["services/Update/"]; got != spec.FieldsV1.GetRawString() {
 		t.Errorf("spec ownership changed: %s", got)
 	}
 	left := byManager["services/Update/status"]
