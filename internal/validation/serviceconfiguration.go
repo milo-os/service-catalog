@@ -5,10 +5,8 @@ package validation
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -33,8 +31,7 @@ func ValidateServiceConfigurationCreate(
 	metricNames := collectMetricNames(sc)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(sc)...)
 	allErrs = append(allErrs, validateMetricUniqueness(sc)...)
-	allErrs = append(allErrs, validateCharges(sc, metricNames)...)
-	allErrs = append(allErrs, validateChargesPriceLiveMetrics(sc)...)
+	allErrs = append(allErrs, validateNoCharges(sc)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(sc, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(sc)...)
 	allErrs = append(allErrs, validateQuotaRefs(sc, metricNames)...)
@@ -63,8 +60,6 @@ func ValidateServiceConfigurationUpdate(
 	metricNames := collectMetricNames(newSC)
 	allErrs = append(allErrs, validateMonitoredResourceTypeUniqueness(newSC)...)
 	allErrs = append(allErrs, validateMetricUniqueness(newSC)...)
-	allErrs = append(allErrs, validateCharges(newSC, metricNames)...)
-	allErrs = append(allErrs, validateChargesPriceLiveMetrics(newSC)...)
 	allErrs = append(allErrs, validateMetricPhaseTransitions(oldSC, newSC)...)
 	allErrs = append(allErrs, validateBillingDestinationRefs(newSC, mrtNames, metricNames)...)
 	allErrs = append(allErrs, validateQuotaLimitUniqueness(newSC)...)
@@ -78,11 +73,13 @@ func ValidateServiceConfigurationUpdate(
 	terminating := !newSC.DeletionTimestamp.IsZero()
 	if !terminating {
 		allErrs = append(allErrs, validateProvisioning(newSC)...)
+		allErrs = append(allErrs, validateNoCharges(newSC)...)
 	}
 	allErrs = append(allErrs, validateMigrateFromOffer(newSC)...)
 	if !isDryRun {
 		allErrs = append(allErrs, validateServiceConfigurationNamePrefixes(ctx, c, newSC)...)
 		allErrs = append(allErrs, validateDefaultOffer(ctx, c, newSC)...)
+		allErrs = append(allErrs, validateRetiredMetricsUnpriced(ctx, c, oldSC, newSC)...)
 	}
 	allErrs = append(allErrs, ValidatePhaseTransition(oldSC.Spec.Phase, newSC.Spec.Phase, field.NewPath("spec", "phase"))...)
 	if oldSC.Spec.Phase == servicesv1alpha1.PhasePublished {
@@ -225,165 +222,61 @@ func validateQuotaRefs(
 	return allErrs
 }
 
-func validatePricingRateEntries(rates []servicesv1alpha1.PricingRateEntry, fldPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-	for i := range rates {
-		allErrs = append(allErrs, validatePricingRateEntry(&rates[i], fldPath.Index(i))...)
-	}
-	return allErrs
-}
-
-func validatePricingRateEntry(rate *servicesv1alpha1.PricingRateEntry, fldPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-
-	hasFlat := rate.Flat != ""
-	hasTiered := len(rate.Tiered) > 0
-
-	switch {
-	case hasFlat && hasTiered:
-		allErrs = append(allErrs, field.Invalid(
-			fldPath,
-			rate,
-			"exactly one of flat or tiered must be set",
-		))
-	case !hasFlat && !hasTiered:
-		allErrs = append(allErrs, field.Required(
-			fldPath,
-			"exactly one of flat or tiered must be set",
-		))
-	case hasTiered:
-		allErrs = append(allErrs, validatePricingTiers(rate.Tiered, fldPath.Child("tiered"))...)
-	}
-
-	return allErrs
-}
-
-func validatePricingTiers(tiers []servicesv1alpha1.PricingTierBand, fldPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-	if len(tiers) == 0 {
-		allErrs = append(allErrs, field.Required(fldPath, "tiered must contain at least one band"))
-		return allErrs
-	}
-
-	last := len(tiers) - 1
-	for i, band := range tiers {
-		bandPath := fldPath.Index(i)
-		if band.Rate == "" {
-			allErrs = append(allErrs, field.Required(bandPath.Child("rate"), "rate is required"))
-		}
-		if i != last && band.UpTo == "" {
-			allErrs = append(allErrs, field.Required(
-				bandPath.Child("upTo"),
-				fmt.Sprintf("upTo is required on all but the last tiered band (index %d)", i),
-			))
-		}
-		if i == last && band.UpTo != "" {
-			allErrs = append(allErrs, field.Forbidden(
-				bandPath.Child("upTo"),
-				"the last tiered band must omit upTo (open-ended)",
-			))
-		}
-	}
-
-	return allErrs
-}
-
-// validateCharges validates charges[]: unique names, required nested
-// options per charge type (Usage, OneTime, Recurring), metricRef existence
-// for Usage charges, and USD currency.
-func validateCharges(sc *servicesv1alpha1.ServiceConfiguration, metricNames map[string]struct{}) field.ErrorList {
-	var allErrs field.ErrorList
-	path := field.NewPath("spec", "charges")
-	seen := make(map[string]struct{}, len(sc.Spec.Charges))
-
-	for i, charge := range sc.Spec.Charges {
-		itemPath := path.Index(i)
-		if charge.Name != "" {
-			if _, dup := seen[charge.Name]; dup {
-				allErrs = append(allErrs, field.Duplicate(itemPath.Child("name"), charge.Name))
-			}
-			seen[charge.Name] = struct{}{}
-		}
-		allErrs = append(allErrs, validateChargeEntry(&charge, metricNames, itemPath)...)
-	}
-	allErrs = append(allErrs, validateServicePricingNameUniqueness(sc)...)
-	return allErrs
-}
-
-// validateServicePricingNameUniqueness rejects charge names that encode to
-// the same ServicePricing metadata.name. Charge fan-out writes into
-// milo-system via encodeServicePricingName; collisions cause ForceOwnership
-// thrashing between charges.
-func validateServicePricingNameUniqueness(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
-	var allErrs field.ErrorList
-	encoded := make(map[string]string) // encoded name → source field path
-
-	for i, charge := range sc.Spec.Charges {
-		if charge.Name == "" {
-			continue
-		}
-		name := encodeServicePricingName(charge.Name)
-		path := field.NewPath("spec", "charges").Index(i).Child("name")
-		if other, ok := encoded[name]; ok {
-			allErrs = append(allErrs, field.Invalid(path, charge.Name,
-				fmt.Sprintf("encodes to ServicePricing name %q which collides with %s", name, other)))
-			continue
-		}
-		encoded[name] = path.String()
-	}
-	return allErrs
-}
-
-// positiveDecimal matches a positive decimal string without a sign or
-// exponent, e.g. "1073741824" or "0.001".
-var positiveDecimal = regexp.MustCompile(`^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)$`)
-
-// validateUnitConversion requires a positive factor and a description of why
-// the conversion is there.
-func validateUnitConversion(uc *servicesv1alpha1.UnitConversion, fldPath *field.Path) field.ErrorList {
-	if uc == nil {
+// validateNoCharges rejects spec.charges. Prices are standalone
+// ServicePricing manifests (billing.miloapis.com) kept in the service's repo,
+// one per environment, so a ServiceConfiguration carries no commercial terms.
+func validateNoCharges(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
+	if len(sc.Spec.Charges) == 0 {
 		return nil
 	}
-	var allErrs field.ErrorList
-	if !positiveDecimal.MatchString(uc.MeterUnitsPerPricingUnit) {
-		allErrs = append(allErrs, field.Invalid(
-			fldPath.Child("meterUnitsPerPricingUnit"), uc.MeterUnitsPerPricingUnit,
-			"must be a positive decimal, e.g. \"1073741824\" for a metric in bytes priced per GiB",
-		))
-	}
-	if strings.TrimSpace(uc.Description) == "" {
-		allErrs = append(allErrs, field.Required(
-			fldPath.Child("description"),
-			"explain why usage is converted, e.g. \"Memory is metered in byte-seconds and priced per GiB-second\"",
-		))
-	}
-	return allErrs
+	return field.ErrorList{field.Forbidden(
+		field.NewPath("spec", "charges"),
+		"charges are retired; price this service with ServicePricing manifests (billing.miloapis.com/v1alpha1) in its repo instead",
+	)}
 }
 
-// validateChargesPriceLiveMetrics rejects a Usage charge on a Retired
-// metric: a retired metric no longer accepts usage, so the charge could
-// never bill. Remove the charge before retiring the metric.
-func validateChargesPriceLiveMetrics(sc *servicesv1alpha1.ServiceConfiguration) field.ErrorList {
-	retired := make(map[string]struct{})
-	for _, m := range sc.Spec.Metrics {
-		if m.Phase == servicesv1alpha1.PhaseRetired {
-			retired[m.Name] = struct{}{}
+// validateRetiredMetricsUnpriced rejects retiring a metric that a Usage
+// ServicePricing still selects: a retired metric no longer accepts usage, so
+// the pricing could never bill. Remove the pricing before retiring the
+// metric.
+func validateRetiredMetricsUnpriced(
+	ctx context.Context,
+	c client.Reader,
+	oldSC, newSC *servicesv1alpha1.ServiceConfiguration,
+) field.ErrorList {
+	oldPhases := make(map[string]servicesv1alpha1.Phase, len(oldSC.Spec.Metrics))
+	for _, m := range oldSC.Spec.Metrics {
+		oldPhases[m.Name] = metricPhase(m)
+	}
+	retiring := make(map[string]int)
+	for i, m := range newSC.Spec.Metrics {
+		if metricPhase(m) == servicesv1alpha1.PhaseRetired && oldPhases[m.Name] != servicesv1alpha1.PhaseRetired {
+			retiring[m.Name] = i
 		}
 	}
-	if len(retired) == 0 {
+	if c == nil || len(retiring) == 0 {
 		return nil
 	}
+
+	metricsPath := field.NewPath("spec", "metrics")
+	var pricings billingv1alpha1.ServicePricingList
+	if err := c.List(ctx, &pricings, client.InNamespace(billingv1alpha1.DefaultServicePricingNamespace)); err != nil {
+		return field.ErrorList{field.InternalError(metricsPath, fmt.Errorf("failed to list ServicePricings: %w", err))}
+	}
+
 	var allErrs field.ErrorList
-	for i, charge := range sc.Spec.Charges {
-		if charge.Usage == nil {
+	for _, sp := range pricings.Items {
+		if sp.Spec.ChargeType != billingv1alpha1.ChargeTypeUsage {
 			continue
 		}
-		if _, ok := retired[charge.Usage.MetricRef]; ok {
-			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "charges").Index(i).Child("usage", "metricRef"), charge.Usage.MetricRef,
-				"prices a retired metric, which no longer accepts usage; remove the charge before retiring the metric",
-			))
+		i, ok := retiring[sp.Spec.Metric]
+		if !ok {
+			continue
 		}
+		allErrs = append(allErrs, field.Invalid(
+			metricsPath.Index(i).Child("phase"), string(servicesv1alpha1.PhaseRetired),
+			fmt.Sprintf("ServicePricing %q still prices this metric, and a retired metric no longer accepts usage; remove the pricing before retiring the metric", sp.Name),
+		))
 	}
 	return allErrs
 }
@@ -422,166 +315,6 @@ func metricPhase(m servicesv1alpha1.MetricSpec) servicesv1alpha1.Phase {
 		return servicesv1alpha1.PhasePublished
 	}
 	return m.Phase
-}
-
-// encodeServicePricingName mirrors controller.encodeServicePricingName so
-// admission can reject collisions before fan-out. Keep in sync with
-// internal/controller/names.go.
-func encodeServicePricingName(metricOrChargeName string) string {
-	s := strings.ToLower(metricOrChargeName)
-	idx := strings.IndexByte(s, '/')
-	if idx < 0 {
-		return strings.ReplaceAll(s, ".", "-")
-	}
-	host := strings.ReplaceAll(s[:idx], ".", "-")
-	rest := strings.ReplaceAll(s[idx+1:], "/", "-")
-	return host + "--" + rest
-}
-
-func validateChargeEntry(
-	charge *servicesv1alpha1.ServiceChargeSpec,
-	metricNames map[string]struct{},
-	fldPath *field.Path,
-) field.ErrorList {
-	var allErrs field.ErrorList
-
-	if charge.Currency != "" && charge.Currency != "USD" {
-		allErrs = append(allErrs, field.Invalid(
-			fldPath.Child("currency"),
-			charge.Currency,
-			"currency must be USD",
-		))
-	}
-
-	switch charge.ChargeType {
-	case servicesv1alpha1.ServiceChargeTypeUsage:
-		if charge.OneTime != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("oneTime"),
-				"oneTime must not be set when chargeType is Usage",
-			))
-		}
-		if charge.Recurring != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("recurring"),
-				"recurring must not be set when chargeType is Usage",
-			))
-		}
-		if charge.Usage == nil {
-			allErrs = append(allErrs, field.Required(
-				fldPath.Child("usage"),
-				"usage is required when chargeType is Usage",
-			))
-			break
-		}
-		usagePath := fldPath.Child("usage")
-		if charge.Usage.MetricRef == "" {
-			allErrs = append(allErrs, field.Required(
-				usagePath.Child("metricRef"),
-				"metricRef is required",
-			))
-		} else if _, ok := metricNames[charge.Usage.MetricRef]; !ok {
-			allErrs = append(allErrs, field.Invalid(
-				usagePath.Child("metricRef"), charge.Usage.MetricRef,
-				"must name a metric that this configuration defines",
-			))
-		}
-		if charge.Usage.PricingUnit == "" {
-			allErrs = append(allErrs, field.Required(
-				usagePath.Child("pricingUnit"),
-				"pricingUnit is required",
-			))
-		}
-		if len(charge.Usage.Rates) == 0 {
-			allErrs = append(allErrs, field.Required(
-				usagePath.Child("rates"),
-				"rates is required",
-			))
-		} else {
-			allErrs = append(allErrs, validatePricingRateEntries(charge.Usage.Rates, usagePath.Child("rates"))...)
-		}
-		allErrs = append(allErrs, validateUnitConversion(charge.Usage.UnitConversion, usagePath.Child("unitConversion"))...)
-	case servicesv1alpha1.ServiceChargeTypeOneTime:
-		if charge.Usage != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("usage"),
-				"usage must not be set when chargeType is OneTime",
-			))
-		}
-		if charge.Recurring != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("recurring"),
-				"recurring must not be set when chargeType is OneTime",
-			))
-		}
-		if charge.OneTime == nil {
-			allErrs = append(allErrs, field.Required(
-				fldPath.Child("oneTime"),
-				"oneTime is required when chargeType is OneTime",
-			))
-			break
-		}
-		oneTimePath := fldPath.Child("oneTime")
-		if charge.OneTime.Amount == "" {
-			allErrs = append(allErrs, field.Required(
-				oneTimePath.Child("amount"),
-				"amount is required",
-			))
-		}
-		if charge.OneTime.Trigger == "" {
-			allErrs = append(allErrs, field.Required(
-				oneTimePath.Child("trigger"),
-				"trigger is required",
-			))
-		}
-	case servicesv1alpha1.ServiceChargeTypeRecurring:
-		if charge.Usage != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("usage"),
-				"usage must not be set when chargeType is Recurring",
-			))
-		}
-		if charge.OneTime != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				fldPath.Child("oneTime"),
-				"oneTime must not be set when chargeType is Recurring",
-			))
-		}
-		if charge.Recurring == nil {
-			allErrs = append(allErrs, field.Required(
-				fldPath.Child("recurring"),
-				"recurring is required when chargeType is Recurring",
-			))
-			break
-		}
-		recurringPath := fldPath.Child("recurring")
-		if charge.Recurring.Amount == "" {
-			allErrs = append(allErrs, field.Required(
-				recurringPath.Child("amount"),
-				"amount is required",
-			))
-		}
-		if charge.Recurring.Interval == "" {
-			allErrs = append(allErrs, field.Required(
-				recurringPath.Child("interval"),
-				"interval is required",
-			))
-		}
-	case "":
-		allErrs = append(allErrs, field.Required(fldPath.Child("chargeType"), "chargeType is required"))
-	default:
-		allErrs = append(allErrs, field.NotSupported(
-			fldPath.Child("chargeType"),
-			charge.ChargeType,
-			[]string{
-				string(servicesv1alpha1.ServiceChargeTypeUsage),
-				string(servicesv1alpha1.ServiceChargeTypeOneTime),
-				string(servicesv1alpha1.ServiceChargeTypeRecurring),
-			},
-		))
-	}
-
-	return allErrs
 }
 
 // validateDefaultOffer ensures that when defaultOffer is set, the named
@@ -719,24 +452,11 @@ func validateServiceConfigurationNamePrefixes(
 		}
 	}
 
-	chargesPath := field.NewPath("spec", "charges")
-	for i, charge := range sc.Spec.Charges {
-		if charge.Name == "" {
-			continue
-		}
-		if !strings.HasPrefix(charge.Name, prefix) || strings.TrimPrefix(charge.Name, prefix) == "" {
-			allErrs = append(allErrs, field.Invalid(
-				chargesPath.Index(i).Child("name"), charge.Name,
-				fmt.Sprintf("must start with the service's name %q so ServicePricing names stay unique in milo-system (for example, %q)",
-					prefix, prefix+"platform-fee"),
-			))
-		}
-	}
 	return allErrs
 }
 
 // validateServiceConfigurationPublishedImmutability rejects changes to
-// core identity fields on meters, monitored resource types, and charges
+// core identity fields on meters and monitored resource types
 // that were already present in the Published ServiceConfiguration. New
 // entries are allowed. spec.defaultOffer and spec.migrateFromOffer are
 // intentionally mutable on Published so staff can switch the platform
@@ -803,34 +523,6 @@ func validateServiceConfigurationPublishedImmutability(
 			}
 			if m.Unit != old.Unit {
 				allErrs = append(allErrs, field.Forbidden(metricsPath.Index(i).Child("unit"),
-					"can't be changed once the configuration is published"))
-			}
-		}
-	}
-
-	oldCharges := make(map[string]servicesv1alpha1.ServiceChargeSpec, len(oldSC.Spec.Charges))
-	for _, c := range oldSC.Spec.Charges {
-		oldCharges[c.Name] = c
-	}
-	newChargeSet := make(map[string]struct{}, len(newSC.Spec.Charges))
-	for _, c := range newSC.Spec.Charges {
-		newChargeSet[c.Name] = struct{}{}
-	}
-	chargesPath := field.NewPath("spec", "charges")
-	for name, old := range oldCharges {
-		// TODO: reinstate the removal check in a future milestone. Removing a
-		// published charge is still dangerous, but rejecting it here also
-		// rejects an apply that merely omits a charge it does not know about,
-		// which blocks unrelated resources in the same bundle.
-		if _, exists := newChargeSet[name]; !exists {
-			continue
-		}
-		for i, c := range newSC.Spec.Charges {
-			if c.Name != name {
-				continue
-			}
-			if !apiequality.Semantic.DeepEqual(old, c) {
-				allErrs = append(allErrs, field.Forbidden(chargesPath.Index(i),
 					"can't be changed once the configuration is published"))
 			}
 		}

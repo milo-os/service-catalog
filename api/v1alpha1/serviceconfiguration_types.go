@@ -75,10 +75,10 @@ type ServiceConfigurationSpec struct {
 	// +listMapKey=name
 	Metrics []MetricSpec `json:"metrics,omitempty"`
 
-	// Charges declares Usage, OneTime, and Recurring charges for this
-	// service. Fans out to ServicePricing resources distinguished by
-	// chargeType. Usage charges reference metrics by name; metrics
-	// themselves stay telemetry/quota-only.
+	// Charges is retired and must be empty: admission rejects it. Price a
+	// service with standalone ServicePricing manifests
+	// (billing.miloapis.com/v1alpha1) in its repo, one set per environment.
+	// The field is removed in the next API version.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=64

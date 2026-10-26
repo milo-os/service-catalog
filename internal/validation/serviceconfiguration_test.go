@@ -202,11 +202,8 @@ func TestPublishedImmutability_AllowsMigrateFromOfferChange(t *testing.T) {
 	}
 }
 
-// TestValidateServiceConfigurationUpdate_AllowsChargeRemoval pins the
-// relaxation that lets an apply omit a published charge. Removing one is still
-// dangerous, and the check is expected back in a future milestone. Until then
-// this asserts the relaxation is deliberate rather than accidental, since the
-// original rejection shipped with no test at all.
+// TestValidateServiceConfigurationUpdate_AllowsChargeRemoval: charges are
+// retired, so an update that drops them is how a configuration moves off them.
 func TestValidateServiceConfigurationUpdate_AllowsChargeRemoval(t *testing.T) {
 	scheme := newServiceConfigurationValidationScheme()
 	offer := gaOfferWithSnapshot("payg-v1")

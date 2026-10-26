@@ -77,8 +77,8 @@ type PricingTierBand struct {
 }
 
 // ServiceChargeType distinguishes Usage, OneTime, and Recurring charges
-// declared on a ServiceConfiguration. Metrics stay telemetry/quota-only;
-// all commercial terms live on spec.charges[].
+// declared on a ServiceConfiguration. Retired with spec.charges; prices
+// are standalone ServicePricing manifests.
 //
 // +kubebuilder:validation:Enum=Usage;OneTime;Recurring
 type ServiceChargeType string
@@ -204,7 +204,8 @@ type RecurringChargeOptions struct {
 }
 
 // ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
-// service. Fans out to a ServicePricing with the matching chargeType.
+// service. Retired: spec.charges must be empty, and prices are standalone
+// ServicePricing manifests instead.
 // Metrics are referenced by name for Usage charges and are never priced
 // in-place on the metric itself. Type-specific fields live under usage,
 // oneTime, or recurring so supported options are explicit per chargeType.

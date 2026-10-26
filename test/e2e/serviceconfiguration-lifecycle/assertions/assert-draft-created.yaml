@@ -19,9 +19,6 @@ status:
     - type: QuotaFanOutHealthy
       status: "True"
       reason: QuotaFanOutSkipped
-    - type: ChargeFanOutHealthy
-      status: "True"
-      reason: ChargeFanOutSkipped
     - type: ConsumerPortalFanOutHealthy
       status: "True"
       reason: ConsumerPortalFanOutSkipped

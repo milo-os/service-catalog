@@ -30,7 +30,6 @@ rules:
   resources:
   - meterdefinitions
   - monitoredresourcetypes
-  - servicepricings
   verbs:
   - create
   - delete
@@ -38,6 +37,15 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - billing.miloapis.com
+  resources:
+  - servicepricings
+  verbs:
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - capabilities.assistant.miloapis.com
