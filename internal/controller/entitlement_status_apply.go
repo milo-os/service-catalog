@@ -193,7 +193,7 @@ func migratedStatusManagedFields(entries []metav1.ManagedFieldsEntry) ([]metav1.
 			continue
 		}
 		set := &fieldpath.Set{}
-		if err := set.FromJSON(bytes.NewReader(entry.FieldsV1.Raw)); err != nil {
+		if err := set.FromJSON(bytes.NewReader(entry.FieldsV1.GetRawBytes())); err != nil {
 			return nil, false, fmt.Errorf("decode managed fields of %q: %w", entry.Manager, err)
 		}
 		kept := &fieldpath.Set{}
@@ -248,7 +248,7 @@ func migratedStatusManagedFields(entries []metav1.ManagedFieldsEntry) ([]metav1.
 			i = len(out) - 1
 		} else if out[i].FieldsV1 != nil {
 			existing := &fieldpath.Set{}
-			if err := existing.FromJSON(bytes.NewReader(out[i].FieldsV1.Raw)); err != nil {
+			if err := existing.FromJSON(bytes.NewReader(out[i].FieldsV1.GetRawBytes())); err != nil {
 				return nil, false, fmt.Errorf("decode managed fields of %q: %w", owner.manager, err)
 			}
 			set = set.Union(existing)

@@ -95,10 +95,10 @@ var _ = Describe("ServiceEntitlement status ownership", func() {
 				continue
 			}
 			legacyEntries++
-			Expect(string(entry.FieldsV1.Raw)).NotTo(ContainSubstring(`\"type\":\"Ready\"`))
-			Expect(string(entry.FieldsV1.Raw)).NotTo(ContainSubstring(`\"type\":\"Suspended\"`))
-			Expect(string(entry.FieldsV1.Raw)).NotTo(ContainSubstring(`f:phase`))
-			Expect(string(entry.FieldsV1.Raw)).To(ContainSubstring(`\"type\":\"SomethingElse\"`))
+			Expect(entry.FieldsV1.GetRawString()).NotTo(ContainSubstring(`\"type\":\"Ready\"`))
+			Expect(entry.FieldsV1.GetRawString()).NotTo(ContainSubstring(`\"type\":\"Suspended\"`))
+			Expect(entry.FieldsV1.GetRawString()).NotTo(ContainSubstring(`f:phase`))
+			Expect(entry.FieldsV1.GetRawString()).To(ContainSubstring(`\"type\":\"SomethingElse\"`))
 		}
 		Expect(legacyEntries).To(Equal(1))
 

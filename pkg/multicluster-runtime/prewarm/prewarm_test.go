@@ -19,11 +19,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	mccontroller "sigs.k8s.io/multicluster-runtime/pkg/controller"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
@@ -196,7 +198,7 @@ func (c *listingCache) GetInformer(ctx context.Context, obj client.Object, opts 
 			return nil, ctx.Err()
 		}
 	}
-	return &controllertest.FakeInformer{Synced: true}, nil
+	return controllertest.NewFakeInformer(controllertest.Synced), nil
 }
 
 func (c *listingCache) WaitForCacheSync(ctx context.Context) bool {
@@ -312,7 +314,7 @@ func runningControllers(t *testing.T, ctx context.Context, prefix string, objs [
 	t.Helper()
 	var controllers []mccontroller.Controller
 	for i, obj := range objs {
-		c, err := mccontroller.NewUnmanaged(fmt.Sprintf("%s-%d", prefix, i), nil, mccontroller.Options{
+		c, err := mccontroller.NewUnmanaged(fmt.Sprintf("%s-%d", prefix, i), controllerOptionsManager{}, mccontroller.Options{
 			Reconciler: mcreconcile.Func(func(context.Context, mcreconcile.Request) (reconcile.Result, error) {
 				return reconcile.Result{}, nil
 			}),
@@ -376,4 +378,12 @@ func TestPrewarmedProjectListsWatchedKindsAtOnce(t *testing.T) {
 	if prewarmed > 3*listDelay {
 		t.Errorf("with prewarming the project engaged in %v, want under %v", prewarmed, 3*listDelay)
 	}
+}
+
+type controllerOptionsManager struct {
+	mcmanager.Manager
+}
+
+func (controllerOptionsManager) GetControllerOptions() ctrlconfig.Controller {
+	return ctrlconfig.Controller{}
 }

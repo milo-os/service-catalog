@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -192,5 +193,9 @@ type ServiceActivationRequestList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceActivationRequest{}, &ServiceActivationRequestList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceActivationRequest{}, &ServiceActivationRequestList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

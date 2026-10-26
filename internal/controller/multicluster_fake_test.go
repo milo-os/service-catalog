@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	crrecorder "sigs.k8s.io/controller-runtime/pkg/recorder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -55,17 +55,17 @@ type testCluster struct {
 	client client.Client
 }
 
-func (c *testCluster) GetClient() client.Client                        { return c.client }
-func (c *testCluster) GetScheme() *runtime.Scheme                      { return nil }
-func (c *testCluster) GetHTTPClient() *http.Client                     { return nil }
-func (c *testCluster) GetConfig() *rest.Config                         { return nil }
-func (c *testCluster) GetCache() cache.Cache                           { return nil }
-func (c *testCluster) GetFieldIndexer() client.FieldIndexer            { return nil }
-func (c *testCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
-func (c *testCluster) GetEventRecorder(string) events.EventRecorder    { return nil }
-func (c *testCluster) GetRESTMapper() meta.RESTMapper                  { return nil }
-func (c *testCluster) GetAPIReader() client.Reader                     { return c.client }
-func (c *testCluster) Start(context.Context) error                     { return nil }
+func (c *testCluster) GetClient() client.Client                         { return c.client }
+func (c *testCluster) GetScheme() *runtime.Scheme                       { return nil }
+func (c *testCluster) GetHTTPClient() *http.Client                      { return nil }
+func (c *testCluster) GetConfig() *rest.Config                          { return nil }
+func (c *testCluster) GetCache() cache.Cache                            { return nil }
+func (c *testCluster) GetFieldIndexer() client.FieldIndexer             { return nil }
+func (c *testCluster) GetEventRecorderFor(string) record.EventRecorder  { return nil }
+func (c *testCluster) GetEventRecorder(string) crrecorder.EventRecorder { return nil }
+func (c *testCluster) GetRESTMapper() meta.RESTMapper                   { return nil }
+func (c *testCluster) GetAPIReader() client.Reader                      { return c.client }
+func (c *testCluster) Start(context.Context) error                      { return nil }
 
 // testManager implements mcmanager.Manager. GetCluster looks up a named
 // cluster from the clusters map; unknown names return an error so the
