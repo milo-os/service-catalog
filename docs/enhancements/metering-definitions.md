@@ -61,7 +61,7 @@ spec:
 
 **Measurement describes the signal.** `aggregation` says how values roll up over a billing period (Sum, Max, Count, and a handful more). `unit` uses the UCUM unit vocabulary (`s` for seconds, `By` for bytes, `GBy.h` for GB-hours — no invented strings). `dimensions` declares the attributes pricing or the portal can group by.
 
-**Billing framing crosses into commerce.** `consumedUnit` is what's measured; `pricingUnit` is what pricing quotes against. A charge priced in a larger unit than its meter emits (bytes priced per GiB) states the conversion on the charge (`usage.unitConversion`, with a description of why), and the pricing engine converts the usage before applying the rates. `chargeCategory` (`Usage`, `Purchase`, `Adjustment`) comes from the FOCUS open-finance spec, so exports to external tooling work without translation. No rates live here — that's pricing's job.
+**Billing framing crosses into commerce.** `consumedUnit` is what's measured; `pricingUnit` is what pricing quotes against. A price in a larger unit than its meter emits (bytes priced per GiB) states the conversion on its ServicePricing (`unitConversion`, with a description of why), and the pricing engine converts the usage before applying the rates. `chargeCategory` (`Usage`, `Purchase`, `Adjustment`) comes from the FOCUS open-finance spec, so exports to external tooling work without translation. No rates live here — that's pricing's job.
 
 ### Being referenced
 

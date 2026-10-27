@@ -130,14 +130,15 @@ spec:
                 type: object
               charges:
                 description: |-
-                  Charges declares Usage, OneTime, and Recurring charges for this
-                  service. Fans out to ServicePricing resources distinguished by
-                  chargeType. Usage charges reference metrics by name; metrics
-                  themselves stay telemetry/quota-only.
+                  Charges is retired and must be empty: admission rejects it. Price a
+                  service with standalone ServicePricing manifests
+                  (billing.miloapis.com/v1alpha1) in its repo, one set per environment.
+                  The field is removed in the next API version.
                 items:
                   description: |-
                     ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
-                    service. Fans out to a ServicePricing with the matching chargeType.
+                    service. Retired: spec.charges must be empty, and prices are standalone
+                    ServicePricing manifests instead.
                     Metrics are referenced by name for Usage charges and are never priced
                     in-place on the metric itself. Type-specific fields live under usage,
                     oneTime, or recurring so supported options are explicit per chargeType.
