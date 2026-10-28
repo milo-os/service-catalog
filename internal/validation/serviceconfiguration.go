@@ -5,6 +5,8 @@ package validation
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -13,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
+	quotavalidation "go.miloapis.com/milo/pkg/quota/validation"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -216,6 +220,49 @@ func validateQuotaRefs(
 					rulesPath.Index(i).Child("metricCosts"), k,
 					"must name a metric that this configuration defines",
 				))
+			}
+		}
+		allErrs = append(allErrs, validateMetricCostConditions(rulesPath.Index(i), rule)...)
+	}
+	return allErrs
+}
+
+const maxMetricCostConditionLength = 1024
+
+// quotaConditionValidator applies the checks Milo runs on ClaimCreationPolicy
+// trigger constraints, so a condition the catalog admits is one Milo accepts.
+var quotaConditionValidator = func() *quotavalidation.CELValidator {
+	v, err := quotavalidation.NewCELValidator()
+	if err != nil {
+		panic(fmt.Sprintf("build quota CEL validator: %v", err))
+	}
+	return v
+}()
+
+func validateMetricCostConditions(rulePath *field.Path, rule servicesv1alpha1.QuotaMetricRule) field.ErrorList {
+	var allErrs field.ErrorList
+	condPath := rulePath.Child("metricCostConditions")
+	for _, k := range slices.Sorted(maps.Keys(rule.MetricCostConditions)) {
+		expr := rule.MetricCostConditions[k]
+		keyPath := condPath.Key(k)
+		if _, ok := rule.MetricCosts[k]; !ok {
+			allErrs = append(allErrs, field.Invalid(keyPath, k,
+				"must name a metric that this rule charges in metricCosts"))
+		}
+		switch {
+		case strings.TrimSpace(expr) == "":
+			allErrs = append(allErrs, field.Required(keyPath, "a condition can't be empty"))
+		case len(expr) > maxMetricCostConditionLength:
+			allErrs = append(allErrs, field.TooLong(keyPath, "", maxMetricCostConditionLength))
+		case strings.Contains(expr, "{{"):
+			allErrs = append(allErrs, field.Invalid(keyPath, expr,
+				"must be a plain CEL expression without {{ }} delimiters"))
+		default:
+			err := quotaConditionValidator.ValidateConstraints(
+				[]quotav1alpha1.ConditionExpression{{Expression: expr}})
+			if err != nil {
+				allErrs = append(allErrs, field.Invalid(keyPath, expr,
+					fmt.Sprintf("must be a CEL expression that returns a bool: %v", err)))
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,8 +61,9 @@ func (m *stubRESTMapper) ResourceSingularizer(resource string) (string, error) {
 // *quotav1alpha1.ResourceRegistration.
 type patchCapturingClient struct {
 	client.Client
-	policies      []*quotav1alpha1.ClaimCreationPolicy
-	registrations []*quotav1alpha1.ResourceRegistration
+	policies             []*quotav1alpha1.ClaimCreationPolicy
+	unstructuredPolicies []*unstructured.Unstructured
+	registrations        []*quotav1alpha1.ResourceRegistration
 }
 
 func (c *patchCapturingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
@@ -70,6 +72,10 @@ func (c *patchCapturingClient) Patch(ctx context.Context, obj client.Object, pat
 		c.policies = append(c.policies, o.DeepCopy())
 	case *quotav1alpha1.ResourceRegistration:
 		c.registrations = append(c.registrations, o.DeepCopy())
+	case *unstructured.Unstructured:
+		if o.GetKind() == "ClaimCreationPolicy" {
+			c.unstructuredPolicies = append(c.unstructuredPolicies, o.DeepCopy())
+		}
 	}
 	return nil
 }
@@ -331,5 +337,100 @@ func TestQuotaFanOut_DisplayMetadataAnnotations(t *testing.T) {
 
 	if anns := byResourceType["compute.datumapis.com/workloads"]; len(anns) != 0 {
 		t.Errorf("expected no annotations for a limit without display metadata, got %v", anns)
+	}
+}
+
+// TestApplyClaimCreationPolicies_MetricCostConditions verifies that a
+// conditional metric carries its CEL condition onto its claim template
+// request, that unconditional metrics and rules carry none, and that requests
+// are ordered by metric name.
+func TestApplyClaimCreationPolicies_MetricCostConditions(t *testing.T) {
+	const ipv4Condition = "trigger.spec.ipFamily == 'IPv4'"
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "ipam-sc", UID: "ipam-uid"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			Phase: servicesv1alpha1.PhasePublished,
+			Quota: &servicesv1alpha1.ServiceQuotaConfig{
+				MetricRules: []servicesv1alpha1.QuotaMetricRule{
+					{
+						Selector: servicesv1alpha1.QuotaMetricRuleSelector{
+							APIGroup: "ipam.miloapis.com",
+							Kind:     "IPClaim",
+						},
+						MetricCosts: map[string]int64{
+							"ipam.miloapis.com/ipv4claims": 1,
+							"ipam.miloapis.com/ipclaims":   1,
+						},
+						MetricCostConditions: map[string]string{
+							"ipam.miloapis.com/ipv4claims": ipv4Condition,
+						},
+					},
+					{
+						Selector: servicesv1alpha1.QuotaMetricRuleSelector{
+							APIGroup: "ipam.miloapis.com",
+							Kind:     "IPPool",
+						},
+						MetricCosts: map[string]int64{"ipam.miloapis.com/ippools": 1},
+					},
+				},
+			},
+		},
+	}
+
+	scheme := newQuotaFanOutScheme()
+	capturing := &patchCapturingClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	fanOut := &QuotaFanOut{
+		Client: capturing,
+		Scheme: scheme,
+		RESTMapper: &stubRESTMapper{gvk: schema.GroupVersionKind{
+			Group: "ipam.miloapis.com", Version: "v1alpha1", Kind: "IPClaim",
+		}},
+	}
+
+	if _, err := fanOut.applyClaimCreationPolicies(context.Background(), sc, "ipam"); err != nil {
+		t.Fatalf("applyClaimCreationPolicies: %v", err)
+	}
+
+	if len(capturing.unstructuredPolicies) != 1 {
+		t.Fatalf("got %d conditional policies, want 1", len(capturing.unstructuredPolicies))
+	}
+	conditional := capturing.unstructuredPolicies[0]
+	if len(conditional.GetOwnerReferences()) == 0 {
+		t.Error("conditional policy has no owner reference")
+	}
+	requests, found, err := unstructured.NestedSlice(conditional.Object,
+		"spec", "target", "resourceClaimTemplate", "spec", "requests")
+	if err != nil || !found {
+		t.Fatalf("read requests: found=%v err=%v", found, err)
+	}
+	want := []struct {
+		resourceType string
+		condition    string
+	}{
+		{"ipam.miloapis.com/ipclaims", ""},
+		{"ipam.miloapis.com/ipv4claims", ipv4Condition},
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("got %d requests, want %d", len(requests), len(want))
+	}
+	for i, w := range want {
+		r := requests[i].(map[string]any)
+		if r["resourceType"] != w.resourceType {
+			t.Errorf("request %d resourceType = %v, want %q", i, r["resourceType"], w.resourceType)
+		}
+		got, has := r["condition"]
+		if w.condition == "" && has {
+			t.Errorf("request %d (%s) has condition %v, want none", i, w.resourceType, got)
+		}
+		if w.condition != "" && got != w.condition {
+			t.Errorf("request %d (%s) condition = %v, want %q", i, w.resourceType, got, w.condition)
+		}
+	}
+
+	if len(capturing.policies) != 1 {
+		t.Fatalf("got %d unconditional policies, want 1", len(capturing.policies))
+	}
+	if kind := capturing.policies[0].Spec.Trigger.Resource.Kind; kind != "IPPool" {
+		t.Errorf("unconditional policy trigger kind = %q, want IPPool", kind)
 	}
 }

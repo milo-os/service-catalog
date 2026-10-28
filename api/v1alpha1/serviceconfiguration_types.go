@@ -459,6 +459,19 @@ type QuotaMetricRule struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinProperties=1
 	MetricCosts map[string]int64 `json:"metricCosts"`
+
+	// MetricCostConditions limits a metric's cost to the creations where a
+	// condition holds. Each key must be a key of metricCosts; metrics without
+	// an entry are charged on every creation. Each value is a pure CEL
+	// expression returning a bool, written without {{ }} delimiters, with the
+	// same variables as a ClaimCreationPolicy trigger constraint (for example
+	// "trigger.spec.ipFamily == 'IPv4'"). Expressions are held to the same
+	// rules Milo applies to trigger constraints: at most 1024 characters, and
+	// none of the words system, exec, eval, import, file, network, or
+	// subprocess anywhere in the text, in any case.
+	//
+	// +kubebuilder:validation:Optional
+	MetricCostConditions map[string]string `json:"metricCostConditions,omitempty"`
 }
 
 // QuotaMetricRuleSelector identifies a resource kind without pinning a version.
