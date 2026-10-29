@@ -4,6 +4,7 @@ package validation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -227,5 +228,133 @@ func TestValidateServiceConfigurationUpdate_AllowsChargeRemoval(t *testing.T) {
 		if e.Field == "spec.charges" {
 			t.Fatalf("charge removal should be allowed, got: %v", e)
 		}
+	}
+}
+
+func TestValidateQuotaRefs_MetricCostConditions(t *testing.T) {
+	const (
+		ipClaims   = "ipam.miloapis.com/ipclaims"
+		ipv4Claims = "ipam.miloapis.com/ipv4claims"
+	)
+	sc := func(conditions map[string]string) *servicesv1alpha1.ServiceConfiguration {
+		return &servicesv1alpha1.ServiceConfiguration{
+			Spec: servicesv1alpha1.ServiceConfigurationSpec{
+				Quota: &servicesv1alpha1.ServiceQuotaConfig{
+					MetricRules: []servicesv1alpha1.QuotaMetricRule{{
+						Selector: servicesv1alpha1.QuotaMetricRuleSelector{
+							APIGroup: "ipam.miloapis.com",
+							Kind:     "IPClaim",
+						},
+						MetricCosts:          map[string]int64{ipClaims: 1, ipv4Claims: 1},
+						MetricCostConditions: conditions,
+					}},
+				},
+			},
+		}
+	}
+	metrics := map[string]struct{}{ipClaims: {}, ipv4Claims: {}}
+
+	cases := []struct {
+		name       string
+		conditions map[string]string
+		wantField  string
+	}{
+		{name: "no conditions"},
+		{
+			name:       "condition on a charged metric",
+			conditions: map[string]string{ipv4Claims: "trigger.spec.ipFamily == 'IPv4'"},
+		},
+		{
+			name:       "condition on a metric the rule does not charge",
+			conditions: map[string]string{"ipam.miloapis.com/ipv6claims": "true"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv6claims]",
+		},
+		{
+			name:       "template delimiters",
+			conditions: map[string]string{ipv4Claims: "{{trigger.spec.ipFamily == 'IPv4'}}"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name:       "unparseable expression",
+			conditions: map[string]string{ipv4Claims: "trigger.spec.ipFamily =="},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name: "IPAM public IPv4 condition",
+			conditions: map[string]string{ipv4Claims: "has(trigger.spec.ipFamily) && trigger.spec.ipFamily == 'IPv4' && " +
+				"has(trigger.spec.addressScope) && trigger.spec.addressScope == 'Public'"},
+		},
+		{
+			name:       "term Milo forbids",
+			conditions: map[string]string{ipv4Claims: "trigger.spec.networkRef != ''"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name:       "non-bool result",
+			conditions: map[string]string{ipv4Claims: "trigger.spec.ipFamily"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name:       "undeclared variable",
+			conditions: map[string]string{ipv4Claims: "object.spec.ipFamily == 'IPv4'"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name:       "empty expression",
+			conditions: map[string]string{ipv4Claims: " "},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+		{
+			name:       "too long",
+			conditions: map[string]string{ipv4Claims: "'" + strings.Repeat("a", 1024) + "' == ''"},
+			wantField:  "spec.quota.metricRules[0].metricCostConditions[ipam.miloapis.com/ipv4claims]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateQuotaRefs(sc(tc.conditions), metrics)
+			if tc.wantField == "" {
+				if len(errs) != 0 {
+					t.Fatalf("unexpected errors: %v", errs)
+				}
+				return
+			}
+			if len(errs) != 1 {
+				t.Fatalf("got %d errors, want 1: %v", len(errs), errs)
+			}
+			if errs[0].Field != tc.wantField {
+				t.Errorf("error field = %q, want %q", errs[0].Field, tc.wantField)
+			}
+		})
+	}
+}
+
+func TestValidateServiceConfigurationUpdate_AllowsAddingConditionalMetricWhenPublished(t *testing.T) {
+	const (
+		ipClaims   = "ipam.miloapis.com/ipclaims"
+		ipv4Claims = "ipam.miloapis.com/ipv4claims"
+	)
+	rule := servicesv1alpha1.QuotaMetricRule{
+		Selector:    servicesv1alpha1.QuotaMetricRuleSelector{APIGroup: "ipam.miloapis.com", Kind: "IPClaim"},
+		MetricCosts: map[string]int64{ipClaims: 1},
+	}
+	oldSC := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "ipam-miloapis-com"},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: "ipam-miloapis-com"},
+			Phase:      servicesv1alpha1.PhasePublished,
+			Metrics:    []servicesv1alpha1.MetricSpec{{Name: ipClaims}},
+			Quota:      &servicesv1alpha1.ServiceQuotaConfig{MetricRules: []servicesv1alpha1.QuotaMetricRule{rule}},
+		},
+	}
+	newSC := oldSC.DeepCopy()
+	newSC.Spec.Metrics = append(newSC.Spec.Metrics, servicesv1alpha1.MetricSpec{Name: ipv4Claims})
+	newRule := &newSC.Spec.Quota.MetricRules[0]
+	newRule.MetricCosts[ipv4Claims] = 1
+	newRule.MetricCostConditions = map[string]string{ipv4Claims: "trigger.spec.ipFamily == 'IPv4'"}
+
+	errs := validateServiceConfigurationPublishedImmutability(oldSC, newSC)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
 	}
 }

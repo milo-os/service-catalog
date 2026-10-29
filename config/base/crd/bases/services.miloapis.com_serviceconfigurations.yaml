@@ -769,6 +769,20 @@ spec:
                         QuotaMetricRule declares a ClaimCreationPolicy: which resource kind triggers
                         quota claim creation, and what metric costs are incurred per creation.
                       properties:
+                        metricCostConditions:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            MetricCostConditions limits a metric's cost to the creations where a
+                            condition holds. Each key must be a key of metricCosts; metrics without
+                            an entry are charged on every creation. Each value is a pure CEL
+                            expression returning a bool, written without {{ }} delimiters, with the
+                            same variables as a ClaimCreationPolicy trigger constraint (for example
+                            "trigger.spec.ipFamily == 'IPv4'"). Expressions are held to the same
+                            rules Milo applies to trigger constraints: at most 1024 characters, and
+                            none of the words system, exec, eval, import, file, network, or
+                            subprocess anywhere in the text, in any case.
+                          type: object
                         metricCosts:
                           additionalProperties:
                             format: int64

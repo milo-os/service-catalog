@@ -5,10 +5,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -187,11 +190,12 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 
 		name := encodeName(rule.Selector.APIGroup + "-" + rule.Selector.Kind)
 
-		requests := make([]quotav1alpha1.ResourceRequest, 0, len(rule.MetricCosts))
-		for metricName, amount := range rule.MetricCosts {
+		metricNames := slices.Sorted(maps.Keys(rule.MetricCosts))
+		requests := make([]quotav1alpha1.ResourceRequest, 0, len(metricNames))
+		for _, metricName := range metricNames {
 			requests = append(requests, quotav1alpha1.ResourceRequest{
 				ResourceType: metricName,
-				Amount:       amount,
+				Amount:       rule.MetricCosts[metricName],
 			})
 		}
 
@@ -230,13 +234,53 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 		if err := ctrl.SetControllerReference(sc, obj, f.Scheme); err != nil {
 			return nil, fmt.Errorf("set controller ref on ClaimCreationPolicy %q: %w", name, err)
 		}
+		applyObj, err := withRequestConditions(obj, rule.MetricCostConditions)
+		if err != nil {
+			return nil, fmt.Errorf("render request conditions on ClaimCreationPolicy %q: %w", name, err)
+		}
 		//nolint:staticcheck // client.Apply deprecated; milo quota types have no generated apply configurations yet.
-		if err := f.Client.Patch(ctx, obj, client.Apply, client.FieldOwner(quotaFieldManagerName), client.ForceOwnership); err != nil {
+		if err := f.Client.Patch(ctx, applyObj, client.Apply, client.FieldOwner(quotaFieldManagerName), client.ForceOwnership); err != nil {
 			return nil, fmt.Errorf("apply ClaimCreationPolicy %q: %w", name, err)
 		}
 		desired[name] = struct{}{}
 	}
 	return desired, nil
+}
+
+// withRequestConditions sets each conditional metric's CEL condition on its
+// claim template request. The pinned milo quota types have no request
+// condition field yet, so a policy with conditions is applied as unstructured
+// and one without stays typed.
+func withRequestConditions(
+	obj *quotav1alpha1.ClaimCreationPolicy,
+	conditions map[string]string,
+) (client.Object, error) {
+	if len(conditions) == 0 {
+		return obj, nil
+	}
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return nil, err
+	}
+	requestsPath := []string{"spec", "target", "resourceClaimTemplate", "spec", "requests"}
+	requests, _, err := unstructured.NestedSlice(content, requestsPath...)
+	if err != nil {
+		return nil, err
+	}
+	for i, r := range requests {
+		request, ok := r.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("request %d is %T, not an object", i, r)
+		}
+		resourceType, _ := request["resourceType"].(string)
+		if condition, ok := conditions[resourceType]; ok {
+			request["condition"] = condition
+		}
+	}
+	if err := unstructured.SetNestedSlice(content, requests, requestsPath...); err != nil {
+		return nil, err
+	}
+	return &unstructured.Unstructured{Object: content}, nil
 }
 
 func (f *QuotaFanOut) pruneResourceRegistrations(
