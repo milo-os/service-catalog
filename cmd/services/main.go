@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -196,19 +197,18 @@ func main() {
 		setupLog.Info("webhookServer not configured; admission webhook server disabled")
 	}
 
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                  scheme,
-		Controller:              controllerOpts,
-		Metrics:                 metricsServerOptions,
-		WebhookServer:           webhookServer,
-		HealthProbeBindAddress:  probeAddr,
-		LeaderElection:          enableLeaderElection,
-		LeaderElectionID:        "services.miloapis.com",
-		LeaderElectionNamespace: leaderElectionNamespace,
-		LeaseDuration:           &leaseDuration,
-		RenewDeadline:           &renewDeadline,
-		RetryPeriod:             &retryPeriod,
-	})
+	// Every elected manager in this process shares these leader-election
+	// fields; each keeps its own lease ID.
+	election := electionOptions(cfg, enableLeaderElection, leaderElectionNamespace, &leaseDuration, &renewDeadline, &retryPeriod)
+
+	mgr, err := ctrl.NewManager(cfg, withElection(ctrl.Options{
+		Scheme:                 scheme,
+		Controller:             controllerOpts,
+		Metrics:                metricsServerOptions,
+		WebhookServer:          webhookServer,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElectionID:       "services.miloapis.com",
+	}, election))
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -288,13 +288,7 @@ func main() {
 	// so mcMgr serves both roles.
 	electedMcMgr := mcMgr
 	if !enableSingleClusterForE2ETests {
-		electedMcMgr, err = newElectedMulticlusterManager(cfg, controllerOpts, ctrl.Options{
-			LeaderElection:          enableLeaderElection,
-			LeaderElectionNamespace: leaderElectionNamespace,
-			LeaseDuration:           &leaseDuration,
-			RenewDeadline:           &renewDeadline,
-			RetryPeriod:             &retryPeriod,
-		})
+		electedMcMgr, err = newElectedMulticlusterManager(cfg, controllerOpts, election)
 		if err != nil {
 			setupLog.Error(err, "unable to create elected project controller manager")
 			os.Exit(1)
@@ -332,6 +326,10 @@ func main() {
 	// only which manager hosts it differs. Its rootClient stays pinned to the
 	// all-projects manager's client, where the cluster-scoped
 	// ServiceConfiguration / ServiceAvailability / Location objects live.
+	// Everything that runs beside the primary manager, started and stopped
+	// with it by runUntilManagerStops.
+	var workers []func(context.Context) error
+
 	if csp := serverConfig.ConsumerScopedProjection; csp != nil {
 		if csp.ProviderProject == "" {
 			setupLog.Error(fmt.Errorf("consumerScopedProjection.providerProject must be set"),
@@ -409,19 +407,14 @@ func main() {
 		// the primary manager's so the two do not contend for one lease — they
 		// are separate managers in the same process and would otherwise elect
 		// each other out.
-		consumerMcMgr, err := mcmanager.New(cfg, consumerProvider, mcmanager.Options{
+		consumerMcMgr, err := mcmanager.New(cfg, consumerProvider, withElection(mcmanager.Options{
 			Scheme:     scheme,
 			Controller: controllerOpts,
 			Metrics: metricsserver.Options{
 				BindAddress: "0",
 			},
-			LeaderElection:          enableLeaderElection,
-			LeaderElectionID:        "consumer-projection.services.miloapis.com",
-			LeaderElectionNamespace: leaderElectionNamespace,
-			LeaseDuration:           &leaseDuration,
-			RenewDeadline:           &renewDeadline,
-			RetryPeriod:             &retryPeriod,
-		})
+			LeaderElectionID: "consumer-projection.services.miloapis.com",
+		}, election))
 		if err != nil {
 			setupLog.Error(err, "unable to create consumer multicluster manager")
 			os.Exit(1)
@@ -437,16 +430,15 @@ func main() {
 		}
 
 		// The provider watch (gated on provider-project readiness) and the consumer
-		// multicluster manager each block, so each runs in its own goroutine —
+		// multicluster manager each block, so each runs as its own worker —
 		// mirroring the mcMgr wiring below. consumerProvider implements
 		// multicluster.ProviderRunnable, so consumerMcMgr.Start calls
 		// consumerProvider.Start automatically; no separate goroutine needed.
 		// The consumer manager engages no local "" cluster: its membership is
 		// exclusively the consumer projects the provider hands it.
-		go func() {
+		workers = append(workers, func(ctx context.Context) error {
 			if err := consumer.WaitProviderProjectReady(ctx, cfg, csp.ProviderProject); err != nil {
-				setupLog.Error(err, "provider project did not become ready")
-				os.Exit(1)
+				return fmt.Errorf("provider project did not become ready: %w", err)
 			}
 
 			// Hold the provider-project manager until this replica leads the
@@ -465,21 +457,20 @@ func main() {
 			// this is a no-op for single-replica and local runs.
 			select {
 			case <-ctx.Done():
-				return
+				return nil
 			case <-consumerMcMgr.Elected():
 			}
 
 			if err := providerMgr.Start(ctx); err != nil {
-				setupLog.Error(err, "provider-project manager failed")
-				os.Exit(1)
+				return fmt.Errorf("provider-project manager failed: %w", err)
 			}
-		}()
-		go func() {
+			return nil
+		}, func(ctx context.Context) error {
 			if err := consumerMcMgr.Start(ctx); err != nil {
-				setupLog.Error(err, "consumer multicluster manager failed")
-				os.Exit(1)
+				return fmt.Errorf("consumer multicluster manager failed: %w", err)
 			}
-		}()
+			return nil
+		})
 
 		setupLog.Info("consumer-scoped projection enabled",
 			"providerProject", csp.ProviderProject, "serviceNames", csp.ServiceNames)
@@ -556,38 +547,38 @@ func main() {
 	// fires twice, once per name, and the ""-tagged copy is rejected by
 	// reconcilers that require a non-empty cluster name.
 	if !enableSingleClusterForE2ETests {
-		go func() {
+		workers = append(workers, func(ctx context.Context) error {
 			if err := mcMgr.Engage(ctx, "", mcMgr.GetLocalManager()); err != nil {
-				setupLog.Error(err, "unable to engage local cluster on multicluster manager")
-				os.Exit(1)
+				return fmt.Errorf("unable to engage local cluster on multicluster manager: %w", err)
 			}
-		}()
+			return nil
+		})
 	}
-	go func() {
+	workers = append(workers, func(ctx context.Context) error {
 		if err := mcMgr.Start(ctx); err != nil {
-			setupLog.Error(err, "multicluster manager failed")
-			os.Exit(1)
+			return fmt.Errorf("multicluster manager failed: %w", err)
 		}
-	}()
+		return nil
+	})
 	if !enableSingleClusterForE2ETests {
-		go func() {
+		workers = append(workers, func(ctx context.Context) error {
 			// controller-runtime returns from Start when this manager loses
-			// its lease. Exit the process so the pod restarts as one unit,
-			// including admission, instead of leaving a replica that still
-			// serves webhooks but has silently stopped reconciling — or whose
-			// workers are still draining while the new holder starts.
+			// its lease. The error stops every manager and the process exits,
+			// so the pod restarts as one unit, including admission, instead of
+			// leaving a replica that still serves webhooks but has silently
+			// stopped reconciling.
 			// The deployment Role grants resource-wide CRUD on coordination
 			// Leases, so this lease is covered alongside the primary manager's.
 			if err := electedMcMgr.Start(ctx); err != nil {
-				setupLog.Error(err, "elected project controller manager failed")
-				os.Exit(1)
+				return fmt.Errorf("elected project controller manager failed: %w", err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctx); err != nil {
-		setupLog.Error(err, "unable to start manager")
+	if err := runUntilManagerStops(ctx, mgr.Start, workers...); err != nil {
+		setupLog.Error(err, "manager stopped")
 		os.Exit(1)
 	}
 }
