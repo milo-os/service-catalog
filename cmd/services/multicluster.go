@@ -92,17 +92,12 @@ const electedLeaseID = "project-projection.services.miloapis.com"
 // leaderElection carries only the leader-election fields; everything else is
 // fixed.
 func newElectedMulticlusterManager(cfg *rest.Config, controllerOpts ctrlconfig.Controller, leaderElection ctrl.Options) (mcmanager.Manager, error) {
-	localMgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                  scheme,
-		Controller:              controllerOpts,
-		Metrics:                 metricsserver.Options{BindAddress: "0"},
-		LeaderElection:          leaderElection.LeaderElection,
-		LeaderElectionID:        electedLeaseID,
-		LeaderElectionNamespace: leaderElection.LeaderElectionNamespace,
-		LeaseDuration:           leaderElection.LeaseDuration,
-		RenewDeadline:           leaderElection.RenewDeadline,
-		RetryPeriod:             leaderElection.RetryPeriod,
-	})
+	localMgr, err := ctrl.NewManager(cfg, withElection(ctrl.Options{
+		Scheme:           scheme,
+		Controller:       controllerOpts,
+		Metrics:          metricsserver.Options{BindAddress: "0"},
+		LeaderElectionID: electedLeaseID,
+	}, leaderElection))
 	if err != nil {
 		return nil, err
 	}
