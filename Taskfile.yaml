@@ -6,9 +6,9 @@ vars:
   SERVICES_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
   TEST_INFRA_REPO_REF: 'v0.6.0'
-  CONTROLLER_TOOLS_VERSION: "v0.16.4"
+  CONTROLLER_TOOLS_VERSION: "v0.17.3"
   DEFAULTER_GEN_VERSION: "v0.32.3"
-  GOLANGCI_LINT_VERSION: "v2.12.2"
+  GOLANGCI_LINT_VERSION: "v2.15.0"
   # renovate: datasource=go depName=github.com/kyverno/chainsaw
   # v0.2.14 and earlier fail to build against newer Go toolchains (missing
   # testing.testDeps.ModulePath) — keep this at v0.2.15+.
