@@ -12,6 +12,10 @@ linters:
     - unused
   exclusions:
     generated: lax
+    rules:
+      - linters:
+          - staticcheck
+        text: 'SA1019: \(k8s\.io/apimachinery/pkg/apis/meta/v1\.FieldsV1\)\.Raw is deprecated'
     paths:
       - third_party$
       - builtin$
