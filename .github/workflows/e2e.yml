@@ -79,7 +79,7 @@ jobs:
             -n services-system --timeout=120s
 
       - name: Install Chainsaw
-        uses: kyverno/action-install-chainsaw@v0.2.14
+        uses: kyverno/action-install-chainsaw@v0.2.15
 
       - name: Run E2E tests
         env:
