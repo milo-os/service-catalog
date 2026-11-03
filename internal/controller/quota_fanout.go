@@ -191,9 +191,9 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 		name := encodeName(rule.Selector.APIGroup + "-" + rule.Selector.Kind)
 
 		metricNames := slices.Sorted(maps.Keys(rule.MetricCosts))
-		requests := make([]quotav1alpha1.ResourceRequest, 0, len(metricNames))
+		requests := make([]quotav1alpha1.ResourceRequestTemplate, 0, len(metricNames))
 		for _, metricName := range metricNames {
-			requests = append(requests, quotav1alpha1.ResourceRequest{
+			requests = append(requests, quotav1alpha1.ResourceRequestTemplate{
 				ResourceType: metricName,
 				Amount:       rule.MetricCosts[metricName],
 			})
@@ -224,7 +224,7 @@ func (f *QuotaFanOut) applyClaimCreationPolicies(
 							GenerateName: "{{trigger.metadata.name}}-quota-",
 							Namespace:    "{{requestInfo.namespace}}",
 						},
-						Spec: quotav1alpha1.ResourceClaimSpec{
+						Spec: quotav1alpha1.ResourceClaimTemplateSpec{
 							Requests: requests,
 						},
 					},
