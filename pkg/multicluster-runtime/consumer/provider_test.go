@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	crrecorder "sigs.k8s.io/controller-runtime/pkg/recorder"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -1257,6 +1258,61 @@ func TestReconcile_StampsTeardownFinalizerOnActiveConsumer(t *testing.T) {
 	}
 	if !containsString(got.Finalizers, providerTeardownFinalizer) {
 		t.Errorf("expected provider-teardown finalizer on active consumer, got %v", got.Finalizers)
+	}
+}
+
+// A status writer may update the consumer after it was listed but before the
+// provider adds its finalizer. The provider must requeue and retry from the
+// latest object so this expected optimistic-concurrency race is not reported
+// as a reconcile failure and the concurrent change is preserved.
+func TestReconcile_RetriesTeardownFinalizerConflict(t *testing.T) {
+	consumer := newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive)
+	base := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
+	updates := 0
+	providerClient := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			updates++
+			if updates == 1 {
+				current := &servicesv1alpha1.ServiceConsumer{}
+				if err := cl.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				current.Annotations = map[string]string{"concurrent": "preserved"}
+				if err := cl.Update(ctx, current); err != nil {
+					return err
+				}
+				return apierrors.NewConflict(schema.GroupResource{Group: servicesv1alpha1.GroupVersion.Group, Resource: "serviceconsumers"}, obj.GetName(), errors.New("concurrent update"))
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	})
+	p := newTestProvider(providerClient, []string{computeCanonical},
+		withMCMgr(newFakeMCMgr()),
+		withManagedResources(managedWidgetGVK),
+	)
+
+	result, err := p.Reconcile(context.Background(), ctrl.Request{})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter != teardownFinalizerConflictRequeue {
+		t.Fatalf("requeue after = %v, want %v", result.RequeueAfter, teardownFinalizerConflictRequeue)
+	}
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("retry reconcile: %v", err)
+	}
+	if updates != 2 {
+		t.Fatalf("updates = %d, want one conflict and one retry", updates)
+	}
+	var got servicesv1alpha1.ServiceConsumer
+	if err := base.Get(context.Background(), client.ObjectKey{Name: consumer.Name}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	if !containsString(got.Finalizers, providerTeardownFinalizer) {
+		t.Errorf("expected provider-teardown finalizer after retry, got %v", got.Finalizers)
+	}
+	if got.Annotations["concurrent"] != "preserved" {
+		t.Errorf("concurrent annotation was lost: %v", got.Annotations)
 	}
 }
 
