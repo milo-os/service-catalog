@@ -122,12 +122,21 @@ controller** show which controller is busy.
 
 ## ConsumerPortalFanOutFailed / ProviderPortalFanOutFailed
 
-**Meaning:** the operator couldn't apply a `ConsumerPortalPlugin` or
-`ProviderPortalPlugin` for a ServiceConfiguration. The two conditions share one
-error, so a failing consumer plugin also marks the provider condition failed.
+**Meaning:** the operator couldn't apply or remove a `ConsumerPortalPlugin` or
+`ProviderPortalPlugin` for a ServiceConfiguration. The two sides are reconciled
+independently: a failure on one never stops the other from being tried, and
+each condition reports only its own side. `Ready` stays `False` while either
+side is failing. `Ready` carries the consumer reason when the consumer side
+fails (with the provider message appended if both fail), and the provider
+reason when only the provider side fails.
+
 The condition message is generic; the cause is in the operator log as
-`reconcile ServiceConfiguration portal plugins: ...`. The operator retries
-with backoff, so the configuration recovers on its own once the cause is gone.
+`reconcile ServiceConfiguration portal plugins: ...`. The log line joins the
+failures of both sides, each prefixed `consumer portal plugin:` or
+`provider portal plugin:`, so a double failure shows both causes. A side whose
+apply failed keeps the plugin it already registered; stale plugins are removed
+only for sides whose apply succeeded or whose block was removed from the spec. The operator retries with backoff, so the configuration recovers on its
+own once the cause is gone.
 
 **One possible cause:** the operator was rolled out before the portal plugin
 CRDs (owned by cloud-portal and staff-portal) accepted a field it now sends,

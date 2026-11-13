@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -469,5 +472,61 @@ func TestUserInterfaceFanOut_ConsumerContentSecurityPolicy(t *testing.T) {
 				t.Errorf("%s: spec.contentSecurityPolicy[%d] = %q, want %q", step.name, j, got[j], step.csp[j])
 			}
 		}
+	}
+}
+
+// TestUserInterfaceFanOut_FailedSideDoesNotBlockOrPruneOther verifies a
+// failing consumer apply still lets the provider side apply, reports the
+// failure on the consumer side only, and leaves the already-registered
+// consumer plugin in place instead of pruning it.
+func TestUserInterfaceFanOut_FailedSideDoesNotBlockOrPruneOther(t *testing.T) {
+	scheme := newUserInterfaceFanOutScheme()
+	svc := newTestService("compute", "compute.datumapis.com", "Compute")
+	sc := &servicesv1alpha1.ServiceConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "compute", UID: types.UID("uid-compute")},
+		Spec: servicesv1alpha1.ServiceConfigurationSpec{
+			ServiceRef: servicesv1alpha1.ServiceReference{Name: "compute"},
+			Phase:      servicesv1alpha1.PhasePublished,
+			UserInterface: &servicesv1alpha1.UserInterfaceSpec{
+				Consumer: &servicesv1alpha1.ConsumerUserInterfaceSpec{Assets: basePluginAssets()},
+				Provider: &servicesv1alpha1.ProviderUserInterfaceSpec{Assets: basePluginAssets()},
+			},
+		},
+	}
+	registeredConsumer := &unstructured.Unstructured{}
+	registeredConsumer.SetGroupVersionKind(portalGVK("ConsumerPortalPlugin"))
+	registeredConsumer.SetName("compute-datumapis-com")
+	registeredConsumer.SetLabels(map[string]string{labelManagedBy: labelManagedByValue})
+	registeredConsumer.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: servicesv1alpha1.GroupVersion.String(),
+		Kind:       "ServiceConfiguration",
+		Name:       sc.Name,
+		UID:        sc.UID,
+		Controller: ptr.To(true),
+	}})
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).WithRuntimeObjects(registeredConsumer).Build()
+	consumerApplyErr := errors.New("consumer apply rejected")
+	patchClient := &perKindPortalPatchClient{Client: base, errByKind: map[string]error{"ConsumerPortalPlugin": consumerApplyErr}}
+	fanOut := &UserInterfaceFanOut{Client: patchClient, Scheme: scheme}
+
+	outcome := fanOut.ReconcileOutcome(context.Background(), sc)
+
+	if !errors.Is(outcome.Consumer, consumerApplyErr) {
+		t.Errorf("Consumer outcome = %v, want it to wrap %v", outcome.Consumer, consumerApplyErr)
+	}
+	if outcome.Provider != nil {
+		t.Errorf("Provider outcome = %v, want nil: the provider side must not inherit the consumer failure", outcome.Provider)
+	}
+	if got := strings.Join(patchClient.attempted, ","); got != "ConsumerPortalPlugin,ProviderPortalPlugin" {
+		t.Errorf("attempted applies = %q, want consumer then provider", got)
+	}
+	if !errors.Is(outcome.Err(), consumerApplyErr) {
+		t.Errorf("Err() = %v, want it to wrap %v", outcome.Err(), consumerApplyErr)
+	}
+
+	remaining := &unstructured.Unstructured{}
+	remaining.SetGroupVersionKind(portalGVK("ConsumerPortalPlugin"))
+	if err := base.Get(context.Background(), types.NamespacedName{Name: "compute-datumapis-com"}, remaining); err != nil {
+		t.Errorf("registered consumer plugin was pruned after a failed apply: %v", err)
 	}
 }

@@ -164,12 +164,12 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 		warnIfBilledWithoutGating(ctx, r.Client, &sc, svc.Spec.ServiceName)
 	}
 
-	var userInterfaceFanOutErr error
+	var userInterfaceOutcome UserInterfaceOutcome
 	if sc.Spec.Phase != servicesv1alpha1.PhaseDraft {
-		userInterfaceFanOutErr = r.UserInterfaceFanOut.Reconcile(ctx, &sc)
+		userInterfaceOutcome = r.UserInterfaceFanOut.ReconcileOutcome(ctx, &sc)
 	}
-	consumerPortalFanOutCondition := desiredConsumerPortalFanOutCondition(&sc, userInterfaceFanOutErr)
-	providerPortalFanOutCondition := desiredProviderPortalFanOutCondition(&sc, userInterfaceFanOutErr)
+	consumerPortalFanOutCondition := desiredConsumerPortalFanOutCondition(&sc, userInterfaceOutcome.Consumer)
+	providerPortalFanOutCondition := desiredProviderPortalFanOutCondition(&sc, userInterfaceOutcome.Provider)
 
 	readyCondition := metav1.Condition{
 		Type:               ConditionTypeReady,
@@ -189,10 +189,17 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonChargePricingCleanupFailed
 		readyCondition.Message = "Couldn't remove the pricings made from this service's retired charges; the system will keep retrying."
-	case userInterfaceFanOutErr != nil:
+	case userInterfaceOutcome.Consumer != nil:
 		readyCondition.Status = metav1.ConditionFalse
 		readyCondition.Reason = reasonConsumerPortalFanOutFailed
 		readyCondition.Message = consumerPortalFanOutCondition.Message
+		if userInterfaceOutcome.Provider != nil {
+			readyCondition.Message += " " + providerPortalFanOutCondition.Message
+		}
+	case userInterfaceOutcome.Provider != nil:
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = reasonProviderPortalFanOutFailed
+		readyCondition.Message = providerPortalFanOutCondition.Message
 	default:
 		readyCondition.Status = metav1.ConditionTrue
 		readyCondition.Reason = reasonServiceConfigurationReady
@@ -215,8 +222,8 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	if chargePricingErr != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", chargePricingErr)
 	}
-	if userInterfaceFanOutErr != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration portal plugins: %w", userInterfaceFanOutErr)
+	if userInterfaceErr := userInterfaceOutcome.Err(); userInterfaceErr != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration portal plugins: %w", userInterfaceErr)
 	}
 
 	logger.Info("reconciled serviceconfiguration",
@@ -369,7 +376,8 @@ func desiredConsumerPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfigurat
 		Type:               ConditionTypeConsumerPortalFanOutHealthy,
 		ObservedGeneration: sc.Generation,
 	}
-	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft || sc.Spec.UserInterface == nil || sc.Spec.UserInterface.Consumer == nil {
+	declared := sc.Spec.UserInterface != nil && sc.Spec.UserInterface.Consumer != nil
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonConsumerPortalFanOutSkipped
 		c.Message = "No cloud-portal plugin declared, or setup is on hold while this configuration is still a draft."
@@ -378,7 +386,17 @@ func desiredConsumerPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfigurat
 	if err != nil {
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonConsumerPortalFanOutFailed
-		c.Message = "Couldn't finish registering this service's cloud-portal plugin; the system will keep retrying."
+		if declared {
+			c.Message = "Couldn't finish registering this service's cloud-portal plugin; the system will keep retrying."
+		} else {
+			c.Message = "Couldn't remove this service's cloud-portal plugin; the system will keep retrying."
+		}
+		return c
+	}
+	if !declared {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonConsumerPortalFanOutSkipped
+		c.Message = "No cloud-portal plugin declared, or setup is on hold while this configuration is still a draft."
 	} else {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonConsumerPortalFanOutHealthy
@@ -392,7 +410,8 @@ func desiredProviderPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfigurat
 		Type:               ConditionTypeProviderPortalFanOutHealthy,
 		ObservedGeneration: sc.Generation,
 	}
-	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft || sc.Spec.UserInterface == nil || sc.Spec.UserInterface.Provider == nil {
+	declared := sc.Spec.UserInterface != nil && sc.Spec.UserInterface.Provider != nil
+	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonProviderPortalFanOutSkipped
 		c.Message = "No staff-portal plugin declared, or setup is on hold while this configuration is still a draft."
@@ -401,7 +420,17 @@ func desiredProviderPortalFanOutCondition(sc *servicesv1alpha1.ServiceConfigurat
 	if err != nil {
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonProviderPortalFanOutFailed
-		c.Message = "Couldn't finish registering this service's staff-portal plugin; the system will keep retrying."
+		if declared {
+			c.Message = "Couldn't finish registering this service's staff-portal plugin; the system will keep retrying."
+		} else {
+			c.Message = "Couldn't remove this service's staff-portal plugin; the system will keep retrying."
+		}
+		return c
+	}
+	if !declared {
+		c.Status = metav1.ConditionTrue
+		c.Reason = reasonProviderPortalFanOutSkipped
+		c.Message = "No staff-portal plugin declared, or setup is on hold while this configuration is still a draft."
 	} else {
 		c.Status = metav1.ConditionTrue
 		c.Reason = reasonProviderPortalFanOutHealthy
