@@ -116,6 +116,12 @@ func TestUserInterfaceFanOut_ConsumerOnly(t *testing.T) {
 	if got := nestedStringOrEmpty(cp, "spec", "displayName"); got != "Compute" {
 		t.Errorf("spec.displayName = %q, want %q", got, "Compute")
 	}
+	if got := nestedStringOrEmpty(cp, "spec", "serviceName"); got != "compute.datumapis.com" {
+		t.Errorf("spec.serviceName = %q, want %q (the canonical service name)", got, "compute.datumapis.com")
+	}
+	if got := nestedStringOrEmpty(cp, "spec", "serviceRef", "name"); got != "compute" {
+		t.Errorf("spec.serviceRef.name = %q, want %q (the Service's resource name)", got, "compute")
+	}
 	if got := nestedStringOrEmpty(cp, "spec", "assets", "baseURL"); got != "https://plugin.example.com" {
 		t.Errorf("spec.assets.baseURL = %q, want %q", got, "https://plugin.example.com")
 	}
