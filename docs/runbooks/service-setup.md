@@ -119,3 +119,25 @@ throttle on its traffic.
 (defaults 50 and 100) in its deployment. If request volume rose suddenly, find
 what drives it first: **Queue depth by controller** and **Requeues by
 controller** show which controller is busy.
+
+## ConsumerPortalFanOutFailed / ProviderPortalFanOutFailed
+
+**Meaning:** the operator couldn't apply a `ConsumerPortalPlugin` or
+`ProviderPortalPlugin` for a ServiceConfiguration. The two conditions share one
+error, so a failing consumer plugin also marks the provider condition failed.
+The condition message is generic; the cause is in the operator log as
+`reconcile ServiceConfiguration portal plugins: ...`. The operator retries
+with backoff, so the configuration recovers on its own once the cause is gone.
+
+**One possible cause:** the operator was rolled out before the portal plugin
+CRDs (owned by cloud-portal and staff-portal) accepted a field it now sends,
+for example `spec.serviceName` or `spec.serviceRef`. The API server rejects the
+apply.
+
+**Fix:** roll out the portal CRDs first. With the portal-error retry fix deployed,
+no operator restart is needed: the next retry applies the plugins and the
+conditions return to healthy. Older builds that swallow portal errors require
+another reconcile trigger; correcting the CRD alone does not establish recovery.
+
+**Rollout order:** whenever a change adds a field to the plugins the operator
+applies, ship the portal CRD change first and the operator image second.

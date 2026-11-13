@@ -215,6 +215,9 @@ func (r *ServiceConfigurationReconciler) Reconcile(ctx context.Context, req reco
 	if chargePricingErr != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration: %w", chargePricingErr)
 	}
+	if userInterfaceFanOutErr != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile ServiceConfiguration portal plugins: %w", userInterfaceFanOutErr)
+	}
 
 	logger.Info("reconciled serviceconfiguration",
 		"name", sc.Name,
