@@ -59,7 +59,7 @@ func (f *UserInterfaceFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha
 		deprecated := sc.Spec.Phase == servicesv1alpha1.PhaseDeprecated
 
 		var err error
-		desiredConsumer, err = f.applyConsumerPlugin(ctx, sc, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
+		desiredConsumer, err = f.applyConsumerPlugin(ctx, sc, svc.Name, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
 		if err != nil {
 			return err
 		}
@@ -99,10 +99,16 @@ func pluginAssetsMap(a servicesv1alpha1.PluginAssets) map[string]interface{} {
 // applyConsumerPlugin returns the desired object name (for pruning) when
 // sc.Spec.UserInterface.Consumer is set, or "" when it's nil — the caller
 // treats an empty desired name as "delete whatever's there."
+//
+// serviceName and serviceResourceName are the two ids a ServiceEntitlement
+// may name the Service by (its status.serviceName and spec.serviceRef.name).
+// cloud-portal unlocks a plugin whose visibility.entitlement is Required only
+// when an Active entitlement names one of the plugin's ids, and the slug
+// alone never matches either.
 func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
-	serviceName, displayName, slug string,
+	serviceResourceName, serviceName, displayName, slug string,
 	deprecated bool,
 ) (string, error) {
 	spec := sc.Spec.UserInterface.Consumer
@@ -120,9 +126,13 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	pluginSpec := map[string]interface{}{
 		"slug":        slug,
 		"displayName": displayName,
-		"deprecated":  deprecated,
-		"suspend":     spec.Suspend,
-		"assets":      pluginAssetsMap(spec.Assets),
+		"serviceName": serviceName,
+		"serviceRef": map[string]interface{}{
+			"name": serviceResourceName,
+		},
+		"deprecated": deprecated,
+		"suspend":    spec.Suspend,
+		"assets":     pluginAssetsMap(spec.Assets),
 		"visibility": map[string]interface{}{
 			"entitlement": spec.Visibility.Entitlement,
 			"featureFlag": spec.Visibility.FeatureFlag,
