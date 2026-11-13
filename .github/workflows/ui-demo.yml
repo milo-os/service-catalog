@@ -171,7 +171,7 @@ jobs:
             fi
 
             ffmpeg -i "$VIDEO" \
-              -vf "fps=8,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -vf "fps=6,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
               -loop 0 "/tmp/recordings-out/${NAME}.gif" 2>/dev/null
 
             if [ -f "/tmp/recordings-out/${NAME}.gif" ]; then
@@ -208,32 +208,57 @@ jobs:
           retention-days: 30
 
       # ── Push GIFs to ui-recordings branch ────────────────────────────────
+      # The branch is kept as a single orphan commit holding only the current
+      # GIFs: PR comments link to the branch tip, so superseded recordings are
+      # never viewed and would otherwise pile up in every clone's history.
+      # Recordings for PRs closed more than 30 days ago are dropped too.
       - name: Push GIFs to ui-recordings branch
         if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           PR=${{ github.event.pull_request.number }}
+          CUTOFF=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          STALE=$(gh pr list --state closed --limit 1000 --json number,closedAt \
+            --jq "[.[] | select(.closedAt < \"$CUTOFF\") | .number] | .[]")
 
-          if git ls-remote --exit-code origin ui-recordings > /dev/null 2>&1; then
-            git fetch origin ui-recordings
-            git worktree add /tmp/recordings origin/ui-recordings
-          else
-            git worktree add --orphan -b ui-recordings /tmp/recordings
-            touch /tmp/recordings/.gitkeep
-            (cd /tmp/recordings && git add .gitkeep && \
-              git commit -m "chore: initialise ui-recordings branch")
-          fi
+          # Build the tree in a scratch index so no worktree is needed.
+          export GIT_INDEX_FILE=/tmp/recordings-index
 
-          mkdir -p "/tmp/recordings/pr-${PR}"
-          cp /tmp/recordings-out/*.gif "/tmp/recordings/pr-${PR}/"
+          for attempt in 1 2 3 4 5; do
+            rm -f "$GIT_INDEX_FILE"
+            if git fetch origin ui-recordings 2>/dev/null; then
+              LEASE=$(git rev-parse FETCH_HEAD)
+              git read-tree FETCH_HEAD
+            else
+              LEASE=""
+              git read-tree --empty
+            fi
 
-          cd /tmp/recordings
-          git add "pr-${PR}/"
-          git diff --cached --quiet && echo "No changes to push" && exit 0
-          git commit -m "recording: PR #${PR} (run ${{ github.run_id }})"
-          git push origin HEAD:ui-recordings
+            git rm --cached -r -q --ignore-unmatch "pr-${PR}"
+            for n in $STALE; do
+              git rm --cached -r -q --ignore-unmatch "pr-${n}"
+            done
+            for gif in /tmp/recordings-out/*.gif; do
+              BLOB=$(git hash-object -w "$gif")
+              git update-index --add --cacheinfo "100644,${BLOB},pr-${PR}/$(basename "$gif")"
+            done
+
+            TREE=$(git write-tree)
+            COMMIT=$(git commit-tree "$TREE" -m "recordings (latest: PR #${PR}, run ${{ github.run_id }})")
+
+            if git push --force-with-lease="refs/heads/ui-recordings:${LEASE}" \
+                origin "${COMMIT}:refs/heads/ui-recordings"; then
+              exit 0
+            fi
+            echo "ui-recordings moved underneath us; retrying (attempt ${attempt})"
+            sleep $((RANDOM % 10 + 5))
+          done
+          echo "Failed to push recordings after 5 attempts"
+          exit 1
 
       # ── Build PR comment body ─────────────────────────────────────────────
       - name: Build comment body
