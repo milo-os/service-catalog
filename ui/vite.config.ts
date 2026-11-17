@@ -4,6 +4,9 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 
 export default defineConfig({
+  build: {
+    target: ["chrome107", "edge107", "firefox104", "safari16"],
+  },
   plugins: [
     tailwindcss(),
     remix({
@@ -16,6 +19,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
+    esbuildOptions: {
+      target: ["chrome107", "edge107", "firefox104", "safari16"],
+    },
     exclude: ["@remix-run/react"],
     include: [
       "@datum-cloud/datum-ui/alert",
