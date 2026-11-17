@@ -16,5 +16,5 @@ overrides:
   react-router@<6.30.6: ^6.30.6
   react-router-dom@<6.30.6: ^6.30.6
   vite@<6.4.4: ^6.4.4
-  esbuild: ^0.25.0
+  esbuild: ^0.28.0
   turbo-stream: ^3.0.0

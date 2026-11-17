@@ -14,7 +14,7 @@
     "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
-    "@datum-cloud/datum-ui": "^0.8.0",
+    "@datum-cloud/datum-ui": "^0.10.0",
     "@remix-run/node": "^2.17.5",
     "@remix-run/react": "^2.17.5",
     "@remix-run/serve": "^2.17.5",
