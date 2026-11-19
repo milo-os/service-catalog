@@ -1,8 +1,8 @@
-import { json, redirect } from "@remix-run/node";
+import { data, redirect } from "react-router";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
-} from "@remix-run/node";
+} from "react-router";
 import {
   Form,
   useActionData,
@@ -11,7 +11,7 @@ import {
   useNavigation,
   useParams,
   useSearchParams,
-} from "@remix-run/react";
+} from "react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -104,7 +104,7 @@ function configMetadataName(serviceName: string, version: string): string {
 export async function loader({ request, params }: LoaderFunctionArgs) {
   const name = params.name;
   if (!name) {
-    return json(
+    return data(
       {
         error: "Missing service name.",
         configs: [],
@@ -141,7 +141,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       .filter((v): v is string => !!v);
     const previousVersion = existingVersions[0] ?? null;
     const suggestedVersion = suggestNextVersion(previousVersion);
-    return json({
+    return data({
       service,
       configs: mine,
       existingVersions,
@@ -150,7 +150,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     } satisfies LoaderData);
   } catch (e) {
     console.error('[configurations/new loader]', e);
-    return json({
+    return data({
       error: e instanceof Error ? e.message : String(e),
       configs: [],
       existingVersions: [],
@@ -165,13 +165,13 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const raw = formData.get("payload");
   const serviceName = params.name;
   if (!serviceName) {
-    return json(
+    return data(
       { ok: false, error: "Missing service name." } satisfies ActionData,
       { status: 400 }
     );
   }
   if (typeof raw !== "string") {
-    return json(
+    return data(
       {
         ok: false,
         error: "Missing wizard payload.",
@@ -184,7 +184,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
   try {
     payload = JSON.parse(raw) as ConfigWizardForm;
   } catch {
-    return json(
+    return data(
       {
         ok: false,
         error: "Invalid wizard payload.",
@@ -209,7 +209,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
       .filter((v): v is string => !!v);
     cloneOptions = mine.map((c) => c.metadata.name);
   } catch (e) {
-    return json(
+    return data(
       {
         ok: false,
         error: `Could not verify existing configurations: ${
@@ -226,7 +226,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
     ...validateMeters(payload.meters, payload.mrts),
   };
   if (Object.keys(allErrors).length > 0) {
-    return json(
+    return data(
       {
         ok: false,
         error: Object.values(allErrors).join(" "),
@@ -237,7 +237,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
 
   const configName = configMetadataName(serviceName, payload.version);
   if (configName.length > 253) {
-    return json(
+    return data(
       {
         ok: false,
         error: `Resulting resource name "${configName}" exceeds 253 characters.`,
@@ -268,7 +268,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
       }
     );
   } catch (e) {
-    return json(
+    return data(
       {
         ok: false,
         error: `Failed to create configuration: ${

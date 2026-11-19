@@ -7,7 +7,7 @@ ENV CI=true
 WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
-COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js ./
+COPY tsconfig.json vite.config.ts react-router.config.ts tailwind.config.js postcss.config.js ./
 COPY app/ ./app/
 
 RUN pnpm install --frozen-lockfile=false
@@ -34,4 +34,4 @@ ENV NODE_ENV=production
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q --spider http://localhost:3000/health || exit 1
 
-CMD ["node_modules/.bin/remix-serve", "build/server/index.js"]
+CMD ["node_modules/.bin/react-router-serve", "build/server/index.js"]

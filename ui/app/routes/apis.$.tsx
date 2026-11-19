@@ -1,10 +1,10 @@
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import https from "https";
 import http from "http";
 import { getKubeConfig } from "~/lib/kubeconfig.server";
 
 /**
- * Catch-all proxy for /apis/*. Forwards Remix loader/action HTTP requests to
+ * Catch-all proxy for /apis/*. Forwards loader/action HTTP requests to
  * the upstream Kubernetes API server using credentials from
  * SERVICES_API_* env vars, in-cluster ServiceAccount, or a kubeconfig.
  */
