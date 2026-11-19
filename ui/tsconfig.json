@@ -16,7 +16,7 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "esModuleInterop": true,
-    "types": ["@remix-run/node", "vite/client"],
+    "types": ["@react-router/node", "vite/client"],
     "paths": {
       "~/*": ["./app/*"]
     }

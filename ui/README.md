@@ -1,6 +1,6 @@
 # services-ui
 
-Remix SSR app for the Milo service catalog. Talks to the `services.miloapis.com`
+React Router 7 SSR app for the Milo service catalog. Talks to the `services.miloapis.com`
 CRDs (`Service`, `ServiceConfiguration`) on the kind dev cluster.
 
 ## Quick start

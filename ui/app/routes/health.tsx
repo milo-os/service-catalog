@@ -1,2 +1,1 @@
-import { json } from "@remix-run/node";
-export const loader = () => json({ status: "ok" });
+export const loader = () => Response.json({ status: "ok" });

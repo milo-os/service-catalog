@@ -1,15 +1,15 @@
-import { json, redirect } from "@remix-run/node";
+import { data, redirect } from "react-router";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
-} from "@remix-run/node";
+} from "react-router";
 import {
   Form,
   useActionData,
   useNavigate,
   useNavigation,
   useSearchParams,
-} from "@remix-run/react";
+} from "react-router";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -91,14 +91,14 @@ function validateStep1(form: WizardForm): Record<string, string> {
 
 export async function loader(_args: LoaderFunctionArgs) {
   // No server data needed for the wizard form itself.
-  return json({});
+  return data({});
 }
 
 export async function action({ request }: ActionFunctionArgs) {
   const form = await request.formData();
   const raw = form.get("payload");
   if (typeof raw !== "string") {
-    return json(
+    return data(
       { ok: false, error: "Missing wizard payload." } satisfies ActionData,
       { status: 400 }
     );
@@ -107,7 +107,7 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     payload = JSON.parse(raw) as WizardForm;
   } catch {
-    return json(
+    return data(
       { ok: false, error: "Invalid wizard payload." } satisfies ActionData,
       { status: 400 }
     );
@@ -121,7 +121,7 @@ export async function action({ request }: ActionFunctionArgs) {
   };
   if (Object.keys(allErrors).length > 0) {
     const message = Object.values(allErrors).join(" ");
-    return json(
+    return data(
       { ok: false, error: message } satisfies ActionData,
       { status: 400 }
     );
@@ -152,7 +152,7 @@ export async function action({ request }: ActionFunctionArgs) {
       }
     );
   } catch (e) {
-    return json(
+    return data(
       {
         ok: false,
         error: `Failed to create service: ${
@@ -188,7 +188,7 @@ export async function action({ request }: ActionFunctionArgs) {
       }
     );
   } catch (e) {
-    return json(
+    return data(
       {
         ok: false,
         error: `Service "${payload.serviceName}" was created but the initial configuration failed: ${

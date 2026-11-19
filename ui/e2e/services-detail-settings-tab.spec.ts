@@ -4,7 +4,7 @@ import { test, expect } from './fixtures';
  * E2E smoke test for the Settings tab on the Service detail page.
  *
  * Per UX spec for task #7 (and team-lead confirmation), the Settings tab is
- * a third tab on `services.$name.tsx`. The form submits via a Remix
+ * a third tab on `services.$name.tsx`. The form submits via a route
  * `action` on that same route — there is no separate edit page.
  *
  * Tab activation uses the `?tab=` search param. This smoke test asserts

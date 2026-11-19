@@ -1,11 +1,11 @@
-import { json } from "@remix-run/node";
-import type { LoaderFunctionArgs } from "@remix-run/node";
+import { data } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
 import {
   Link,
   useLoaderData,
   useNavigate,
   useParams,
-} from "@remix-run/react";
+} from "react-router";
 import { useMemo } from "react";
 import {
   Alert,
@@ -64,7 +64,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const leftName = url.searchParams.get("left") ?? undefined;
   const rightName = url.searchParams.get("right") ?? undefined;
   if (!name) {
-    return json(
+    return data(
       {
         error: "Missing service name",
         configs: [],
@@ -100,7 +100,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     const right = rightName
       ? mine.find((c) => c.metadata.name === rightName)
       : undefined;
-    return json({
+    return data({
       service,
       configs: mine,
       left,
@@ -109,7 +109,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       rightName,
     } satisfies LoaderData);
   } catch (e) {
-    return json({
+    return data({
       error: e instanceof Error ? e.message : String(e),
       configs: [],
       leftName,

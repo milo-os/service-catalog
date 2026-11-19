@@ -1,6 +1,6 @@
-import { json } from "@remix-run/node";
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { Link, useLoaderData, useParams } from "@remix-run/react";
+import { data } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
+import { Link, useLoaderData, useParams } from "react-router";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import {
   Card,
@@ -26,7 +26,7 @@ interface LoaderData {
 export async function loader({ request, params }: LoaderFunctionArgs) {
   const configName = params.configName;
   if (!configName) {
-    return json(
+    return data(
       { error: "Missing configuration name" } satisfies LoaderData,
       { status: 400 }
     );
@@ -36,9 +36,9 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       request,
       `/apis/services.miloapis.com/v1alpha1/serviceconfigurations/${encodeURIComponent(configName)}`
     );
-    return json({ configuration } satisfies LoaderData);
+    return data({ configuration } satisfies LoaderData);
   } catch (e) {
-    return json({
+    return data({
       error: e instanceof Error ? e.message : String(e),
     } satisfies LoaderData);
   }

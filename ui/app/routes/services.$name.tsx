@@ -1,8 +1,8 @@
-import { json, redirect } from "@remix-run/node";
+import { data, redirect } from "react-router";
 import type {
   ActionFunctionArgs,
   LoaderFunctionArgs,
-} from "@remix-run/node";
+} from "react-router";
 import {
   Form,
   Link,
@@ -10,7 +10,7 @@ import {
   useLoaderData,
   useNavigation,
   useParams,
-} from "@remix-run/react";
+} from "react-router";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -125,7 +125,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   const activeTab =
     new URL(request.url).searchParams.get("tab") ?? "overview";
   if (!name) {
-    return json(
+    return data(
       {
         error: "Missing service name",
         configurations: [],
@@ -187,7 +187,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         Math.floor(ms / 86_400_000)
       );
     }
-    return json({
+    return data({
       service,
       configurations: mine,
       drafts,
@@ -199,7 +199,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
       activeTab,
     } satisfies LoaderData);
   } catch (e) {
-    return json({
+    return data({
       error: e instanceof Error ? e.message : String(e),
       configurations: [],
       drafts: [],
@@ -217,7 +217,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
   const intent = String(form.get("intent") ?? "");
   const name = params.name;
   if (!name) {
-    return json(
+    return data(
       { ok: false, error: "Missing service name." } satisfies ActionData,
       { status: 400 }
     );
@@ -231,7 +231,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         const description = String(form.get("description") ?? "");
         const ownerProject = String(form.get("ownerProject") ?? "").trim();
         if (displayName.length < 1 || displayName.length > 120) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -241,7 +241,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
           );
         }
         if (description.length > 1000) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -251,7 +251,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
           );
         }
         if (!OWNER_PROJECT_RE.test(ownerProject)) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -275,14 +275,14 @@ export async function action({ request, params }: ActionFunctionArgs) {
           headers: { "Content-Type": "application/json-patch+json" },
           body: JSON.stringify(patch),
         });
-        return json({ ok: true, intent } satisfies ActionData);
+        return data({ ok: true, intent } satisfies ActionData);
       }
       case "updatePhase":
       case "deprecate": {
         const phase =
           intent === "deprecate" ? "Deprecated" : String(form.get("phase") ?? "");
         if (!["Draft", "Published", "Deprecated", "Retired"].includes(phase)) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -297,12 +297,12 @@ export async function action({ request, params }: ActionFunctionArgs) {
           headers: { "Content-Type": "application/json-patch+json" },
           body: JSON.stringify(patch),
         });
-        return json({ ok: true, intent } satisfies ActionData);
+        return data({ ok: true, intent } satisfies ActionData);
       }
       case "activateConfig": {
         const configName = String(form.get("configName") ?? "");
         if (!configName) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -323,13 +323,13 @@ export async function action({ request, params }: ActionFunctionArgs) {
             body: JSON.stringify(patch),
           }
         );
-        return json({ ok: true, intent } satisfies ActionData);
+        return data({ ok: true, intent } satisfies ActionData);
       }
       case "delete": {
         const confirm = String(form.get("confirm") ?? "");
         const serviceName = String(form.get("serviceName") ?? "");
         if (!serviceName || confirm !== serviceName) {
-          return json(
+          return data(
             {
               ok: false,
               intent,
@@ -342,7 +342,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         return redirect("/services");
       }
       default:
-        return json(
+        return data(
           {
             ok: false,
             intent,
@@ -352,7 +352,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
         );
     }
   } catch (e) {
-    return json(
+    return data(
       {
         ok: false,
         intent,
