@@ -4,6 +4,8 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // EntitlementPhase describes the lifecycle state of a ServiceEntitlement.
@@ -34,8 +36,16 @@ const (
 	ConditionTypeReady = "Ready"
 
 	// ReasonEntitlementActive is the Ready reason when the entitlement is active
-	// and usable.
+	// and usable without a provider decision: the service is self-service, so
+	// enabling it granted access immediately.
 	ReasonEntitlementActive = "EntitlementActive"
+
+	// ReasonEntitlementApproved is the Ready reason when the entitlement is
+	// active because the provider approved a GatedByProvider request. It is
+	// distinct from ReasonEntitlementActive so a consumer can tell that a
+	// provider reviewed the request rather than access being granted
+	// automatically.
+	ReasonEntitlementApproved = "EntitlementApproved"
 
 	// ReasonEntitlementPendingApproval is the Ready reason while the request
 	// awaits a provider approval decision.
@@ -133,7 +143,46 @@ const (
 	// ReasonDependencyEnrollmentFailed is the DependenciesSatisfied=False
 	// reason when one or more dependencies could not be enabled.
 	ReasonDependencyEnrollmentFailed = "DependencyEnrollmentFailed"
+
+	// ConditionTypeSetupComplete reports aggregate catalog convergence. Ready
+	// continues to mean that access was authorized; SetupComplete additionally
+	// requires dependency, provisioning, and service projection stages.
+	ConditionTypeSetupComplete = "SetupComplete"
 )
+
+// ServiceSetupStatus records the timing and gates for initial service setup.
+// The owning entitlement's UID identifies the setup across retries and leader
+// changes. Reconfiguration and resume can extend this contract when those
+// operations acquire concrete lifecycle semantics.
+type ServiceSetupStatus struct {
+	// RequestedAt is the original accepted request time. Provider-initiated
+	// activation carries the originating request timestamp here.
+	RequestedAt metav1.Time `json:"requestedAt"`
+
+	// Backfilled is true when setup tracking began after the request had
+	// already been accepted, such as for entitlements that predate setup
+	// tracking. RequestedAt is then the creation time rather than an observed
+	// request, so the attempt is excluded from setup latency accounting.
+	// +optional
+	Backfilled bool `json:"backfilled,omitempty"`
+
+	// AuthorizedAt is set when external approval/access authorization finishes.
+	// +optional
+	AuthorizedAt *metav1.Time `json:"authorizedAt,omitempty"`
+
+	// ConfigurationRevision is the UID and generation evaluated by setup.
+	// +optional
+	ConfigurationRevision string `json:"configurationRevision,omitempty"`
+
+	// Stages are the separately observable setup gates.
+	// +listType=map
+	// +listMapKey=type
+	Stages []metav1.Condition `json:"stages,omitempty"`
+
+	// FirstCompletedAt is immutable after the first successful convergence.
+	// +optional
+	FirstCompletedAt *metav1.Time `json:"firstCompletedAt,omitempty"`
+}
 
 // ProvisionedResourceState is the delivery state of one declared resource.
 //
@@ -151,8 +200,10 @@ const (
 
 	// ProvisionedResourceStateUnprovisionable indicates delivery cannot succeed
 	// as declared and a retry will not help: this project's control plane does
-	// not serve the kind, or the declaration does not resolve into a write. It is
-	// reported rather than skipped, because the consumer has to be told.
+	// not serve the kind, the declaration does not resolve into a write, or an
+	// object it declares has a name this project already uses for an object the
+	// platform did not install. That object is left unchanged. It is reported
+	// rather than skipped, because the consumer has to be told.
 	ProvisionedResourceStateUnprovisionable ProvisionedResourceState = "Unprovisionable"
 )
 
@@ -251,6 +302,49 @@ const (
 	EntitlementOriginDependency EntitlementOrigin = "Dependency"
 )
 
+// ServiceActivationRequestReference identifies the provider-side request that
+// initiated a ServiceEntitlement.
+type ServiceActivationRequestReference struct {
+	// Name is the activation request's metadata.name.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// UID is the activation request's metadata.uid.
+	//
+	// +kubebuilder:validation:Required
+	UID types.UID `json:"uid"`
+}
+
+// ProviderActivation records the immutable provenance of a provider-initiated
+// ServiceEntitlement. Admission restricts this field to the services
+// controller so provider callers cannot forge consumer-visible attribution.
+type ProviderActivation struct {
+	// RequestRef identifies the provider-side activation request.
+	//
+	// +kubebuilder:validation:Required
+	RequestRef ServiceActivationRequestReference `json:"requestRef"`
+
+	// ProviderProjectRef identifies the project that owned the service and
+	// submitted the activation request.
+	//
+	// +kubebuilder:validation:Required
+	ProviderProjectRef ProducerProjectReference `json:"providerProjectRef"`
+
+	// Actor identifies the authenticated provider principal that submitted the
+	// activation request.
+	//
+	// +kubebuilder:validation:Required
+	Actor ActorReference `json:"actor"`
+
+	// RequestedAt is when the provider submitted the activation request.
+	//
+	// +kubebuilder:validation:Required
+	RequestedAt metav1.Time `json:"requestedAt"`
+}
+
 // ServiceEntitlementSpec defines the desired state of a ServiceEntitlement.
 type ServiceEntitlementSpec struct {
 	// ServiceRef identifies the Service the consumer project wants to enable.
@@ -264,6 +358,15 @@ type ServiceEntitlementSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=1024
 	RequestMessage string `json:"requestMessage,omitempty"`
+
+	// ProviderActivation records that this entitlement was initiated by a
+	// provider and identifies the originating request and actor. It is absent
+	// for consumer-created and dependency entitlements. The services controller
+	// owns this immutable field.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="providerActivation is immutable"
+	ProviderActivation *ProviderActivation `json:"providerActivation,omitempty"`
 }
 
 // ServiceEntitlementStatus defines the observed state of a ServiceEntitlement.
@@ -331,6 +434,11 @@ type ServiceEntitlementStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	LastProvisioningEvaluation *metav1.Time `json:"lastProvisioningEvaluation,omitempty"`
+
+	// Setup is the durable aggregate setup attempt. It does not replace Ready
+	// (authorization) or Provisioned (declared-resource delivery).
+	// +optional
+	Setup *ServiceSetupStatus `json:"setup,omitempty"`
 }
 
 // ServiceEntitlement is the Schema for the serviceentitlements API. A consumer
@@ -348,6 +456,7 @@ type ServiceEntitlementStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Origin",type=string,JSONPath=`.status.origin`
 // +kubebuilder:printcolumn:name="Suspended",type=string,JSONPath=`.status.conditions[?(@.type=="Suspended")].status`
+// +kubebuilder:printcolumn:name="Setup",type=string,JSONPath=`.status.conditions[?(@.type=="SetupComplete")].status`
 type ServiceEntitlement struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -366,5 +475,9 @@ type ServiceEntitlementList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceEntitlement{}, &ServiceEntitlementList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceEntitlement{}, &ServiceEntitlementList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

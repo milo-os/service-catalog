@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ConsumerPhase describes the lifecycle state of a ServiceConsumer.
@@ -68,6 +69,15 @@ type ServiceConsumerSpec struct {
 	//
 	// +kubebuilder:validation:Required
 	ConsumerProjectRef ConsumerProjectRef `json:"consumerProjectRef"`
+
+	// RequestMessage is the consumer's message to the provider, copied from
+	// the ServiceEntitlement's spec.requestMessage so a provider deciding on a
+	// GatedByProvider request can read the consumer's stated use case. Set by
+	// the services controller; providers can't change it.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=1024
+	RequestMessage string `json:"requestMessage,omitempty"`
 
 	// Approval is the provider's decision for GatedByProvider services.
 	// The services controller creates the object; the provider writes only
@@ -144,5 +154,9 @@ type ServiceConsumerList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceConsumer{}, &ServiceConsumerList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceConsumer{}, &ServiceConsumerList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

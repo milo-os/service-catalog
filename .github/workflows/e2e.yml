@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (startsWith(github.ref, 'refs/heads/') && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) }}
+
 jobs:
   e2e:
     name: Chainsaw E2E
@@ -12,15 +16,15 @@ jobs:
       TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3.0.0
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -42,12 +46,6 @@ jobs:
           task --yes test-infra:kubectl -- wait kustomization/billing-crds \
             -n flux-system --for=condition=ready --timeout=120s
 
-      - name: Install LocationBinding CRD
-        env:
-          KUBECONFIG: .test-infra/kubeconfig
-        run: |
-          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
-
       - name: Install resourcemanager CRDs
         env:
           KUBECONFIG: .test-infra/kubeconfig
@@ -63,6 +61,15 @@ jobs:
             deployment/services-controller-manager \
             -n services-system --timeout=120s
 
+      - name: Dump operator logs on deployment failure
+        if: failure()
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- -n services-system get pods
+          task --yes test-infra:kubectl -- -n services-system logs \
+            deployment/services-controller-manager --all-pods=true --tail=-1 || true
+
       - name: Wait for webhook certificate to be ready
         env:
           KUBECONFIG: .test-infra/kubeconfig
@@ -72,7 +79,7 @@ jobs:
             -n services-system --timeout=120s
 
       - name: Install Chainsaw
-        uses: kyverno/action-install-chainsaw@v0.2.14
+        uses: kyverno/action-install-chainsaw@v0.2.15
 
       - name: Run E2E tests
         env:
@@ -86,15 +93,15 @@ jobs:
       TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3.0.0
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -111,15 +118,28 @@ jobs:
       # artifacts, as in the job above. The cluster this environment brings up
       # has no Flux, so the setup installs it.
       - name: Install Flux CLI
-        uses: fluxcd/flux2/action@v2.8.2
+        uses: fluxcd/flux2/action@v2.10.0
         with:
           version: v2.8.2
 
       - name: Set up the environment
+        id: setup
         run: task --yes e2e-milo:setup
 
       - name: Run multi-project E2E tests
         run: task --yes e2e-milo
+
+      # The concurrent-enablement suite enforces a time budget, and a budget
+      # that passes once and fails on the next run is worse than none. Repeat
+      # it so a flaky budget shows up here rather than on someone else's PR.
+      #
+      # It runs even when the step above fails: the timings it prints are worth
+      # having from a run that went red for some other suite's reason. It does
+      # not run without an environment, where it would only add a second red
+      # step that hides the first.
+      - name: Repeat the concurrent enablement timing suite
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: task --yes e2e-milo:timing REPEAT=5
 
       - name: Dump operator logs on failure
         if: failure()

@@ -75,10 +75,10 @@ type ServiceConfigurationSpec struct {
 	// +listMapKey=name
 	Metrics []MetricSpec `json:"metrics,omitempty"`
 
-	// Charges declares Usage, OneTime, and Recurring charges for this
-	// service. Fans out to ServicePricing resources distinguished by
-	// chargeType. Usage charges reference metrics by name; metrics
-	// themselves stay telemetry/quota-only.
+	// Charges is retired and must be empty: admission rejects it. Price a
+	// service with standalone ServicePricing manifests
+	// (billing.miloapis.com/v1alpha1) in its repo, one set per environment.
+	// The field is removed in the next API version.
 	//
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=64
@@ -107,7 +107,7 @@ type ServiceConfigurationSpec struct {
 	UserInterface *UserInterfaceSpec `json:"userInterface,omitempty"`
 
 	// Locations declares which location classes this service version
-	// supports. The LocationBindingReconciler uses it together with
+	// supports. The LocationProjectionReconciler uses it together with
 	// Location readiness and ServiceAvailability to decide which locations
 	// to project into entitled projects. Class selectors are used rather
 	// than specific location names so new PoPs of a supported class become
@@ -302,6 +302,19 @@ type MetricSpec struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +listType=atomic
 	Dimensions []string `json:"dimensions,omitempty"`
+
+	// Phase retires this metric while the rest of the configuration stays
+	// as it is. Unset, the metric follows spec.phase. Deprecated still
+	// accepts usage and keeps its history; Retired stops accepting usage
+	// (late events are quarantined) and keeps its history. A metric is
+	// retired instead of removed, because invoices, usage queries and
+	// exports join on its name. Moves forward one step at a time
+	// (Published, Deprecated, Retired); its MeterDefinition takes the later
+	// of this and spec.phase.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=Published;Deprecated;Retired
+	Phase Phase `json:"phase,omitempty"`
 }
 
 // ServiceBillingConfig groups all billing routing declarations.
@@ -446,6 +459,19 @@ type QuotaMetricRule struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinProperties=1
 	MetricCosts map[string]int64 `json:"metricCosts"`
+
+	// MetricCostConditions limits a metric's cost to the creations where a
+	// condition holds. Each key must be a key of metricCosts; metrics without
+	// an entry are charged on every creation. Each value is a pure CEL
+	// expression returning a bool, written without {{ }} delimiters, with the
+	// same variables as a ClaimCreationPolicy trigger constraint (for example
+	// "trigger.spec.ipFamily == 'IPv4'"). Expressions are held to the same
+	// rules Milo applies to trigger constraints: at most 1024 characters, and
+	// none of the words system, exec, eval, import, file, network, or
+	// subprocess anywhere in the text, in any case.
+	//
+	// +kubebuilder:validation:Optional
+	MetricCostConditions map[string]string `json:"metricCostConditions,omitempty"`
 }
 
 // QuotaMetricRuleSelector identifies a resource kind without pinning a version.
@@ -700,5 +726,9 @@ type ServiceConfigurationList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceConfiguration{}, &ServiceConfigurationList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceConfiguration{}, &ServiceConfigurationList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

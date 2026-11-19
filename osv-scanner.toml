@@ -1,0 +1,29 @@
+# Advisories accepted until the listed date. Re-evaluate before it lapses.
+
+# react-router 6.x is pulled in by Remix 2 (@remix-run/react and
+# @remix-run/server-runtime). Remix 2.17.5 is the latest Remix 2 release and
+# the advisories list fixes only on React Router 7.18.0 and later. Closing
+# these means migrating the UI from Remix 2 to React Router 7 framework mode.
+[[IgnoredVulns]]
+id = "GHSA-337j-9hxr-rhxg"
+ignoreUntil = 2027-02-28
+reason = "Fixed only in react-router 7.18.0+. The UI runs on Remix 2.17.5 (latest Remix 2), which pins react-router 6.x; the fix needs a migration to React Router 7."
+
+[[IgnoredVulns]]
+id = "GHSA-wrjc-x8rr-h8h6"
+ignoreUntil = 2027-02-28
+reason = "Fixed only in react-router 7.18.0+. The UI runs on Remix 2.17.5 (latest Remix 2), which pins react-router 6.x; the fix needs a migration to React Router 7."
+
+# minimatch 9.0.9 and glob 10.5.0 are dev-only dependencies of
+# @remix-run/dev (build tooling), not shipped in the runtime image. Fixes exist
+# only in minimatch 11.0.1 and glob 14.0.2, and the parents declare
+# minimatch ^9 and glob ^10, so an override would force a major across them.
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2027-02-28
+reason = "Fixed only in minimatch 11.0.1+ (no 9.x backport). Dev-only dependency of @remix-run/dev, which declares minimatch ^9; forcing 11 would cross a major its parents do not accept."
+
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+ignoreUntil = 2027-02-28
+reason = "Fixed only in glob 14.0.2+ (no 10.x backport). Dev-only dependency of @remix-run/dev via @npmcli/package-json and cacache, which declare glob ^10; forcing 14 would cross a major its parents do not accept."

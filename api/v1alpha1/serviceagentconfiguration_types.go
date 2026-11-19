@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ServiceAgentConfigurationSpec is the reviewed content a ServiceAgent
@@ -287,5 +288,9 @@ type ServiceAgentConfigurationList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceAgentConfiguration{}, &ServiceAgentConfigurationList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceAgentConfiguration{}, &ServiceAgentConfigurationList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

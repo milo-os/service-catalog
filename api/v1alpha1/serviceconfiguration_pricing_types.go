@@ -77,8 +77,8 @@ type PricingTierBand struct {
 }
 
 // ServiceChargeType distinguishes Usage, OneTime, and Recurring charges
-// declared on a ServiceConfiguration. Metrics stay telemetry/quota-only;
-// all commercial terms live on spec.charges[].
+// declared on a ServiceConfiguration. Retired with spec.charges; prices
+// are standalone ServicePricing manifests.
 //
 // +kubebuilder:validation:Enum=Usage;OneTime;Recurring
 type ServiceChargeType string
@@ -139,6 +139,40 @@ type UsageChargeOptions struct {
 	// +kubebuilder:validation:MinItems=1
 	// +listType=atomic
 	Rates []PricingRateEntry `json:"rates"`
+
+	// UnitConversion converts the metric's usage into pricingUnit before
+	// the rates apply, for a metric emitted in a different unit than it is
+	// priced in (e.g. bytes priced per GiB). Omitted when the metric is
+	// already emitted in pricingUnit. Rates and tier bounds are always in
+	// pricingUnit.
+	//
+	// +kubebuilder:validation:Optional
+	UnitConversion *UnitConversion `json:"unitConversion,omitempty"`
+}
+
+// UnitConversion converts usage emitted in the metric's unit into the
+// charge's pricingUnit: usage in pricingUnit = emitted usage /
+// meterUnitsPerPricingUnit. Fans out to the ServicePricing's
+// unitConversion.
+type UnitConversion struct {
+	// MeterUnitsPerPricingUnit is how many of the metric's units make one
+	// pricingUnit, as a positive decimal string (e.g. "1073741824" for a
+	// metric in bytes priced per GiB, "1000" for millicore-seconds priced
+	// per vCPU-second).
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^([1-9]\d*(\.\d+)?|0\.\d*[1-9]\d*)$`
+	MeterUnitsPerPricingUnit string `json:"meterUnitsPerPricingUnit"`
+
+	// Description explains the conversion to the people who maintain the
+	// pricing (e.g. "Memory is metered in byte-seconds and priced per
+	// GiB-second; 1 GiB = 2^30 bytes").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	Description string `json:"description"`
 }
 
 // OneTimeChargeOptions holds fields that apply only when chargeType is OneTime.
@@ -170,7 +204,8 @@ type RecurringChargeOptions struct {
 }
 
 // ServiceChargeSpec declares a Usage, OneTime, or Recurring charge for a
-// service. Fans out to a ServicePricing with the matching chargeType.
+// service. Retired: spec.charges must be empty, and prices are standalone
+// ServicePricing manifests instead.
 // Metrics are referenced by name for Usage charges and are never priced
 // in-place on the metric itself. Type-specific fields live under usage,
 // oneTime, or recurring so supported options are explicit per chargeType.

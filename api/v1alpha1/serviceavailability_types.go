@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // LocationClassName is the name of a LocationClass a Location can be backed
@@ -52,8 +53,7 @@ type ServiceLocationConfig struct {
 // LocationRef is a reference to a platform Location resource (cluster-scoped).
 // Location lives in a separate API group; this reference only constrains the
 // shape so ServiceAvailability does not take a compile-time dependency on the
-// Location Go type. The name is resolved against locations.miloapis.com first
-// and networking.datumapis.com second.
+// Location Go type. The name is resolved against locations.miloapis.com/v1alpha1.
 type LocationRef struct {
 	// Name is the metadata.name of the referenced Location.
 	//
@@ -71,7 +71,7 @@ type LocationRef struct {
 // hardware is Ready" (a Location concern) from "this service is
 // operational here" (a service-operator concern). Each service operator
 // creates a ServiceAvailability when it completes deployment and health
-// checks at a Location; the LocationBindingReconciler reads it as the
+// checks at a Location; the LocationProjectionReconciler reads it as the
 // third gate when deciding which locations to project into entitled
 // projects.
 //
@@ -102,7 +102,7 @@ type ServiceAvailabilitySpec struct {
 type ServiceAvailabilityStatus struct {
 	// Conditions represent the latest available observations of the
 	// availability's state. The Available condition is the gate the
-	// LocationBindingReconciler reads.
+	// LocationProjectionReconciler reads.
 	//
 	// +kubebuilder:validation:Optional
 	// +listType=map
@@ -130,6 +130,8 @@ type ServiceAvailabilityStatus struct {
 // +kubebuilder:printcolumn:name="Location",type=string,JSONPath=`.spec.locationRef.name`
 // +kubebuilder:printcolumn:name="Available",type=string,JSONPath=`.status.conditions[?(@.type=="Available")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:selectablefield:JSONPath=`.spec.serviceRef.name`
+// +kubebuilder:selectablefield:JSONPath=`.spec.locationRef.name`
 // The platform copy lives in the platform context; the copy mirrored into a
 // project has to be served in the project context too, or a consumer's control
 // plane does not list the kind and the mirror is skipped without an error.
@@ -152,5 +154,9 @@ type ServiceAvailabilityList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&ServiceAvailability{}, &ServiceAvailabilityList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &ServiceAvailability{}, &ServiceAvailabilityList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

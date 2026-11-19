@@ -6,6 +6,8 @@
 resources:
   - services-admin.yaml
   - services-approver.yaml
+  - services-activation-requester.yaml
   - services-entitlement-admin.yaml
   - services-entitlement-viewer.yaml
+  - services-provider-activation.yaml
   - services-viewer.yaml

@@ -187,7 +187,7 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = defaultApprovalTimeout
 	}
-	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s access to become active for project %q.\n", r.Service.noun(), r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "Waiting for %s setup to complete for project %q.\n", r.Service.noun(), r.Project)
 	_, _ = fmt.Fprintf(r.IO.Err, "Someone reviews this by hand, so there is no set time; press Ctrl-C to stop waiting.\n")
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -207,9 +207,13 @@ func (r Requester) waitLoop(ctx context.Context, timeout time.Duration) error {
 		return reportGeneric(r.IO, err, "waiting for %s access: %v", r.Service.noun(), err)
 	}
 	if timedOut {
-		_, _ = fmt.Fprintf(r.IO.Err, "\nStill waiting for approval after %s. Safe to re-run.\n", timeout)
+		blocker := setupBlockingReason(ent)
+		if blocker == "" {
+			blocker = "authorization"
+		}
+		_, _ = fmt.Fprintf(r.IO.Err, "\nSetup is still waiting on %s after %s. Safe to re-run.\n", blocker, timeout)
 		_, _ = fmt.Fprintf(r.IO.Err, "%s\n", r.Service.pendingNextSteps())
-		return newError(ExitPending, StatePendingApproval, "timed out while pending", nil)
+		return newError(ExitPending, state, "timed out while setup remained incomplete", nil)
 	}
 	switch state {
 	case StateActive:
@@ -242,7 +246,7 @@ func (r Requester) waitFirstStatus(ctx context.Context, resourceVersion string) 
 }
 
 func (r Requester) printActive() {
-	_, _ = fmt.Fprintf(r.IO.Err, "\n%s is now enabled for project %q.\n", r.Service.DisplayName, r.Project)
+	_, _ = fmt.Fprintf(r.IO.Err, "\n%s setup is complete for project %q.\n", r.Service.DisplayName, r.Project)
 }
 
 func (r Requester) printSubmitted(state State, e *servicesv1alpha1.ServiceEntitlement) {

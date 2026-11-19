@@ -102,7 +102,7 @@ func TestEnsureQuotaGrants_CreatesGrantsWhenActive(t *testing.T) {
 	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, limits)
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc, sc)
+	rootClient := newServiceRootClient(svc, sc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -203,7 +203,7 @@ func TestEnsureQuotaGrants_SkipsPatchWhenGrantUnchanged(t *testing.T) {
 	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, limits)
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc, sc)
+	rootClient := newServiceRootClient(svc, sc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -263,7 +263,7 @@ func TestEnsureQuotaGrants_SkippedWhenNotActive(t *testing.T) {
 	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, limits)
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc, sc)
+	rootClient := newServiceRootClient(svc, sc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -356,7 +356,7 @@ func TestPruneQuotaGrants_DeletesGrantsOnFinalization(t *testing.T) {
 		},
 	}
 
-	rootClient := newFakeClient(svc, sc)
+	rootClient := newServiceRootClient(svc, sc)
 	consumerClient := newFakeClient(ent, existingGrant)
 	providerClient := newFakeClient()
 
@@ -414,7 +414,7 @@ func TestEnsureQuotaGrants_PrunesStaleGrant(t *testing.T) {
 	sc := newPublishedServiceConfiguration(testServiceSlug+"-config", testServiceSlug, []servicesv1alpha1.QuotaLimitSpec{limitL1, limitL2})
 	ent := newEntitlement(testServiceSlug, testServiceSlug)
 
-	rootClient := newFakeClient(svc, sc)
+	rootClient := newServiceRootClient(svc, sc)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 
@@ -611,7 +611,7 @@ func TestEnsureQuotaGrants_BillingEntitlementGating(t *testing.T) {
 		},
 	}
 
-	rootClient := newFakeClient(svc, sc, binding, be, offerWithoutService)
+	rootClient := newServiceRootClient(svc, sc, binding, be, offerWithoutService)
 	consumerClient := newFakeClient(ent)
 	providerClient := newFakeClient()
 

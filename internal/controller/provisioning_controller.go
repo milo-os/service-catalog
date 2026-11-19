@@ -4,10 +4,13 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,30 +19,82 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 	"go.miloapis.com/service-catalog/internal/provisioning"
 )
 
+const labelServiceName = "services.miloapis.com/service-name"
+
 const (
-	// provisioningResyncInterval bounds how long a change no watch here observes
-	// takes to reach consumer projects. Declaration edits do not wait for it,
-	// because SetupWithManager watches ServiceConfiguration.
-	provisioningResyncInterval = 5 * time.Minute
+	// provisioningResyncInterval is how often a settled entitlement is
+	// provisioned again with nothing having changed. Changes to the entitlement
+	// and to its declaration arrive as events and do not wait for it. What
+	// does is drift in the installed objects themselves, a customer editing or
+	// deleting one: this operator does not watch those kinds, because each
+	// would cost a watch per project on Milo, so the resync is what repairs
+	// them.
+	provisioningResyncInterval = time.Hour
+
+	// provisioningResyncJitter spreads each resync over up to this fraction
+	// of the interval, so entitlements engaged together at startup do not all
+	// come due in the same minute an hour later.
+	provisioningResyncJitter = 0.1
+
+	// provisioningBlockedRetryInterval is how soon an entitlement with a
+	// declaration that could not be installed is tried again. Failures retry
+	// sooner on their own schedule, but at most this long apart. A
+	// declaration blocked by something the project has to change, such as a
+	// name an object of the customer's already holds, is tried this often
+	// too, because no watch here sees that name being freed.
+	provisioningBlockedRetryInterval = 5 * time.Minute
 
 	// provisioningHeartbeatInterval caps how stale LastProvisioningEvaluation
 	// may get when nothing else changed, so a dead fan-out stays detectable
-	// without patching on every five-minute resync.
+	// without patching on every resync.
 	provisioningHeartbeatInterval = time.Hour
+
+	// provisioningFailureRetryMin is how soon a declaration that failed to
+	// install is tried again while its failures are recent. Failures right
+	// after enablement are usually brief: the owning service's API or webhook
+	// may not have reached the new project yet. Compute's InstanceType webhook,
+	// for one, refuses the install until the compute operator has engaged the
+	// project.
+	provisioningFailureRetryMin = time.Second
+
+	// provisioningFailureRetryFraction sets the retry delay to this fraction
+	// of how long the entitlement has been failing, between
+	// provisioningFailureRetryMin and provisioningBlockedRetryInterval. The retry
+	// after the cause clears therefore comes at most about a tenth later than
+	// it could have. A doubling backoff instead waited up to as long again:
+	// a webhook that recovered after 70s was retried at 126s.
+	provisioningFailureRetryFraction = 10
+
+	// provisioningMaxConcurrentReconciles is how many entitlements this
+	// controller provisions at once. A reconcile spends most of its time on API
+	// round-trips to one consumer project; running them serially lets a slow or
+	// rate-limited project hold up unrelated projects behind it.
+	//
+	// Five matches the other project fan-out controllers and keeps the extra API
+	// pressure modest. Parallel reconciles remain isolated: every status patch
+	// targets its triggering entitlement, while object pruning is restricted by
+	// that entitlement's name and controller owner UID. Server-side apply makes
+	// repeated writes atomic and idempotent.
+	provisioningMaxConcurrentReconciles = 5
 
 	// provisioningFieldManager identifies writes this reconciler makes, to
 	// installed objects and to the entitlement's provisioning status. It
@@ -69,6 +124,27 @@ const (
 	reasonKindNotServed  = "KindNotServed"
 	reasonApplyFailed    = "ApplyFailed"
 
+	// reasonObjectExists marks a declaration with at least one object whose
+	// name is already taken in the project by something the platform did not
+	// install for this entitlement. That object is left exactly as it is; the
+	// declaration's other objects still install.
+	reasonObjectExists = "ObjectExists"
+
+	// reasonObjectAdopted marks a declaration that manages an object which
+	// existed before this entitlement did. Earlier versions of this controller
+	// took such objects over. They are reported rather than released, because
+	// releasing them would itself be an ownership change nobody asked for.
+	reasonObjectAdopted = "ObjectAdopted"
+
+	// reasonProvidedByProducer marks a declaration whose objects, in the
+	// service's own producer project, are already held by objects the platform
+	// did not install. A declaration usually hands consumers a reference to
+	// something the producer defines, and the producer project holds the
+	// definition itself under the same name. That object is left exactly as it
+	// is, and the declaration counts as delivered rather than blocking setup
+	// forever on a conflict nobody needs resolved.
+	reasonProvidedByProducer = "ProvidedByProducer"
+
 	// reasonStatusNotApplied marks a declaration whose objects are installed
 	// but whose declared status did not reach at least one of them. The state
 	// stays Installed, because delivery succeeded and only the status is
@@ -77,8 +153,9 @@ const (
 
 	// maxLedgerMessageBytes matches the schema's MaxLength for a ledger entry's
 	// message. A declaration that installs many objects collects one note per
-	// object and can exceed the limit. The API server refuses an over-long
-	// message, which loses the whole ledger write.
+	// object, and a failure message embeds the API server's own error; either
+	// can exceed the limit. The API server refuses an over-long message, which
+	// loses the whole ledger write, so writeStatus truncates every entry.
 	maxLedgerMessageBytes = 1024
 
 	// authorizationCaveat explains the gap to the consumer, on every installed
@@ -106,15 +183,92 @@ const (
 type ProvisioningReconciler struct {
 	// rootClient reads cluster-scoped ServiceConfiguration objects from the
 	// root key space; they live in no project VCP, so a per-cluster client
-	// cannot see them. Mirrors LocationBindingReconciler.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	// cannot see them. Mirrors LocationProjectionReconciler.
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
+
+	// failingSince records when each entitlement's current run of provisioning
+	// failures began, keyed by UID. It paces retries; see failureRetryDelay.
+	failingSinceMu sync.Mutex
+	failingSince   map[types.UID]time.Time
+	// clock is the time source for failingSince; nil means the real clock.
+	clock clock.PassiveClock
+}
+
+func (r *ProvisioningReconciler) now() time.Time {
+	if r.clock == nil {
+		return time.Now()
+	}
+	return r.clock.Now()
+}
+
+// failureRetryDelay records another failed pass for the entitlement and
+// returns how long to wait before the next one: a tenth of how long it has
+// been failing, but at least provisioningFailureRetryMin and at most
+// provisioningBlockedRetryInterval.
+func (r *ProvisioningReconciler) failureRetryDelay(uid types.UID) time.Duration {
+	now := r.now()
+	r.failingSinceMu.Lock()
+	if r.failingSince == nil {
+		r.failingSince = make(map[types.UID]time.Time)
+	}
+	since, ok := r.failingSince[uid]
+	if !ok {
+		since = now
+		r.failingSince[uid] = now
+	}
+	r.failingSinceMu.Unlock()
+
+	delay := now.Sub(since) / provisioningFailureRetryFraction
+	return min(max(delay, provisioningFailureRetryMin), provisioningBlockedRetryInterval)
+}
+
+// clearFailureRetry forgets an entitlement's failure history once nothing it
+// declares is failing, so a later failure starts again from the short delay.
+func (r *ProvisioningReconciler) clearFailureRetry(uid types.UID) {
+	now := r.now()
+	r.failingSinceMu.Lock()
+	defer r.failingSinceMu.Unlock()
+	delete(r.failingSince, uid)
+	// An entitlement deleted while failing never clears its own entry. Drop
+	// entries far older than any retry cycle so they do not accumulate.
+	for other, since := range r.failingSince {
+		if now.Sub(since) > provisioningHeartbeatInterval*24 {
+			delete(r.failingSince, other)
+		}
+	}
+}
+
+// resyncDelay is how long a settled entitlement waits for its next resync.
+func resyncDelay() time.Duration {
+	return wait.Jitter(provisioningResyncInterval, provisioningResyncJitter)
+}
+
+// allInstalled reports whether every declaration in the ledger was installed.
+func allInstalled(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
+	for i := range ledger {
+		if ledger[i].State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+			return false
+		}
+	}
+	return true
+}
+
+func hasFailedResource(ledger []servicesv1alpha1.ProvisionedResourceStatus) bool {
+	for i := range ledger {
+		if ledger[i].State == servicesv1alpha1.ProvisionedResourceStateFailed {
+			return true
+		}
+	}
+	return false
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 // This controller holds no per-kind RBAC grants, and could not: the kinds are
 // named by providers at runtime and the operator's certificate carries
 // system:masters, so RBAC bounds nothing here. What bounds it is where the
@@ -134,17 +288,35 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, fmt.Errorf("provisioning reconcile invoked without a cluster name")
 	}
 
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// The queued entitlement may be deleting and need explicit pruning.
+			// Retry every confirmed Project until its control plane is reachable;
+			// only a confirmed-absent Project is safe to forget.
+			if project != nil {
+				return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
+	// Whether a name is already taken decides whether the platform may write
+	// to it at all, so it is read live: a lagging cache would hand a customer's
+	// object to the apply that follows.
+	consumerReader := consumerCluster.GetAPIReader()
 
 	var entitlement servicesv1alpha1.ServiceEntitlement
 	if err := consumerClient.Get(ctx, req.NamespacedName, &entitlement); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Projected objects carry a controller owner reference to the
-			// entitlement and are reclaimed by garbage collection.
+			// The entitlement's finalizer is released only after its
+			// provisioned objects were swept, so nothing is left to do.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get ServiceEntitlement: %w", err)
@@ -154,7 +326,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	// than Active tears down: pending approval, rejected, deleting.
 	if !entitlement.DeletionTimestamp.IsZero() ||
 		entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
 		if !entitlement.DeletionTimestamp.IsZero() {
@@ -164,6 +336,11 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, r.writeStatus(ctx, consumerClient, &entitlement, nil,
 			servicesv1alpha1.ReasonEntitlementNotActive,
 			"Resources are installed once this service is enabled and any approval has been granted.")
+	}
+
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		logger.V(1).Info("project is absent or terminating; skipping provisioning")
+		return ctrl.Result{}, nil
 	}
 
 	serviceRefName := entitlement.Spec.ServiceRef.Name
@@ -176,7 +353,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		// Nothing declares what this project is owed yet. Do not prune on the
 		// strength of a lookup that found nothing; retry.
 		logger.V(1).Info("no published ServiceConfiguration for service yet, requeuing", "service", serviceRefName)
-		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, nil
+		return ctrl.Result{RequeueAfter: resyncDelay()}, nil
 	}
 
 	serviceName := sc.Status.ServiceName
@@ -184,11 +361,16 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		serviceName = serviceRefName
 	}
 
+	inProducerProject, err := r.isProducerProject(ctx, serviceRefName, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if sc.Spec.Provisioning == nil || len(sc.Spec.Provisioning.Resources) == 0 {
-		if err := r.pruneAll(ctx, consumerClient, &entitlement); err != nil {
+		if err := pruneProvisioned(ctx, consumerReader, consumerClient, &entitlement); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: provisioningResyncInterval}, r.writeStatus(
+		return ctrl.Result{RequeueAfter: resyncDelay()}, r.writeStatus(
 			ctx, consumerClient, &entitlement, nil,
 			servicesv1alpha1.ReasonNothingToProvision,
 			fmt.Sprintf("%s does not install any resources into projects.", serviceName))
@@ -202,7 +384,7 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 	for i := range sc.Spec.Provisioning.Resources {
 		decl := &sc.Spec.Provisioning.Resources[i]
 		ledger = append(ledger, r.reconcileResource(
-			ctx, consumerClient, &entitlement, serviceName, decl, installed[decl.Name]))
+			ctx, consumerClient, consumerReader, &entitlement, serviceName, decl, installed[decl.Name], inProducerProject))
 	}
 
 	// Objects installed by a declaration that is no longer there. The
@@ -213,7 +395,36 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: provisioningResyncInterval},
+	// The entitlement was read before this pass installed anything. If it was
+	// deleted meanwhile, teardown may already have swept the project and
+	// released the entitlement, so an object written after that sweep would be
+	// left behind: garbage collection cannot be relied on to reclaim it. Check
+	// again, live, and remove what this pass wrote.
+	if withdrawn, err := entitlementWithdrawn(ctx, consumerReader, &entitlement); err != nil {
+		return ctrl.Result{}, err
+	} else if withdrawn {
+		logger.Info("entitlement was deleted while provisioning; removing what was installed")
+		kinds := allInstalledKinds(&entitlement)
+		for i := range ledger {
+			kinds = union(kinds, gvksOf(ledger[i].Kinds))
+		}
+		return ctrl.Result{}, sweepProvisioned(ctx, consumerReader, consumerClient, &entitlement, kinds, nil)
+	}
+
+	// A failed install is retried on its own short schedule. Waiting for the
+	// resync left setup stalled for minutes behind failures that cleared within
+	// seconds, because nothing else re-triggers this entitlement once it settles.
+	// A declaration blocked for another reason is retried on a slower one.
+	requeue := resyncDelay()
+	if hasFailedResource(ledger) {
+		requeue = r.failureRetryDelay(entitlement.UID)
+	} else {
+		r.clearFailureRetry(entitlement.UID)
+		if !allInstalled(ledger) {
+			requeue = provisioningBlockedRetryInterval
+		}
+	}
+	return ctrl.Result{RequeueAfter: requeue},
 		r.writeStatus(ctx, consumerClient, &entitlement, ledger, "", "")
 }
 
@@ -224,13 +435,19 @@ func (r *ProvisioningReconciler) Reconcile(ctx context.Context, req mcreconcile.
 // installed is what this declaration put in this project on the last pass. It
 // is carried on any path that does not converge, so a declaration that stops
 // resolving does not erase the record teardown depends on.
+//
+// inProducerProject is true when this project is the service's own producer
+// project. There, a declared name already held by an object the platform did
+// not install is the producer's own definition, and counts as delivered.
 func (r *ProvisioningReconciler) reconcileResource(
 	ctx context.Context,
 	consumerClient client.Client,
+	consumerReader client.Reader,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	decl *servicesv1alpha1.ProvisionedResourceSpec,
 	installed []schema.GroupVersionKind,
+	inProducerProject bool,
 ) servicesv1alpha1.ProvisionedResourceStatus {
 	entry := servicesv1alpha1.ProvisionedResourceStatus{Name: decl.Name, Kinds: kindRefs(installed)}
 
@@ -259,12 +476,30 @@ func (r *ProvisioningReconciler) reconcileResource(
 		objects = append(objects, obj)
 	}
 
-	var statusNotes []string
+	var statusNotes, adoptedNotes, conflicts, provided []string
 	desired := make(map[schema.GroupVersionKind]map[string]struct{}, len(objects))
 	for _, obj := range objects {
-		note, err := r.upsert(ctx, consumerClient, entitlement, serviceName, decl.Name, obj)
-		if note != "" {
-			statusNotes = append(statusNotes, note)
+		result, err := r.upsert(ctx, consumerClient, consumerReader, entitlement, serviceName, decl.Name, obj)
+		if result.statusNote != "" {
+			statusNotes = append(statusNotes, result.statusNote)
+		}
+		if result.adoptedNote != "" {
+			adoptedNotes = append(adoptedNotes, result.adoptedNote)
+		}
+		var exists *objectExistsError
+		if errors.As(err, &exists) && inProducerProject && !exists.platform {
+			// The producer's own object. Left alone like any other conflict,
+			// but it is what the declaration points at, so nothing is missing.
+			provided = append(provided, fmt.Sprintf("%s %q", obj.GVK.Kind, obj.Name))
+			continue
+		}
+		if errors.As(err, &exists) {
+			// Not a reason to abandon the declaration: the object is left
+			// alone and kept out of desired, and pruning cannot reach it
+			// because it carries neither this entitlement's labels nor its
+			// owner reference.
+			conflicts = append(conflicts, exists.Error())
+			continue
 		}
 		if err != nil {
 			if apimeta.IsNoMatchError(err) {
@@ -277,8 +512,10 @@ func (r *ProvisioningReconciler) reconcileResource(
 			}
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not install %s %q: %v",
-				serviceName, obj.GVK.Kind, obj.Name, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not install %s %q: %s",
+				serviceName, obj.GVK.Kind, obj.Name,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", obj.GVK.Kind, "name", obj.Name),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 		if desired[obj.GVK] == nil {
@@ -295,15 +532,29 @@ func (r *ProvisioningReconciler) reconcileResource(
 		if err := r.prune(ctx, consumerClient, entitlement, gvk, decl.Name, desired[gvk]); err != nil {
 			entry.State = servicesv1alpha1.ProvisionedResourceStateFailed
 			entry.Reason = reasonApplyFailed
-			entry.Message = fmt.Sprintf("%s could not remove withdrawn %s objects: %v",
-				serviceName, gvk.Kind, err)
+			entry.Message = truncateMessage(fmt.Sprintf("%s could not remove withdrawn %s objects: %s",
+				serviceName, gvk.Kind,
+				customerErrorReason(ctx, err, "entitlement", entitlement.Name, "kind", gvk.Kind),
+			), maxLedgerMessageBytes)
 			return entry
 		}
 	}
 
 	entry.Kinds = kindRefs(kindsOf(objects))
+	entry.ObjectCount = int32(len(objects) - len(conflicts) - len(provided))
+
+	// A name the project already uses will not free itself on a retry, so the
+	// declaration is Unprovisionable until the customer renames or removes
+	// their object, or the provider renames the declared one. The next resync
+	// installs it once the name is free.
+	if len(conflicts) > 0 {
+		entry.State = servicesv1alpha1.ProvisionedResourceStateUnprovisionable
+		entry.Reason = reasonObjectExists
+		entry.Message = truncateMessage(strings.Join(conflicts, " "), maxLedgerMessageBytes)
+		return entry
+	}
+
 	entry.State = servicesv1alpha1.ProvisionedResourceStateInstalled
-	entry.ObjectCount = int32(len(objects))
 
 	// AUTHORIZATION GAP: reported, not closed.
 	//
@@ -333,11 +584,117 @@ func (r *ProvisioningReconciler) reconcileResource(
 		entry.Reason = reasonStatusNotApplied
 		entry.Message = truncateMessage(strings.Join(statusNotes, " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
 	}
+
+	// Adoption outranks a missing status: disabling the service deletes these
+	// objects, and the customer created them.
+	if len(adoptedNotes) > 0 {
+		entry.Reason = reasonObjectAdopted
+		entry.Message = truncateMessage(
+			strings.Join(append(adoptedNotes, statusNotes...), " ")+" "+authorizationCaveat, maxLedgerMessageBytes)
+		return entry
+	}
+
+	if len(provided) > 0 {
+		entry.Reason = reasonProvidedByProducer
+		entry.Message = truncateMessage(fmt.Sprintf(
+			"This is %s's producer project, which already holds %s, so the platform left them unchanged.",
+			serviceName, strings.Join(provided, ", ")), maxLedgerMessageBytes)
+	}
 	return entry
+}
+
+// isProducerProject reports whether project is the producer project of the
+// service an entitlement names. A Service that cannot be found makes no project
+// its producer: provisioning then treats every project as a consumer, as it did
+// before producer projects were recognised.
+func (r *ProvisioningReconciler) isProducerProject(ctx context.Context, serviceRefName, project string) (bool, error) {
+	svc, err := resolveService(ctx, r.rootClient, serviceRefName)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve Service %q: %w", serviceRefName, err)
+	}
+	return svc.Spec.Owner.ProducerProjectRef.Name == project, nil
+}
+
+// objectExistsError reports a declared object whose name is already taken in
+// the consumer project by an object this entitlement did not install.
+type objectExistsError struct {
+	kind, name string
+	// owner says who holds the name, for the consumer reading the ledger.
+	owner string
+	// platform is true when the platform installed the holder, for another
+	// entitlement or an earlier enablement of this one.
+	platform bool
+}
+
+func (e *objectExistsError) Error() string {
+	return fmt.Sprintf("%s %q already exists in this project and %s, so it was left unchanged.",
+		e.kind, e.name, e.owner)
+}
+
+// upsertResult carries what upsert has to tell the ledger about an object that
+// did install.
+type upsertResult struct {
+	// statusNote is set when the object installed but its declared status did
+	// not.
+	statusNote string
+	// adoptedNote is set when the object predates this entitlement.
+	adoptedNote string
+}
+
+// claimExisting decides whether the platform may write to an object that
+// already holds the declared name.
+//
+// It may only when this entitlement installed it. The controller owner
+// reference is the authority, because garbage collection acts on it: an object
+// controlled by anything else, including an earlier entitlement of the same
+// name, is not this one's to change. The labels are the fallback for an object
+// with no controller at all, which can only be this entitlement's if someone
+// removed the owner reference afterwards.
+func claimExisting(
+	existing *unstructured.Unstructured,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+	declName string,
+	obj provisioning.Object,
+) error {
+	labels := existing.GetLabels()
+	if ref := metav1.GetControllerOf(existing); ref != nil {
+		if ref.UID == entitlement.UID {
+			return nil
+		}
+		owner := "is managed by something other than the platform"
+		platform := ref.Kind == "ServiceEntitlement"
+		if platform {
+			owner = "was installed by the platform for another service"
+			if ref.Name == entitlement.Name {
+				owner = "belongs to an earlier enablement of this service that is still being removed"
+			}
+		}
+		return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner, platform: platform}
+	}
+	if labels[labelManagedBy] == labelManagedByValue &&
+		labels[labelEntitlementName] == entitlement.Name &&
+		labels[labelProvisionedResource] == declName {
+		return nil
+	}
+	owner := "was not installed by the platform"
+	platform := labels[labelManagedBy] == labelManagedByValue
+	if platform {
+		owner = "was installed by the platform for another service"
+	}
+	return &objectExistsError{kind: obj.GVK.Kind, name: obj.Name, owner: owner, platform: platform}
 }
 
 // upsert writes one declared object into the consumer project, and its declared
 // status alongside it.
+//
+// It writes only to a name that is free or that this entitlement already
+// holds. An object someone else created under the declared name is left
+// untouched and reported as an *objectExistsError: the forced apply below would
+// otherwise rewrite it, label it, and hand it to the entitlement, so disabling
+// the service would delete the customer's object.
 //
 // The apply is server-side and forced, so the fields the declaration states are
 // the fields the object has: a consumer edit to any of them is reverted, and a
@@ -345,17 +702,44 @@ func (r *ProvisioningReconciler) reconcileResource(
 // provisioning labels and the owner reference — it adds here, not in the
 // declaration, which is why a provider cannot author either.
 //
-// The returned note is non-empty when the object installed but its declared
-// status did not. The object is usable by everything that does not read its
-// status, so upsert reports that rather than failing.
+// The result's status note is non-empty when the object installed but its
+// declared status did not. The object is usable by everything that does not
+// read its status, so upsert reports that rather than failing.
 func (r *ProvisioningReconciler) upsert(
 	ctx context.Context,
 	consumerClient client.Client,
+	consumerReader client.Reader,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	serviceName string,
 	declName string,
 	obj provisioning.Object,
-) (string, error) {
+) (upsertResult, error) {
+	var result upsertResult
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(obj.GVK)
+	switch err := consumerReader.Get(ctx, client.ObjectKey{Name: obj.Name}, existing); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return result, err
+	default:
+		if err := claimExisting(existing, entitlement, declName, obj); err != nil {
+			return result, err
+		}
+		// Nothing this entitlement installed can be older than it, so an
+		// older object was someone else's before an earlier version of this
+		// controller took it over. Releasing it here would be another silent
+		// ownership change, so it stays managed and the ledger says so.
+		created := existing.GetCreationTimestamp()
+		if created.Before(&entitlement.CreationTimestamp) {
+			log.FromContext(ctx).Info("provisioned object predates its entitlement and was adopted",
+				"kind", obj.GVK.Kind, "name", obj.Name)
+			result.adoptedNote = fmt.Sprintf(
+				"%s %q existed before %s was enabled and was taken over by the platform; disabling the service will delete it.",
+				obj.GVK.Kind, obj.Name, serviceName)
+		}
+	}
+
 	u := obj.Unstructured()
 
 	l := u.GetLabels()
@@ -373,7 +757,7 @@ func (r *ProvisioningReconciler) upsert(
 	// only teardown path that does not depend on the project purger, which does
 	// not delete cluster-scoped resources.
 	if err := controllerutil.SetControllerReference(entitlement, u, r.Scheme); err != nil {
-		return "", fmt.Errorf("set controller reference: %w", err)
+		return result, fmt.Errorf("set controller reference: %w", err)
 	}
 
 	// This apply carries status so a kind with no status subresource, where
@@ -381,10 +765,11 @@ func (r *ProvisioningReconciler) upsert(
 	// one drops status here, and upsertStatus writes it.
 	if err := consumerClient.Apply(ctx, client.ApplyConfigurationFromUnstructured(u),
 		client.FieldOwner(provisioningFieldManager), client.ForceOwnership); err != nil {
-		return "", err
+		return result, err
 	}
 
-	return r.upsertStatus(ctx, consumerClient, serviceName, obj), nil
+	result.statusNote = r.upsertStatus(ctx, consumerClient, serviceName, obj)
+	return result, nil
 }
 
 // upsertStatus applies the status a declaration states to the installed
@@ -441,8 +826,9 @@ func (r *ProvisioningReconciler) upsertStatus(
 			"%s declares a status for %s %q, but another controller in this project manages it, so the declared status was not applied.",
 			serviceName, obj.GVK.Kind, obj.Name)
 	default:
-		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %v.",
-			serviceName, obj.GVK.Kind, obj.Name, err)
+		return fmt.Sprintf("%s installed %s %q but could not apply its declared status: %s.",
+			serviceName, obj.GVK.Kind, obj.Name,
+			customerErrorReason(ctx, err, "kind", obj.GVK.Kind, "name", obj.Name, "subresource", "status"))
 	}
 }
 
@@ -453,7 +839,12 @@ func truncateMessage(message string, limit int) string {
 		return message
 	}
 	const ellipsis = "..."
-	return message[:limit-len(ellipsis)] + ellipsis
+	cut := limit - len(ellipsis)
+	// Never split a multi-byte character: the result must stay valid UTF-8.
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return message[:cut] + ellipsis
 }
 
 // prune deletes objects this declaration previously installed that it no longer
@@ -500,18 +891,40 @@ func (r *ProvisioningReconciler) prune(
 	return nil
 }
 
-// pruneAll removes everything provisioned for this entitlement.
+// pruneProvisioned removes everything provisioned for this entitlement.
 //
 // The kinds come from the entitlement's own ledger, not from the configuration:
 // teardown runs when the entitlement stops being Active, which includes the
 // case where nothing declares anything any more. What was installed here is
 // what this project recorded receiving.
-func (r *ProvisioningReconciler) pruneAll(
+//
+// Objects are listed through reader, which should read live. Teardown often
+// follows an install by moments, and a cache that has not seen the install
+// yet would let the object outlive the entitlement.
+func pruneProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 ) error {
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+	return sweepProvisioned(ctx, reader, consumerClient, entitlement, allInstalledKinds(entitlement), nil)
+}
+
+// entitlementWithdrawn reports whether the entitlement has been deleted, or
+// replaced by a new one of the same name, since it was read.
+func entitlementWithdrawn(
+	ctx context.Context,
+	reader client.Reader,
+	entitlement *servicesv1alpha1.ServiceEntitlement,
+) (bool, error) {
+	var live servicesv1alpha1.ServiceEntitlement
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(entitlement), &live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to re-read ServiceEntitlement: %w", err)
+	}
+	return live.UID != entitlement.UID || !live.DeletionTimestamp.IsZero(), nil
 }
 
 // pruneUndeclared removes objects installed by a declaration the configuration
@@ -530,13 +943,14 @@ func (r *ProvisioningReconciler) pruneUndeclared(
 	// The ledger still describes the previous reconcile at this point, and a
 	// withdrawn declaration names no kind, so the ledger is the only record of
 	// what it installed.
-	return r.sweep(ctx, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
+	return sweepProvisioned(ctx, consumerClient, consumerClient, entitlement, allInstalledKinds(entitlement), keep)
 }
 
-// sweep deletes every object this entitlement owns, of the given kinds, whose
-// declaration is not in keep. A nil keep removes everything.
-func (r *ProvisioningReconciler) sweep(
+// sweepProvisioned deletes every object this entitlement owns, of the given
+// kinds, whose declaration is not in keep. A nil keep removes everything.
+func sweepProvisioned(
 	ctx context.Context,
+	reader client.Reader,
 	consumerClient client.Client,
 	entitlement *servicesv1alpha1.ServiceEntitlement,
 	kinds []schema.GroupVersionKind,
@@ -545,7 +959,7 @@ func (r *ProvisioningReconciler) sweep(
 	for _, gvk := range kinds {
 		var list unstructured.UnstructuredList
 		list.SetGroupVersionKind(provisioning.ListGVK(gvk))
-		if err := consumerClient.List(ctx, &list, client.MatchingLabels{
+		if err := reader.List(ctx, &list, client.MatchingLabels{
 			labelManagedBy:       labelManagedByValue,
 			labelEntitlementName: entitlement.Name,
 		}); err != nil {
@@ -643,11 +1057,9 @@ func union(a, b []schema.GroupVersionKind) []schema.GroupVersionKind {
 // writeStatus records the ledger and the Provisioned condition on the
 // entitlement, in the consumer's own control plane.
 //
-// The condition is patched rather than written with the rest of the status:
-// ServiceEntitlementReconciler owns Ready and ProjectSuspensionPropagation owns
-// Suspended on the same object, so a full status update would have the three
-// clobbering each other. Ready stays untouched here, because a delivery failure
-// is not a denial of access.
+// Only provisioningStatusOwner's fields are applied: other controllers own
+// Ready, Suspended and setup on the same object. Ready stays untouched here,
+// because a delivery failure is not a denial of access.
 func (r *ProvisioningReconciler) writeStatus(
 	ctx context.Context,
 	consumerClient client.Client,
@@ -658,6 +1070,9 @@ func (r *ProvisioningReconciler) writeStatus(
 	before := entitlement.DeepCopy()
 
 	sort.Slice(ledger, func(i, j int) bool { return ledger[i].Name < ledger[j].Name })
+	for i := range ledger {
+		ledger[i].Message = truncateMessage(ledger[i].Message, maxLedgerMessageBytes)
+	}
 	entitlement.Status.ProvisionedResources = ledger
 
 	status := metav1.ConditionTrue
@@ -700,10 +1115,10 @@ func (r *ProvisioningReconciler) writeStatus(
 		ObservedGeneration: entitlement.Generation,
 	})
 
-	// Nothing changed: skip the patch, or every resync bumps resourceVersion
+	// Nothing changed: skip the write, or every resync bumps resourceVersion
 	// and re-triggers every other controller watching ServiceEntitlement.
 	changed := !apiequality.Semantic.DeepEqual(before.Status.ProvisionedResources, entitlement.Status.ProvisionedResources) ||
-		!apiequality.Semantic.DeepEqual(before.Status.Conditions, entitlement.Status.Conditions)
+		!conditionsEqual(before.Status.Conditions, entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
 	stale := before.Status.LastProvisioningEvaluation == nil ||
 		time.Since(before.Status.LastProvisioningEvaluation.Time) >= provisioningHeartbeatInterval
 	if !changed && !stale {
@@ -713,9 +1128,8 @@ func (r *ProvisioningReconciler) writeStatus(
 	now := metav1.Now()
 	entitlement.Status.LastProvisioningEvaluation = &now
 
-	if err := consumerClient.Status().Patch(ctx, entitlement, client.MergeFrom(before),
-		client.FieldOwner(provisioningFieldManager)); err != nil {
-		return fmt.Errorf("failed to patch ServiceEntitlement provisioning status: %w", err)
+	if err := applyEntitlementStatus(ctx, consumerClient, provisioningStatusOwner, before, entitlement); err != nil {
+		return fmt.Errorf("failed to apply ServiceEntitlement provisioning status: %w", err)
 	}
 	return nil
 }
@@ -756,7 +1170,13 @@ func activePublishedConfiguration(
 // The primary watch is ServiceEntitlement, scoped to engaged project clusters.
 // A root-cluster watch on ServiceConfiguration sits on top: without it a
 // selector change would reach entitled projects only on the next resync, up to
-// provisioningResyncInterval later. The map function fans a root event into
+// provisioningResyncInterval later. Only spec changes and the canonical
+// service name pass; the rest of its status is the configuration controller's
+// progress report.
+//
+// Entitlement updates pass only when they change what provisioning acts on,
+// so the status writes every controller makes on the entitlement, this one's
+// ledger included, do not each set off another full pass. The map function fans a root event into
 // project-scoped requests, so it needs the root manager's cache directly;
 // mchandler would overwrite ClusterName with the local cluster.
 //
@@ -764,10 +1184,14 @@ func activePublishedConfiguration(
 // newly labelled source object converges on the resync.
 func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-provisioning").
-		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		For(&servicesv1alpha1.ServiceEntitlement{},
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(provisioningEntitlementPredicate()),
+		).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceConfiguration{},
@@ -775,6 +1199,10 @@ func (r *ProvisioningReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr
 				func(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) []mcreconcile.Request {
 					return enqueueEntitlementsForConfiguration(ctx, r.rootClient, r.Manager, sc)
 				}),
+			serviceConfigurationPredicate(),
 		)).
-		Complete(r)
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: provisioningMaxConcurrentReconciles,
+		}).
+		Complete(requeueOnConflict(r))
 }

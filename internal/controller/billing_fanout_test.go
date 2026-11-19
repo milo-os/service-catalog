@@ -407,3 +407,50 @@ func TestWaitForMeterDefinitionGone_AlreadyAbsent(t *testing.T) {
 		t.Fatalf("waitForMeterDefinitionGone: %v", err)
 	}
 }
+
+// TestApplyMeterDefinitions_MetricPhase: a metric's own phase retires its
+// MeterDefinition while the configuration stays published, and retiring
+// the configuration retires every metric.
+func TestApplyMeterDefinitions_MetricPhase(t *testing.T) {
+	const (
+		meterName = "compute.datumapis.com/instance/cpu-seconds"
+		mrtType   = "compute.datumapis.com/Instance"
+	)
+	tests := []struct {
+		configPhase, metricPhase, want servicesv1alpha1.Phase
+	}{
+		{servicesv1alpha1.PhasePublished, "", servicesv1alpha1.PhasePublished},
+		{servicesv1alpha1.PhasePublished, servicesv1alpha1.PhaseDeprecated, servicesv1alpha1.PhaseDeprecated},
+		{servicesv1alpha1.PhasePublished, servicesv1alpha1.PhaseRetired, servicesv1alpha1.PhaseRetired},
+		{servicesv1alpha1.PhaseRetired, servicesv1alpha1.PhaseDeprecated, servicesv1alpha1.PhaseRetired},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.configPhase)+"/"+string(tt.metricPhase), func(t *testing.T) {
+			sc := &servicesv1alpha1.ServiceConfiguration{
+				ObjectMeta: metav1.ObjectMeta{Name: "compute", UID: "sc-uid"},
+				Spec: servicesv1alpha1.ServiceConfigurationSpec{
+					Phase: tt.configPhase,
+					Metrics: []servicesv1alpha1.MetricSpec{{
+						Name: meterName, Kind: servicesv1alpha1.MetricKindCumulative, Unit: "s", Phase: tt.metricPhase,
+					}},
+					Billing: &servicesv1alpha1.ServiceBillingConfig{
+						ConsumerDestinations: []servicesv1alpha1.BillingConsumerDestination{{
+							MonitoredResourceType: mrtType, Metrics: []string{meterName},
+						}},
+					},
+				},
+			}
+			capturing := &meterCapturingClient{Client: fake.NewClientBuilder().WithScheme(newBillingFanOutScheme()).Build()}
+			desired, err := (&BillingFanOut{Client: capturing}).applyMeterDefinitions(context.Background(), sc, "compute.datumapis.com")
+			if err != nil {
+				t.Fatalf("applyMeterDefinitions: %v", err)
+			}
+			if len(capturing.meters) != 1 || len(desired) != 1 {
+				t.Fatalf("meters = %d, desired = %d; want the MeterDefinition kept in every phase", len(capturing.meters), len(desired))
+			}
+			if got := capturing.meters[0].Spec.Phase; got == nil || *got != billingv1alpha1.Phase(tt.want) {
+				t.Errorf("phase = %v, want %s", got, tt.want)
+			}
+		})
+	}
+}

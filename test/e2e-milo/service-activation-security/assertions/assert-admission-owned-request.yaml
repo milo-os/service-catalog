@@ -1,0 +1,14 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceActivationRequest
+metadata:
+  name: e2e-provider-activation
+  annotations:
+    services.miloapis.com/activation-authorized: "true"
+    services.miloapis.com/activation-authorization-reason: ConsumerPolicyAllowed
+spec:
+  requestedBy:
+    username: e2e-admin
+status:
+  (conditions[?type == 'Authorized']):
+    - status: "True"
+      reason: ConsumerPolicyAllowed

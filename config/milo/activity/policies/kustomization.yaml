@@ -3,5 +3,14 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The owner the activity processor reads to route a failing policy's alerts.
+# This repository owns services.miloapis.com, and the platform's service
+# catalog lists it under the control-plane service, team platform.
+labels:
+  - pairs:
+      meta.datumapis.com/service: control-plane
+      meta.datumapis.com/team: platform
+
 resources:
+  - serviceactivationrequest-policy.yaml
   - serviceentitlement-policy.yaml

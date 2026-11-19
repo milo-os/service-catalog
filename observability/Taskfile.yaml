@@ -1,0 +1,43 @@
+version: "3"
+
+vars:
+  ROOT_DIR: "{{.ROOT_DIR | default .USER_WORKING_DIR}}"
+
+tasks:
+  install:
+    desc: Install pinned Jsonnet dependencies
+    cmds:
+      - jb install
+
+  build:
+    desc: Generate the Service Catalog dashboards
+    cmds:
+      - mkdir -p "{{.ROOT_DIR}}/config/components/observability/dashboards/generated"
+      - for: [service-catalog-setup, service-catalog-adoption]
+        cmd: jsonnet -J vendor dashboards/{{.ITEM}}.jsonnet > "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/{{.ITEM}}.json"
+
+  verify:
+    desc: Verify generated dashboard content and semantic empty states
+    cmds:
+      - |
+        set -eu
+        output="$(mktemp)"
+        trap 'rm -f "$output"' EXIT
+        for dashboard in service-catalog-setup service-catalog-adoption; do
+          jsonnet -J vendor "dashboards/$dashboard.jsonnet" > "$output"
+          diff -u "{{.ROOT_DIR}}/config/components/observability/dashboards/generated/$dashboard.json" "$output"
+          jq empty "$output"
+          python3 verify_dashboard.py "$output"
+        done
+
+  test-alerts:
+    desc: Unit test the setup alert rules with promtool
+    cmds:
+      - |
+        set -eu
+        workdir="$(mktemp -d)"
+        trap 'rm -rf "$workdir"' EXIT
+        yq -o=json '{"groups": .spec.groups}' "{{.ROOT_DIR}}/config/components/observability/alerts/service-catalog-setup-alerts.yaml" > "$workdir/rules.json"
+        cp alerts/service-catalog-setup-alerts.test.yaml "$workdir/"
+        promtool check rules "$workdir/rules.json"
+        promtool test rules "$workdir/service-catalog-setup-alerts.test.yaml"

@@ -12,6 +12,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (startsWith(github.ref, 'refs/heads/') && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) }}
+
 jobs:
   record:
     name: Record UI Demo
@@ -21,20 +25,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       # ── Node / pnpm ──────────────────────────────────────────────────────
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
-          version: 9
+          version: 12
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '26.13.1'
           cache: 'pnpm'
           cache-dependency-path: ui/pnpm-lock.yaml
 
@@ -48,12 +52,12 @@ jobs:
 
       # ── Go / cluster tooling ─────────────────────────────────────────────
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3.0.0
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -68,6 +72,23 @@ jobs:
       - name: Load backend image into kind
         run: task dev:load
 
+      # The manager watches billing kinds (BillingAccount, BillingEntitlement,
+      # Offer, ...) that the e2e overlay does not bundle; without their CRDs
+      # its informers never sync and it crash-loops. Mirrors e2e.yml.
+      - name: Install billing CRDs
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
+          task --yes test-infra:kubectl -- wait kustomization/billing-crds \
+            -n flux-system --for=condition=ready --timeout=120s
+
+      - name: Install resourcemanager CRDs
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml
+
       - name: Deploy backend (e2e overlay)
         env:
           KUBECONFIG: .test-infra/kubeconfig
@@ -78,6 +99,15 @@ jobs:
             deployment/services-controller-manager \
             -n services-system \
             --timeout=120s
+
+      - name: Dump operator logs on deployment failure
+        if: failure()
+        env:
+          KUBECONFIG: .test-infra/kubeconfig
+        run: |
+          task --yes test-infra:kubectl -- -n services-system get pods
+          task --yes test-infra:kubectl -- -n services-system logs \
+            deployment/services-controller-manager --all-pods=true --tail=-1 || true
 
       - name: Wait for webhook certificate
         env:
@@ -141,7 +171,7 @@ jobs:
             fi
 
             ffmpeg -i "$VIDEO" \
-              -vf "fps=8,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+              -vf "fps=6,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
               -loop 0 "/tmp/recordings-out/${NAME}.gif" 2>/dev/null
 
             if [ -f "/tmp/recordings-out/${NAME}.gif" ]; then
@@ -152,7 +182,7 @@ jobs:
       # ── Upload Playwright test-results on failure ─────────────────────────
       - name: Upload Playwright test artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-test-results-${{ github.run_id }}
           path: ui/test-results/
@@ -171,39 +201,64 @@ jobs:
       # ── Upload all GIFs as a single artifact ─────────────────────────────
       - name: Upload GIF artifacts
         if: steps.check.outputs.found == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-demo-pr-${{ github.event.pull_request.number }}
           path: /tmp/recordings-out/*.gif
           retention-days: 30
 
       # ── Push GIFs to ui-recordings branch ────────────────────────────────
+      # The branch is kept as a single orphan commit holding only the current
+      # GIFs: PR comments link to the branch tip, so superseded recordings are
+      # never viewed and would otherwise pile up in every clone's history.
+      # Recordings for PRs closed more than 30 days ago are dropped too.
       - name: Push GIFs to ui-recordings branch
         if: steps.check.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           PR=${{ github.event.pull_request.number }}
+          CUTOFF=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          STALE=$(gh pr list --state closed --limit 1000 --json number,closedAt \
+            --jq "[.[] | select(.closedAt < \"$CUTOFF\") | .number] | .[]")
 
-          if git ls-remote --exit-code origin ui-recordings > /dev/null 2>&1; then
-            git fetch origin ui-recordings
-            git worktree add /tmp/recordings origin/ui-recordings
-          else
-            git worktree add --orphan -b ui-recordings /tmp/recordings
-            touch /tmp/recordings/.gitkeep
-            (cd /tmp/recordings && git add .gitkeep && \
-              git commit -m "chore: initialise ui-recordings branch")
-          fi
+          # Build the tree in a scratch index so no worktree is needed.
+          export GIT_INDEX_FILE=/tmp/recordings-index
 
-          mkdir -p "/tmp/recordings/pr-${PR}"
-          cp /tmp/recordings-out/*.gif "/tmp/recordings/pr-${PR}/"
+          for attempt in 1 2 3 4 5; do
+            rm -f "$GIT_INDEX_FILE"
+            if git fetch origin ui-recordings 2>/dev/null; then
+              LEASE=$(git rev-parse FETCH_HEAD)
+              git read-tree FETCH_HEAD
+            else
+              LEASE=""
+              git read-tree --empty
+            fi
 
-          cd /tmp/recordings
-          git add "pr-${PR}/"
-          git diff --cached --quiet && echo "No changes to push" && exit 0
-          git commit -m "recording: PR #${PR} (run ${{ github.run_id }})"
-          git push origin HEAD:ui-recordings
+            git rm --cached -r -q --ignore-unmatch "pr-${PR}"
+            for n in $STALE; do
+              git rm --cached -r -q --ignore-unmatch "pr-${n}"
+            done
+            for gif in /tmp/recordings-out/*.gif; do
+              BLOB=$(git hash-object -w "$gif")
+              git update-index --add --cacheinfo "100644,${BLOB},pr-${PR}/$(basename "$gif")"
+            done
+
+            TREE=$(git write-tree)
+            COMMIT=$(git commit-tree "$TREE" -m "recordings (latest: PR #${PR}, run ${{ github.run_id }})")
+
+            if git push --force-with-lease="refs/heads/ui-recordings:${LEASE}" \
+                origin "${COMMIT}:refs/heads/ui-recordings"; then
+              exit 0
+            fi
+            echo "ui-recordings moved underneath us; retrying (attempt ${attempt})"
+            sleep $((RANDOM % 10 + 5))
+          done
+          echo "Failed to push recordings after 5 attempts"
+          exit 1
 
       # ── Build PR comment body ─────────────────────────────────────────────
       - name: Build comment body
@@ -248,7 +303,7 @@ jobs:
       # ── Post or update PR comment ─────────────────────────────────────────
       - name: Find existing demo comment
         id: find-comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: 'github-actions[bot]'
@@ -256,7 +311,7 @@ jobs:
 
       - name: Post or update demo comment (recordings found)
         if: steps.check.outputs.found == 'true'
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
@@ -265,7 +320,7 @@ jobs:
 
       - name: Post or update demo comment (no recordings)
         if: steps.check.outputs.found == 'false'
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}

@@ -18,25 +18,27 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-// errLocationSourceUnavailable reports that the control plane does not serve
-// the configured location source at all. It is a misconfiguration — an
-// operator named a group that is not installed — and is kept distinct from a
-// location that is merely absent, which is an ordinary closed gate.
-var errLocationSourceUnavailable = errors.New("configured location source is not served by this control plane")
+var LocationGVK = schema.GroupVersionKind{
+	Group: "locations.miloapis.com", Version: "v1alpha1", Kind: "Location",
+}
 
-// getLocation reads the named Location from the configured source. It reports
-// found=false when the source serves no such location, and wraps
-// errLocationSourceUnavailable when the source itself is not served. There is
-// no second attempt against another group: the source is chosen by
-// configuration precisely so that nothing here decides it silently.
+// errLocationAPIUnavailable reports that the control plane does not serve
+// the Location API at all. It is kept distinct from a
+// location that is merely absent, which is an ordinary closed gate.
+var errLocationAPIUnavailable = errors.New("location API is not served by this control plane")
+
+// getLocation reads a named locations.miloapis.com Location. It reports
+// found=false when no such location exists and wraps errLocationAPIUnavailable
+// when the API itself is not served.
 //
-// The read is unstructured, which the controller-runtime client answers
-// straight from the API server rather than through an informer. A group that
-// is not installed therefore costs one failed request rather than a cache that
-// never syncs and takes the manager down with it.
-func getLocation(ctx context.Context, c client.Reader, gvk schema.GroupVersionKind, name string) (*unstructured.Unstructured, bool, error) {
+// The selected unstructured GVK is registered before manager construction, so
+// the injected manager reader answers this from its shared informer cache. A
+// cache miss after synchronization is a legitimate absent Location; source
+// discovery and initial synchronization failures prevent the controller from
+// starting and therefore cannot be mistaken for an empty desired set.
+func getLocation(ctx context.Context, c client.Reader, name string) (*unstructured.Unstructured, bool, error) {
 	loc := &unstructured.Unstructured{}
-	loc.SetGroupVersionKind(gvk)
+	loc.SetGroupVersionKind(LocationGVK)
 	err := c.Get(ctx, types.NamespacedName{Name: name}, loc)
 	switch {
 	case err == nil:
@@ -44,19 +46,14 @@ func getLocation(ctx context.Context, c client.Reader, gvk schema.GroupVersionKi
 	case apierrors.IsNotFound(err):
 		return nil, false, nil
 	case apimeta.IsNoMatchError(err), runtime.IsNotRegisteredError(err):
-		return nil, false, fmt.Errorf("%w: %s: %w", errLocationSourceUnavailable, gvk.GroupVersion(), err)
+		return nil, false, fmt.Errorf("%w: %s: %w", errLocationAPIUnavailable, LocationGVK.GroupVersion(), err)
 	default:
 		return nil, false, err
 	}
 }
 
-// locationClass reads the class name off a Location of either group.
-// locations.miloapis.com carries it as spec.locationClassRef.name;
-// networking.datumapis.com carries it as the flat spec.locationClassName.
+// locationClass reads the referenced LocationClass name.
 func locationClass(loc *unstructured.Unstructured) servicesv1alpha1.LocationClassName {
-	if s, _, _ := unstructured.NestedString(loc.Object, "spec", "locationClassRef", "name"); s != "" {
-		return servicesv1alpha1.LocationClassName(s)
-	}
-	s, _, _ := unstructured.NestedString(loc.Object, "spec", "locationClassName")
+	s, _, _ := unstructured.NestedString(loc.Object, "spec", "locationClassRef", "name")
 	return servicesv1alpha1.LocationClassName(s)
 }

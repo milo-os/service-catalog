@@ -12,8 +12,8 @@ func newStatusCommand(opts ServicesCommandOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <name>",
 		Short: "Show the current entitlement state for a service",
-		Long: `Show whether a Datum Cloud service is enabled, pending approval, denied, or
-not yet requested for the current project.`,
+		Long: `Show access authorization and aggregate setup progress for a Datum Cloud
+service, including the current blocking stage and elapsed setup time.`,
 		Example: `  # Check on a service's access state
   datumctl services status compute`,
 		Args: cobra.ExactArgs(1),

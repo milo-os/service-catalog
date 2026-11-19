@@ -9,6 +9,7 @@ resources:
 - bases/services.miloapis.com_serviceavailabilities.yaml
 - bases/services.miloapis.com_serviceagents.yaml
 - bases/services.miloapis.com_serviceagentconfigurations.yaml
+- bases/services.miloapis.com_serviceactivationrequests.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

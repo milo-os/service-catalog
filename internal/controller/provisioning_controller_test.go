@@ -5,10 +5,13 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -17,12 +20,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	testingclock "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -47,6 +53,7 @@ var (
 func provScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = servicesv1alpha1.AddToScheme(s)
+	_ = resourcemanagerv1alpha1.AddToScheme(s)
 	for _, gvk := range []schema.GroupVersionKind{ipClassGVK, ipPoolGVK} {
 		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
@@ -55,10 +62,41 @@ func provScheme() *runtime.Scheme {
 }
 
 func provClient(objs ...client.Object) client.Client {
+	hasProject := false
+	for _, obj := range objs {
+		if project, ok := obj.(*resourcemanagerv1alpha1.Project); ok && project.Name == provConsumerProject {
+			hasProject = true
+			break
+		}
+	}
+	if !hasProject {
+		objs = append(objs, &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: provConsumerProject}})
+	}
+	return provClientWithoutProject(objs...)
+}
+
+func provClientWithoutProject(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
 		WithObjects(objs...).
+		WithIndex(&servicesv1alpha1.Service{}, "spec.serviceName", func(obj client.Object) []string {
+			return []string{obj.(*servicesv1alpha1.Service).Spec.ServiceName}
+		}).
 		Build()
+}
+
+// provService is the Service the provisioning fixtures entitle, owned by
+// producer.
+func provService(producer string) *servicesv1alpha1.Service {
+	return &servicesv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: provConfigName},
+		Spec: servicesv1alpha1.ServiceSpec{
+			ServiceName: provServiceName,
+			Owner: servicesv1alpha1.ServiceOwner{
+				ProducerProjectRef: servicesv1alpha1.ProducerProjectReference{Name: producer},
+			},
+		},
+	}
 }
 
 // provConsumerClient keeps ServiceEntitlement's status subresource enabled so
@@ -66,9 +104,33 @@ func provClient(objs ...client.Object) client.Client {
 func provConsumerClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
 		Build()
+}
+
+// blockingApplyClient holds the first object apply so a test can prove several
+// projects enter the write path together. Each project gets its own client,
+// matching the isolation provided by the multicluster manager in production.
+type blockingApplyClient struct {
+	client.Client
+	project string
+	entered chan<- string
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingApplyClient) Apply(
+	ctx context.Context,
+	obj runtime.ApplyConfiguration,
+	opts ...client.ApplyOption,
+) error {
+	c.once.Do(func() {
+		c.entered <- c.project
+		<-c.release
+	})
+	return c.Client.Apply(ctx, obj, opts...)
 }
 
 func provEntitlementObj(phase servicesv1alpha1.EntitlementPhase) *servicesv1alpha1.ServiceEntitlement {
@@ -118,7 +180,7 @@ func newProvReconciler(root client.Client, clusters map[string]client.Client) *P
 	for name, c := range clusters {
 		mgr.add(name, c)
 	}
-	return &ProvisioningReconciler{rootClient: root, Manager: mgr, Scheme: provScheme()}
+	return &ProvisioningReconciler{rootClient: root, rootAPIReader: root, Manager: mgr, Scheme: provScheme()}
 }
 
 func provReconcile(t *testing.T, r *ProvisioningReconciler) ctrl.Result {
@@ -213,6 +275,209 @@ func TestProvisioningInstallsDeclaredObjectsForActiveEntitlement(t *testing.T) {
 	}
 	if len(entry.Kinds) != 1 || entry.Kinds[0].Kind != "IPClass" || entry.Kinds[0].Version != "v1alpha1" {
 		t.Errorf("ledger does not record what was installed: %+v", entry.Kinds)
+	}
+}
+
+func TestProvisioningDoesNotDropSetupOnProjectCacheMiss(t *testing.T) {
+	cacheClient := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	apiReader := provClient()
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	mgr := newTestManager()
+	mgr.add(provConsumerProject, consumer)
+	r := &ProvisioningReconciler{
+		rootClient: cacheClient, rootAPIReader: apiReader, Manager: mgr, Scheme: provScheme(),
+	}
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 1 {
+		t.Fatalf("cache miss dropped provisioning; installed %d objects, want 1", len(list.Items))
+	}
+}
+
+func TestProvisioningSkipsTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name:              provConsumerProject,
+		DeletionTimestamp: &now,
+		Finalizers:        []string{"resourcemanager.miloapis.com/project"},
+	}}
+	root := provClient(project, provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("terminating project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("terminating project received a provisioning status write")
+	}
+}
+
+func TestProvisioningPrunesInactiveEntitlementWhileProjectTerminates(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+	if got := len(listClasses(t, consumer).Items); got != 1 {
+		t.Fatalf("precondition: installed objects = %d, want 1", got)
+	}
+
+	var project resourcemanagerv1alpha1.Project
+	if err := root.Get(context.Background(), client.ObjectKey{Name: provConsumerProject}, &project); err != nil {
+		t.Fatal(err)
+	}
+	project.Finalizers = []string{"test"}
+	if err := root.Update(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Delete(context.Background(), &project); err != nil {
+		t.Fatal(err)
+	}
+
+	entitlement := getEntitlement(t, consumer)
+	entitlement.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), entitlement); err != nil {
+		t.Fatal(err)
+	}
+	provReconcile(t, r)
+
+	if got := len(listClasses(t, consumer).Items); got != 0 {
+		t.Fatalf("terminating project retained %d explicitly provisioned objects", got)
+	}
+	condition := apimeta.FindStatusCondition(getEntitlement(t, consumer).Status.Conditions,
+		servicesv1alpha1.ConditionTypeProvisioned)
+	if condition == nil || condition.Reason != servicesv1alpha1.ReasonEntitlementNotActive {
+		t.Fatalf("teardown status = %#v, want EntitlementNotActive", condition)
+	}
+}
+
+func TestProvisioningSkipsMissingProject(t *testing.T) {
+	root := provClientWithoutProject(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+
+	provReconcile(t, r)
+
+	if list := listClasses(t, consumer); len(list.Items) != 0 {
+		t.Fatalf("missing project received %d provisioned objects", len(list.Items))
+	}
+	if got := getEntitlement(t, consumer); got.Status.LastProvisioningEvaluation != nil {
+		t.Error("missing project received a provisioning status write")
+	}
+}
+
+func TestProvisioningRetriesDisengagedProject(t *testing.T) {
+	r := newProvReconciler(provClient(), nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+func TestProvisioningRetriesDisengagedTerminatingProject(t *testing.T) {
+	now := metav1.Now()
+	root := provClient(&resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{
+		Name: provConsumerProject, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}})
+	r := newProvReconciler(root, nil)
+	result, err := r.Reconcile(context.Background(), mcreconcile.Request{
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+		ClusterName: provConsumerProject,
+	})
+	if err != nil || result.RequeueAfter != projectLifecycleRetryInterval {
+		t.Fatalf("reconcile result=%+v err=%v, want teardown retry after %v", result, err, projectLifecycleRetryInterval)
+	}
+}
+
+// Reconciles for distinct projects must not share mutable state. The controller
+// runs several workers so an API round-trip in one project cannot block every
+// project behind it; this test holds all object writes until every project has
+// reached the write path, then verifies each result kept its own owner.
+func TestProvisioningReconcilesProjectsConcurrentlyAndInIsolation(t *testing.T) {
+	const projectCount = provisioningMaxConcurrentReconciles
+
+	rootObjects := []client.Object{provConfig(ipClassRef("tenant-endpoint-ipv6"))}
+	entered := make(chan string, projectCount)
+	release := make(chan struct{})
+	consumers := make(map[string]client.Client, projectCount)
+	managed := make(map[string]client.Client, projectCount)
+	wantUID := make(map[string]types.UID, projectCount)
+
+	for i := range projectCount {
+		project := fmt.Sprintf("consumer-proj-%d", i)
+		rootObjects = append(rootObjects, &resourcemanagerv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: project},
+		})
+		uid := types.UID(project + "-entitlement")
+		entitlement := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
+		entitlement.UID = uid
+		consumer := provConsumerClient(entitlement)
+		consumers[project] = consumer
+		wantUID[project] = uid
+		managed[project] = &blockingApplyClient{
+			Client:  consumer,
+			project: project,
+			entered: entered,
+			release: release,
+		}
+	}
+
+	root := provClient(rootObjects...)
+	r := newProvReconciler(root, managed)
+	errCh := make(chan error, projectCount)
+	var wg sync.WaitGroup
+	for project := range consumers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.Reconcile(context.Background(), mcreconcile.Request{
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Name: provEntitlement}},
+				ClusterName: multicluster.ClusterName(project),
+			})
+			errCh <- err
+		}()
+	}
+
+	seen := make(map[string]struct{}, projectCount)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for len(seen) < projectCount {
+		select {
+		case project := <-entered:
+			seen[project] = struct{}{}
+		case <-timer.C:
+			close(release)
+			wg.Wait()
+			t.Fatalf("only %d of %d projects reached the apply path concurrently", len(seen), projectCount)
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent reconcile: %v", err)
+		}
+	}
+
+	for project, consumer := range consumers {
+		items := listClasses(t, consumer).Items
+		if len(items) != 1 {
+			t.Fatalf("project %q installed %d objects, want 1", project, len(items))
+		}
+		if !ownedBy(items[0].GetOwnerReferences(), wantUID[project]) {
+			t.Errorf("project %q object has another project's owner: %+v", project, items[0].GetOwnerReferences())
+		}
+		entry := getEntitlement(t, consumer).Status.ProvisionedResources
+		if len(entry) != 1 || entry[0].State != servicesv1alpha1.ProvisionedResourceStateInstalled {
+			t.Errorf("project %q ledger did not converge: %+v", project, entry)
+		}
 	}
 }
 
@@ -586,6 +851,7 @@ func provStatusConsumerClient(objs ...client.Object) client.Client {
 	ipClass.SetGroupVersionKind(ipClassGVK)
 	return fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(objs...).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		Build()
@@ -722,11 +988,15 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	var applied []string
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClassObject()).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				body, err := json.Marshal(obj)
 				if err != nil {
 					return err
@@ -765,6 +1035,19 @@ func TestProvisioningStatusApplyIsIdempotentAcrossResyncs(t *testing.T) {
 	}
 }
 
+// isEntitlementApply tells the entitlement's own status apply apart from the
+// installed object's, so an interceptor aimed at the latter lets it through.
+func isEntitlementApply(obj runtime.ApplyConfiguration) bool {
+	body, err := json.Marshal(obj)
+	if err != nil {
+		return false
+	}
+	var typed struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal(body, &typed) == nil && typed.Kind == "ServiceEntitlement"
+}
+
 func ipClassObject() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(ipClassGVK)
@@ -779,11 +1062,15 @@ func TestProvisioningReportsAStatusAnotherControllerOwns(t *testing.T) {
 	ipClass := ipClassObject()
 	consumer := fake.NewClientBuilder().
 		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
 		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
 		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}, ipClass).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceApply: func(ctx context.Context, c client.Client, subResource string,
 				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if isEntitlementApply(obj) {
+					return c.Status().Apply(ctx, obj, opts...)
+				}
 				return apierrors.NewConflict(
 					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
 					"tenant-endpoint-ipv6",
@@ -830,5 +1117,465 @@ func TestLedgerMessageIsTruncatedToTheSchemaLimit(t *testing.T) {
 	}
 	if got := truncateMessage("short", maxLedgerMessageBytes); got != "short" {
 		t.Errorf("a message inside the limit was rewritten: %q", got)
+	}
+}
+
+// A failed install embeds the API server's error, which has no length bound.
+// An over-long ledger message makes the API server refuse the whole status
+// write, hiding the failure and retrying it with backoff.
+func TestProvisioningTruncatesFailureMessagesToTheSchemaLimit(t *testing.T) {
+	longCause := strings.Repeat("admission webhook denied the request; ", 60)
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				// Forbidden passes through to status; an internal error would be
+				// replaced by a short generic message and never reach the limit.
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+					"tenant-endpoint-ipv6", errors.New(longCause))
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	ledger := getEntitlement(t, consumer).Status.ProvisionedResources
+	if len(ledger) != 1 {
+		t.Fatalf("ledger = %+v, want one entry", ledger)
+	}
+	if ledger[0].State != servicesv1alpha1.ProvisionedResourceStateFailed {
+		t.Errorf("state = %q, want %q", ledger[0].State, servicesv1alpha1.ProvisionedResourceStateFailed)
+	}
+	if got := len(ledger[0].Message); got > maxLedgerMessageBytes {
+		t.Errorf("failure message is %d bytes, above the %d byte schema limit", got, maxLedgerMessageBytes)
+	}
+	if !strings.HasPrefix(ledger[0].Message, provServiceName) && !strings.Contains(ledger[0].Message, "could not install") {
+		t.Errorf("truncation lost the start of the message: %q", ledger[0].Message[:80])
+	}
+}
+
+func TestLedgerMessageTruncationKeepsCharactersWhole(t *testing.T) {
+	message := truncateMessage(strings.Repeat("é", maxLedgerMessageBytes), maxLedgerMessageBytes)
+	if len(message) > maxLedgerMessageBytes {
+		t.Errorf("truncated message is %d bytes, above %d", len(message), maxLedgerMessageBytes)
+	}
+	if !utf8.ValidString(message) {
+		t.Errorf("truncation split a multi-byte character")
+	}
+}
+
+// existingClass is an IPClass already in the consumer project before
+// provisioning reaches it, created by whoever the metadata says.
+func existingClass(name string, mutate func(*unstructured.Unstructured)) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(ipClassGVK)
+	u.SetName(name)
+	_ = unstructured.SetNestedMap(u.Object, map[string]any{"policy": "customer-owned"}, "spec")
+	if mutate != nil {
+		mutate(u)
+	}
+	return u
+}
+
+func getClass(t *testing.T, c client.Client, name string) *unstructured.Unstructured {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(ipClassGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, u); err != nil {
+		t.Fatalf("get class %q: %v", name, err)
+	}
+	return u
+}
+
+func assertUntouched(t *testing.T, got *unstructured.Unstructured) {
+	t.Helper()
+	if ownedBy(got.GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the entitlement took ownership of an object it did not install: %+v", got.GetOwnerReferences())
+	}
+	if got.GetLabels()[labelEntitlementName] == provEntitlement {
+		t.Errorf("an object the entitlement did not install was labelled as its own: %+v", got.GetLabels())
+	}
+	if policy, _, _ := unstructured.NestedString(got.Object, "spec", "policy"); policy != "customer-owned" {
+		t.Errorf("an object the entitlement did not install was rewritten: %+v", got.Object["spec"])
+	}
+	if _, found, _ := unstructured.NestedMap(got.Object, "spec", "source"); found {
+		t.Errorf("an object the entitlement did not install received the declared spec: %+v", got.Object["spec"])
+	}
+}
+
+// A name the customer already uses is theirs. Enabling a service must not
+// rewrite that object, and disabling it must not delete it.
+func TestProvisioningLeavesAnExistingUnmanagedObjectUnchanged(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6"), ipClassRef("tenant-vpc-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	assertUntouched(t, getClass(t, consumer, "tenant-endpoint-ipv6"))
+	// The declaration's other objects still install.
+	if !ownedBy(getClass(t, consumer, "tenant-vpc-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the declaration's free name was not installed")
+	}
+
+	ent := getEntitlement(t, consumer)
+	entry := ent.Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable ||
+		entry.Reason != reasonObjectExists || entry.ObjectCount != 1 {
+		t.Fatalf("expected Unprovisionable/ObjectExists with one object installed, got %+v", entry)
+	}
+	want := `IPClass "tenant-endpoint-ipv6" already exists in this project and was not installed by the platform, so it was left unchanged.`
+	if entry.Message != want {
+		t.Errorf("ledger message = %q, want %q", entry.Message, want)
+	}
+	cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != servicesv1alpha1.ReasonNotProvisioned {
+		t.Errorf("expected Provisioned=False/NotProvisioned, got %+v", cond)
+	}
+
+	// Disabling the service removes what it installed and nothing else.
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement phase: %v", err)
+	}
+	provReconcile(t, r)
+	list := listClasses(t, consumer)
+	if len(list.Items) != 1 || list.Items[0].GetName() != "tenant-endpoint-ipv6" {
+		t.Fatalf("teardown should remove only the installed class, left %d", len(list.Items))
+	}
+	assertUntouched(t, &list.Items[0])
+}
+
+// In the service's own producer project, a declared name is usually held by the
+// definition the declaration points at. That object is left alone, as anywhere
+// else, but the declaration is delivered instead of blocking setup forever.
+func TestProvisioningTreatsTheProducersOwnObjectAsDelivered(t *testing.T) {
+	root := provClient(
+		provService(provConsumerProject),
+		provConfig(ipClassRef("tenant-endpoint-ipv6"), ipClassRef("tenant-vpc-ipv6")),
+	)
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	assertUntouched(t, getClass(t, consumer, "tenant-endpoint-ipv6"))
+	if !ownedBy(getClass(t, consumer, "tenant-vpc-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("the declaration's free name was not installed")
+	}
+
+	ent := getEntitlement(t, consumer)
+	entry := ent.Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled ||
+		entry.Reason != reasonProvidedByProducer || entry.ObjectCount != 1 {
+		t.Fatalf("expected Installed/ProvidedByProducer with one object installed, got %+v", entry)
+	}
+	want := `This is networking.datumapis.com's producer project, which already holds IPClass "tenant-endpoint-ipv6", so the platform left them unchanged.`
+	if entry.Message != want {
+		t.Errorf("ledger message = %q, want %q", entry.Message, want)
+	}
+	cond := apimeta.FindStatusCondition(ent.Status.Conditions, servicesv1alpha1.ConditionTypeProvisioned)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("expected Provisioned=True, got %+v", cond)
+	}
+
+	// Disabling the service removes what it installed and never the
+	// producer's own object.
+	ent.Status.Phase = servicesv1alpha1.EntitlementPhaseRejected
+	if err := consumer.Status().Update(context.Background(), ent); err != nil {
+		t.Fatalf("update entitlement phase: %v", err)
+	}
+	provReconcile(t, r)
+	list := listClasses(t, consumer)
+	if len(list.Items) != 1 || list.Items[0].GetName() != "tenant-endpoint-ipv6" {
+		t.Fatalf("teardown should remove only the installed class, left %d", len(list.Items))
+	}
+	assertUntouched(t, &list.Items[0])
+}
+
+// Being the producer does not settle a conflict with another service's
+// platform-installed object: that one is still reported.
+func TestProvisioningStillReportsAnotherEntitlementsObjectInTheProducerProject(t *testing.T) {
+	root := provClient(provService(provConsumerProject), provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+			u.SetLabels(map[string]string{labelManagedBy: labelManagedByValue, labelEntitlementName: "dns"})
+		}),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
+		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
+}
+
+// A project that only consumes the service still reports a name it already
+// uses, even when the Service names some other producer.
+func TestProvisioningReportsAnExistingObjectOutsideTheProducerProject(t *testing.T) {
+	root := provClient(provService(provSourceProject), provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", nil),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	result := provReconcile(t, r)
+
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateUnprovisionable || entry.Reason != reasonObjectExists {
+		t.Fatalf("expected Unprovisionable/ObjectExists, got %+v", entry)
+	}
+	// Nothing watched here sees the customer free the name, so the blocked
+	// declaration is retried well before the hourly resync.
+	if result.RequeueAfter != provisioningBlockedRetryInterval {
+		t.Errorf("requeueAfter = %s, want the %s blocked retry", result.RequeueAfter, provisioningBlockedRetryInterval)
+	}
+}
+
+// Two services that declare the same name do not trade the object between
+// them on every resync: the first to install it keeps it.
+func TestProvisioningDoesNotTakeOverAnotherEntitlementsObject(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(
+		provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive),
+		existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+			u.SetLabels(map[string]string{
+				labelManagedBy:           labelManagedByValue,
+				labelEntitlementName:     "compute",
+				labelProvisionedResource: "address-classes",
+			})
+			isController := true
+			u.SetOwnerReferences([]metav1.OwnerReference{{
+				APIVersion: servicesv1alpha1.GroupVersion.String(),
+				Kind:       "ServiceEntitlement",
+				Name:       "compute",
+				UID:        "ent-compute-uid",
+				Controller: &isController,
+			}})
+		}),
+	)
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	got := getClass(t, consumer, "tenant-endpoint-ipv6")
+	assertUntouched(t, got)
+	if !ownedBy(got.GetOwnerReferences(), "ent-compute-uid") || got.GetLabels()[labelEntitlementName] != "compute" {
+		t.Errorf("the other entitlement lost its object: %+v %+v", got.GetOwnerReferences(), got.GetLabels())
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.Reason != reasonObjectExists || !strings.Contains(entry.Message, "for another service") {
+		t.Errorf("expected ObjectExists naming another service, got %+v", entry)
+	}
+}
+
+// What this entitlement installed is still its to update.
+func TestProvisioningUpdatesAnObjectThisEntitlementInstalled(t *testing.T) {
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	setConfig(t, root, func(sc *servicesv1alpha1.ServiceConfiguration) {
+		sc.Spec.Provisioning.Resources[0].Objects = []servicesv1alpha1.ProvisionedObject{provObject(`{
+			"apiVersion": "ipam.miloapis.com/v1alpha1",
+			"kind": "IPClass",
+			"metadata": {"name": "tenant-endpoint-ipv6"},
+			"spec": {"source": {"project": "moved", "name": "tenant-endpoint-ipv6"}}
+		}`)}
+	})
+	provReconcile(t, r)
+
+	source, _, _ := unstructured.NestedMap(getClass(t, consumer, "tenant-endpoint-ipv6").Object, "spec", "source")
+	if source["project"] != "moved" {
+		t.Errorf("an object the entitlement installed was not updated: %+v", source)
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != "" {
+		t.Errorf("expected a clean install, got %+v", entry)
+	}
+}
+
+// An object older than its entitlement was someone else's before an earlier
+// version of the controller took it over. It is reported, not released.
+func TestProvisioningReportsAnObjectTakenOverInThePast(t *testing.T) {
+	enabledAt := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	ent := provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)
+	ent.CreationTimestamp = enabledAt
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	consumer := provConsumerClient(ent, existingClass("tenant-endpoint-ipv6", func(u *unstructured.Unstructured) {
+		u.SetCreationTimestamp(metav1.NewTime(enabledAt.Add(-24 * time.Hour)))
+		u.SetLabels(map[string]string{
+			labelManagedBy:           labelManagedByValue,
+			labelEntitlementName:     provEntitlement,
+			labelProvisionedResource: "address-classes",
+		})
+		isController := true
+		u.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: servicesv1alpha1.GroupVersion.String(),
+			Kind:       "ServiceEntitlement",
+			Name:       provEntitlement,
+			UID:        provEntitlementUID,
+			Controller: &isController,
+		}})
+	}))
+
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if !ownedBy(getClass(t, consumer, "tenant-endpoint-ipv6").GetOwnerReferences(), provEntitlementUID) {
+		t.Errorf("ownership of a previously adopted object changed silently")
+	}
+	entry := getEntitlement(t, consumer).Status.ProvisionedResources[0]
+	if entry.State != servicesv1alpha1.ProvisionedResourceStateInstalled || entry.Reason != reasonObjectAdopted ||
+		!strings.Contains(entry.Message, "disabling the service will delete it") {
+		t.Errorf("expected Installed/ObjectAdopted with a warning, got %+v", entry)
+	}
+}
+
+// A declaration that fails to install right after enablement is usually held
+// up by something that clears within seconds, such as the owning service's
+// webhook not yet serving the new project. Waiting for the five-minute resync
+// left setup stalled long after the cause was gone.
+func TestProvisioningRetriesFailedResourcesSoonAfterTheCauseClears(t *testing.T) {
+	failing := true
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if failing {
+					return apierrors.NewForbidden(
+						schema.GroupResource{Group: ipClassGVK.Group, Resource: "ipclasses"},
+						"tenant-endpoint-ipv6", errors.New("consumer project not engaged yet"))
+				}
+				return c.Apply(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	clk := testingclock.NewFakeClock(time.Now())
+	r.clock = clk
+
+	// Each step advances the clock by elapse, then runs one pass. The retry
+	// delay is a tenth of how long the entitlement has been failing, never
+	// under a second. A doubling backoff from 2s retried at 2, 6, 14, 30, 62
+	// and 126s, so a cause that cleared at 70s held setup until 126s.
+	steps := []struct {
+		elapse  time.Duration
+		failing bool
+		want    time.Duration
+	}{
+		{failing: true, want: provisioningFailureRetryMin},
+		{elapse: 5 * time.Second, failing: true, want: provisioningFailureRetryMin},
+		{elapse: 25 * time.Second, failing: true, want: 3 * time.Second},
+		{elapse: 40 * time.Second, failing: true, want: 7 * time.Second},
+		{elapse: 7 * time.Second, failing: false, want: provisioningResyncInterval},
+		// After a success, a new failure starts again from the short delay.
+		{elapse: time.Minute, failing: true, want: provisioningFailureRetryMin},
+	}
+	for i, step := range steps {
+		clk.Step(step.elapse)
+		failing = step.failing
+		got := provReconcile(t, r).RequeueAfter
+		if step.want == provisioningResyncInterval {
+			// The resync is jittered upward.
+			jitter := provisioningResyncJitter
+			maxResync := provisioningResyncInterval + time.Duration(jitter*float64(provisioningResyncInterval))
+			if got < provisioningResyncInterval || got > maxResync {
+				t.Errorf("pass %d (failing=%v): requeueAfter = %s, want between %s and %s",
+					i+1, step.failing, got, provisioningResyncInterval, maxResync)
+			}
+			continue
+		}
+		if got != step.want {
+			t.Errorf("pass %d (failing=%v): requeueAfter = %s, want %s", i+1, step.failing, got, step.want)
+		}
+	}
+}
+
+func TestProvisioningFailureRetryIsCappedAtTheBlockedRetryInterval(t *testing.T) {
+	clk := testingclock.NewFakeClock(time.Now())
+	r := &ProvisioningReconciler{clock: clk}
+	r.failureRetryDelay("entitlement-uid")
+	clk.Step(provisioningFailureRetryFraction * provisioningBlockedRetryInterval * 2)
+	if got := r.failureRetryDelay("entitlement-uid"); got != provisioningBlockedRetryInterval {
+		t.Errorf("retry delay after a long run of failures = %s, want the %s cap", got, provisioningBlockedRetryInterval)
+	}
+}
+
+// Entitlements deleted while failing never clear their own entry, so clearing
+// any entitlement drops entries that are far older than a retry cycle.
+func TestProvisioningFailureRetryForgetsStaleEntitlements(t *testing.T) {
+	clk := testingclock.NewFakeClock(time.Now())
+	r := &ProvisioningReconciler{clock: clk}
+	r.failureRetryDelay("deleted-uid")
+	r.failureRetryDelay("recent-uid")
+	clk.Step(25 * time.Hour)
+	r.failureRetryDelay("new-uid")
+	r.clearFailureRetry("other-uid")
+	if _, ok := r.failingSince["deleted-uid"]; ok {
+		t.Errorf("a failure entry older than a day was kept")
+	}
+	if _, ok := r.failingSince["new-uid"]; !ok {
+		t.Errorf("a current failure entry was dropped")
+	}
+}
+
+// Disabling a service while a pass is installing used to leave the object
+// behind. Teardown swept the project before the install landed and released
+// the entitlement, and the object then pointed at an owner that no longer
+// existed, which garbage collection in a project control plane did not reclaim.
+func TestProvisioningRemovesWhatItInstalledWhenTheEntitlementIsDeletedMidPass(t *testing.T) {
+	var once sync.Once
+	consumer := fake.NewClientBuilder().
+		WithScheme(provScheme()).
+		WithTypeConverters(fakeTypeConverters()...).
+		WithObjects(provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive)).
+		WithStatusSubresource(&servicesv1alpha1.ServiceEntitlement{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if err := c.Apply(ctx, obj, opts...); err != nil {
+					return err
+				}
+				// The customer disables the service, and teardown completes,
+				// between this pass reading the entitlement and finishing.
+				var err error
+				once.Do(func() {
+					err = c.Delete(ctx, provEntitlementObj(servicesv1alpha1.EntitlementPhaseActive))
+				})
+				return err
+			},
+		}).
+		Build()
+
+	root := provClient(provConfig(ipClassRef("tenant-endpoint-ipv6")))
+	r := newProvReconciler(root, map[string]client.Client{provConsumerProject: consumer})
+	provReconcile(t, r)
+
+	if got := listClasses(t, consumer).Items; len(got) != 0 {
+		t.Errorf("objects outlived their entitlement: %+v", names(got))
 	}
 }

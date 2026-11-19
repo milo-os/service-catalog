@@ -158,3 +158,5 @@ func withCreationAge(e *servicesv1alpha1.ServiceEntitlement, t metav1.Time) *ser
 	e.CreationTimestamp = t
 	return e
 }
+
+var entitlementGVR = servicesv1alpha1.GroupVersion.WithResource(entitlementResource)

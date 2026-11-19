@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -29,7 +29,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	billingv1alpha1 "go.miloapis.com/billing/api/v1alpha1"
-	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -39,19 +38,8 @@ import (
 const serviceEntitlementFinalizer = "services.miloapis.com/service-entitlement"
 
 const (
-	reasonEntitlementActive          = servicesv1alpha1.ReasonEntitlementActive
-	reasonEntitlementPendingApproval = servicesv1alpha1.ReasonEntitlementPendingApproval
-	reasonEntitlementRejected        = servicesv1alpha1.ReasonEntitlementRejected
-	reasonServiceNotPublished        = servicesv1alpha1.ReasonServiceNotPublished
+	reasonServiceNotPublished = servicesv1alpha1.ReasonServiceNotPublished
 )
-
-// pendingApprovalRequeueInterval bounds the latency between a provider
-// recording an approval decision and the entitlement reflecting it. The
-// decision lives on a ServiceConsumer in the provider project's control
-// plane, which this controller doesn't watch; the consumer controller
-// normally propagates it, but if that write is missed the only other
-// trigger is the multi-hour cache resync.
-const pendingApprovalRequeueInterval = 2 * time.Minute
 
 // providerTeardownRequeueInterval bounds how often the finalize path re-checks
 // whether the provider has finished tearing down the resources it created for
@@ -60,15 +48,22 @@ const pendingApprovalRequeueInterval = 2 * time.Minute
 // gone, so this only paces the wait; it does not drive teardown itself.
 const providerTeardownRequeueInterval = 10 * time.Second
 
+// serviceEntitlementMaxConcurrentReconciles is how many entitlements this
+// controller authorizes at once. Each step of a dependency chain waits on this
+// queue, so a single worker made every project's setup wait behind every other
+// project's.
+//
+// Parallel reconciles stay isolated. Each one writes its own entitlement under
+// resourceVersion, a ServiceConsumer named by service and consumer project,
+// and ResourceGrants named by service, project and limit. A shared dependency
+// entitlement is created once: the losing parent gets AlreadyExists and leaves
+// it to the winner. Five matches the other project fan-out controllers.
+const serviceEntitlementMaxConcurrentReconciles = 5
+
 // dependencyOfLabel records which parent entitlement pulled a dependency
 // entitlement in. Set at create time and never rewritten, it's the provenance
 // status.origin and status.dependencyOf are derived from.
 const dependencyOfLabel = "services.miloapis.com/dependency-of"
-
-// dependenciesConditionFieldManager owns the DependenciesSatisfied condition,
-// which is patched separately from the main status Update so it doesn't race
-// the Ready/phase write that precedes dependency enrollment.
-const dependenciesConditionFieldManager = "service-entitlement-dependencies"
 
 // ServiceEntitlementReconciler runs in every engaged project cluster. Each
 // reconcile call carries the consumer project name as req.ClusterName. The
@@ -80,9 +75,11 @@ type ServiceEntitlementReconciler struct {
 	// Services live in the root etcd prefix, not in any project, so a normal
 	// per-cluster client (which talks to a project's virtual control plane)
 	// cannot see them.
-	rootClient client.Client
-	Manager    mcmanager.Manager
-	Scheme     *runtime.Scheme
+	rootClient    client.Client
+	rootAPIReader client.Reader
+	Manager       mcmanager.Manager
+	Scheme        *runtime.Scheme
+	wakeups       *engagementWakeups
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceentitlements,verbs=get;list;watch;create;update;patch;delete
@@ -97,6 +94,7 @@ type ServiceEntitlementReconciler struct {
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=billingentitlements,verbs=get;list;watch
 // +kubebuilder:rbac:groups=billing.miloapis.com,resources=offers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create
+// +kubebuilder:rbac:groups=resourcemanager.miloapis.com,resources=projects,verbs=get
 
 func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cluster", req.ClusterName)
@@ -107,8 +105,23 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		return ctrl.Result{}, fmt.Errorf("ServiceEntitlement reconcile invoked without a cluster name")
 	}
 
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, string(consumerProject))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	consumerCluster, err := r.Manager.GetCluster(ctx, consumerProject)
 	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			// A live Project means this may be a transient disengagement. Keep
+			// retrying because the queued entitlement may need its finalizer
+			// removed once the project control plane is reachable again. Only a
+			// confirmed-absent Project makes this request terminal.
+			if project != nil {
+				return ctrl.Result{RequeueAfter: projectLifecycleRetryInterval}, nil
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get consumer cluster %q: %w", consumerProject, err)
 	}
 	consumerClient := consumerCluster.GetClient()
@@ -122,15 +135,27 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	if !entitlement.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, string(consumerProject), consumerClient, &entitlement)
+		return r.reconcileDelete(ctx, req, string(consumerProject), consumerClient, consumerCluster.GetAPIReader(), &entitlement)
+	}
+
+	if project == nil || !project.DeletionTimestamp.IsZero() {
+		// The project purger will delete this entitlement and drive the normal
+		// finalizer path. Until then, do not add a new finalizer, enroll
+		// dependencies, create provider consumers, or restore quota grants into
+		// a control plane that is already being drained.
+		logger.V(1).Info("project is absent or terminating; skipping entitlement activation")
+		return ctrl.Result{}, nil
 	}
 
 	if !controllerutil.ContainsFinalizer(&entitlement, serviceEntitlementFinalizer) {
-		controllerutil.AddFinalizer(&entitlement, serviceEntitlementFinalizer)
-		if err := consumerClient.Update(ctx, &entitlement); err != nil {
+		if err := applyFinalizer(ctx, consumerClient, &entitlement, serviceEntitlementGVK, serviceEntitlementFinalizer); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		return ctrl.Result{}, nil
+		// The entitlement now holds the server's latest copy, so carry on with
+		// setup in this pass rather than waiting for the update event.
+		if !entitlement.DeletionTimestamp.IsZero() {
+			return ctrl.Result{}, nil
+		}
 	}
 
 	svc, err := r.resolveService(ctx, entitlement.Spec.ServiceRef.Name)
@@ -150,66 +175,46 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 	}
 
 	providerProject := svc.Spec.Owner.ProducerProjectRef.Name
-	providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(providerProject))
+	providerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(providerProject), req)
 	if err != nil {
-		// Provider project may not be engaged yet; requeue.
-		logger.Info("provider cluster not yet available, requeuing", "providerProject", providerProject, "err", err)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, err
+	}
+	if !ok {
+		// The provider project is not engaged yet, which is routine for a
+		// minute or so after the operator starts. Its engagement re-enqueues
+		// this request.
+		logger.Info("provider cluster not yet available; waiting for engagement", "providerProject", providerProject)
+		return ctrl.Result{}, nil
 	}
 	providerClient := providerCluster.GetClient()
 
-	var project resourcemanagerv1alpha1.Project
 	var projectSuspended projectSuspension
-	if err := r.rootClient.Get(ctx, client.ObjectKey{Name: string(consumerProject)}, &project); err == nil {
-		projectSuspended = suspensionFromProject(&project)
-	} else if !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get project: %w", err)
+	if project != nil {
+		projectSuspended = suspensionFromProject(project)
 	}
 
 	gated := svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider
 
 	consumerName := serviceConsumerName(svc.Spec.ServiceName, string(consumerProject))
-	consumer := &servicesv1alpha1.ServiceConsumer{
-		ObjectMeta: metav1.ObjectMeta{Name: consumerName},
-	}
-	op, err := controllerutil.CreateOrUpdate(ctx, providerClient, consumer, func() error {
-		// Mirror the caller's ref verbatim; the canonical name lives on
-		// status.serviceName. Both fields are immutable after creation — the
-		// webhook enforces this for everyone, including this controller — so
-		// only set them on create.
-		if consumer.CreationTimestamp.IsZero() {
-			consumer.Spec.ServiceRef = entitlement.Spec.ServiceRef
-			consumer.Spec.ConsumerProjectRef = servicesv1alpha1.ConsumerProjectRef{Name: string(consumerProject)}
-		}
-		return nil
-	})
+	consumer, err := r.applyServiceConsumer(ctx, providerClient, consumerName, string(consumerProject), &entitlement, gated)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to upsert ServiceConsumer %q in provider %q: %w", consumerName, providerProject, err)
 	}
-	logger.V(1).Info("upserted ServiceConsumer", "name", consumerName, "providerProject", providerProject, "op", op)
+	logger.V(1).Info("applied ServiceConsumer", "name", consumerName, "providerProject", providerProject)
 
-	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, gated, svc.Spec.ServiceName, projectSuspended); err != nil {
+	// If the provider already approved or denied the request, reflect that
+	// decision on both objects.
+	decision := decideEnablement(gated, consumer.Spec.Approval)
+	desiredPhase := decision.entitlementPhase
+
+	if err := r.reconcileConsumerStatus(ctx, providerClient, consumer, decision, svc.Spec.ServiceName, projectSuspended); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Set entitlement status. If the consumer was already approved/denied by
-	// the provider (re-reconcile triggered by the consumer controller), reflect
-	// that decision back onto the entitlement.
-	desiredPhase := servicesv1alpha1.EntitlementPhaseActive
-	reason := reasonEntitlementActive
-	message := "This service is enabled and ready to use."
-	switch {
-	case gated && consumer.Spec.Approval == nil:
-		desiredPhase = servicesv1alpha1.EntitlementPhasePendingApproval
-		reason = reasonEntitlementPendingApproval
-		message = "Waiting for the service provider to approve this request."
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
-		desiredPhase = servicesv1alpha1.EntitlementPhaseRejected
-		reason = reasonEntitlementRejected
-		message = "The service provider denied this request."
+	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, decision.entitlementReason, decision.entitlementMessage, svc.Spec.ServiceName, projectSuspended); err != nil {
+		return ctrl.Result{}, err
 	}
-
-	if err := r.setEntitlementStatus(ctx, consumerClient, &entitlement, desiredPhase, reason, message, svc.Spec.ServiceName, projectSuspended); err != nil {
+	if err := announceProviderActivation(ctx, consumerClient, &entitlement, svc); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -233,15 +238,14 @@ func (r *ServiceEntitlementReconciler) Reconcile(ctx context.Context, req mcreco
 		}
 	}
 
-	// Bound approval latency while waiting on the provider's decision.
-	if desiredPhase == servicesv1alpha1.EntitlementPhasePendingApproval {
-		return ctrl.Result{RequeueAfter: pendingApprovalRequeueInterval}, nil
-	}
+	// A pending entitlement is not polled. The provider's decision lands on the
+	// ServiceConsumer, whose controller writes it onto this entitlement and
+	// retries that write until it lands; the write re-runs this reconcile.
 	return ctrl.Result{}, nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, gated bool, canonicalServiceName string, projectSuspended projectSuspension) error {
-	// Patched separately from the Update below (see
+func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, decision enablementDecision, canonicalServiceName string, projectSuspended projectSuspension) error {
+	// Patched separately from the Update in updateConsumerStatus (see
 	// patchConsumerSuspendedCondition): ProjectSuspensionPropagationReconciler
 	// writes the same condition independently, on its own Get/patch cycle, so
 	// folding it into this function's own before/after diff would race it.
@@ -249,33 +253,7 @@ func (r *ServiceEntitlementReconciler) reconcileConsumerStatus(ctx context.Conte
 		return fmt.Errorf("failed to apply Suspended condition on ServiceConsumer: %w", err)
 	}
 
-	original := consumer.Status.DeepCopy()
-	consumer.Status.ObservedGeneration = consumer.Generation
-	consumer.Status.ServiceName = canonicalServiceName
-
-	desired := servicesv1alpha1.ConsumerPhaseActive
-	switch {
-	case gated && consumer.Spec.Approval == nil:
-		desired = servicesv1alpha1.ConsumerPhasePendingApproval
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionDenied:
-		desired = servicesv1alpha1.ConsumerPhaseDenied
-	case gated && consumer.Spec.Approval != nil && consumer.Spec.Approval.Decision == servicesv1alpha1.ApprovalDecisionApproved:
-		desired = servicesv1alpha1.ConsumerPhaseActive
-	}
-
-	consumer.Status.Phase = desired
-	if desired == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
-		now := metav1.Now()
-		consumer.Status.EntitledAt = &now
-	}
-
-	if apiequality.Semantic.DeepEqual(original, &consumer.Status) {
-		return nil
-	}
-	if err := providerClient.Status().Update(ctx, consumer); err != nil {
-		return fmt.Errorf("failed to update ServiceConsumer status: %w", err)
-	}
-	return nil
+	return updateConsumerStatus(ctx, providerClient, consumer, canonicalServiceName, decision)
 }
 
 func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string, projectSuspended projectSuspension) error {
@@ -285,7 +263,15 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 		return fmt.Errorf("failed to apply Suspended condition on ServiceEntitlement: %w", err)
 	}
 
-	original := entitlement.Status.DeepCopy()
+	return applyEntitlementReadyStatus(ctx, consumerClient, entitlement, phase, reason, message, canonicalServiceName)
+}
+
+// applyEntitlementReadyStatus writes the entitlement's authorization outcome:
+// entitlementReadyOwner's fields. Both the entitlement reconciler and the
+// ServiceConsumer reconciler write through here, so they always apply the same
+// complete set and never drop a field the other one wrote.
+func applyEntitlementReadyStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, phase servicesv1alpha1.EntitlementPhase, reason, message, canonicalServiceName string) error {
+	before := entitlement.DeepCopy()
 
 	entitlement.Status.ObservedGeneration = entitlement.Generation
 	entitlement.Status.Phase = phase
@@ -307,45 +293,23 @@ func (r *ServiceEntitlementReconciler) setEntitlementStatus(ctx context.Context,
 		entitlement.Status.EntitledAt = &now
 	}
 
-	cond := metav1.Condition{
+	apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
 		Type:               ConditionTypeReady,
-		Status:             metav1.ConditionFalse,
+		Status:             readyStatusForEntitlementPhase(phase),
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: entitlement.Generation,
-	}
-	if phase == servicesv1alpha1.EntitlementPhaseActive {
-		cond.Status = metav1.ConditionTrue
-	}
-	apimeta.SetStatusCondition(&entitlement.Status.Conditions, cond)
+	})
 
-	if equalEntitlementStatus(original, &entitlement.Status) {
-		return nil
-	}
-	if err := consumerClient.Status().Update(ctx, entitlement); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, entitlementReadyOwner, before, entitlement); err != nil {
 		return fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
 	}
+	observeServiceRejection(before, entitlement)
 	return nil
 }
 
 func (r *ServiceEntitlementReconciler) setRejectedStatus(ctx context.Context, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement, reason, message string) error {
 	return r.setEntitlementStatus(ctx, consumerClient, entitlement, servicesv1alpha1.EntitlementPhaseRejected, reason, message, "", projectSuspension{})
-}
-
-func equalEntitlementStatus(a, b *servicesv1alpha1.ServiceEntitlementStatus) bool {
-	if a.Phase != b.Phase || a.Origin != b.Origin || a.DependencyOf != b.DependencyOf || a.ServiceName != b.ServiceName {
-		return false
-	}
-	if (a.EntitledAt == nil) != (b.EntitledAt == nil) {
-		return false
-	}
-	if a.ObservedGeneration != b.ObservedGeneration {
-		return false
-	}
-	if !conditionsEqual(a.Conditions, b.Conditions, ConditionTypeReady) {
-		return false
-	}
-	return true
 }
 
 // ensureDependencies walks Service.spec.dependencies and creates a derived
@@ -370,11 +334,25 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	// can have, and DependenciesSatisfied should name every one it can't.
 	var failed []string
 	var errs []error
+	type held struct {
+		svc         *servicesv1alpha1.Service
+		entitlement *servicesv1alpha1.ServiceEntitlement
+	}
+	var next []held
 	for _, dep := range svc.Spec.Dependencies {
-		if err := r.ensureDependency(ctx, consumerClient, dep, parent); err != nil {
+		depSvc, depEntitlement, err := r.ensureDependency(ctx, consumerClient, dep, parent)
+		if err != nil {
 			failed = append(failed, dep.ServiceRef.Name)
 			errs = append(errs, err)
+			continue
 		}
+		if depEntitlement != nil {
+			next = append(next, held{depSvc, depEntitlement})
+		}
+	}
+	visited := map[string]bool{svc.Name: true}
+	for _, h := range next {
+		r.prefetchDependencies(ctx, consumerClient, h.svc, h.entitlement, visited, maxDependencyPrefetchDepth)
 	}
 
 	if err := r.setDependenciesCondition(ctx, consumerClient, parent, len(svc.Spec.Dependencies), failed, errs); err != nil {
@@ -383,12 +361,121 @@ func (r *ServiceEntitlementReconciler) ensureDependencies(ctx context.Context, c
 	return errors.Join(errs...)
 }
 
+// serviceConsumerRequestManager owns the fields of a ServiceConsumer that
+// mirror the consumer's request.
+const serviceConsumerRequestManager = "services-consumer-request"
+
+// providerActivationApprovalManager owns the approval this controller records
+// when the provider itself initiated activation. It is a separate manager
+// applied at most once, so later request applies never carry the approval and
+// can never remove or overwrite a decision the provider writes afterwards.
+const providerActivationApprovalManager = "services-provider-activation-approval"
+
+// applyServiceConsumer server-side applies the provider-side record of a
+// consumer's request. Apply creates or updates in one call, so two passes that
+// both miss the record in the cache can't race to create it.
+func (r *ServiceEntitlementReconciler) applyServiceConsumer(ctx context.Context, providerClient client.Client, name, consumerProject string, entitlement *servicesv1alpha1.ServiceEntitlement, gated bool) (*servicesv1alpha1.ServiceConsumer, error) {
+	// Mirror the caller's ref verbatim; the canonical name lives on
+	// status.serviceName. Both refs are immutable after creation, so an
+	// existing record keeps the refs it was created with.
+	spec := servicesv1alpha1.ServiceConsumerSpec{
+		ServiceRef:         entitlement.Spec.ServiceRef,
+		ConsumerProjectRef: servicesv1alpha1.ConsumerProjectRef{Name: consumerProject},
+		RequestMessage:     entitlement.Spec.RequestMessage,
+	}
+	var existing servicesv1alpha1.ServiceConsumer
+	err := providerClient.Get(ctx, client.ObjectKey{Name: name}, &existing)
+	switch {
+	case err == nil:
+		spec.ServiceRef = existing.Spec.ServiceRef
+		spec.ConsumerProjectRef = existing.Spec.ConsumerProjectRef
+	case !apierrors.IsNotFound(err):
+		return nil, err
+	}
+
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&spec)
+	if err != nil {
+		return nil, err
+	}
+	// Forced: this controller is the one writer of these fields, and records
+	// written before it used apply belong to an older Update manager.
+	consumer := &servicesv1alpha1.ServiceConsumer{}
+	if err := applySpec(ctx, providerClient, serviceConsumerGVK, name, content, serviceConsumerRequestManager, true, consumer); err != nil {
+		return nil, err
+	}
+
+	// A provider-initiated activation is itself the provider's affirmative
+	// decision. For a gated service, record that approval without requiring
+	// the initiating provider to approve the same request a second time. The
+	// apply isn't forced, so a different decision the provider wrote first
+	// makes it fail with a conflict rather than being overwritten.
+	if gated && entitlement.Spec.ProviderActivation != nil && consumer.Spec.Approval == nil {
+		approval := map[string]any{"approval": map[string]any{
+			"decision": string(servicesv1alpha1.ApprovalDecisionApproved),
+			"message":  "Approved because the service provider initiated activation.",
+		}}
+		if err := applySpec(ctx, providerClient, serviceConsumerGVK, name, approval, providerActivationApprovalManager, false, consumer); err != nil {
+			return nil, err
+		}
+	}
+	return consumer, nil
+}
+
+// maxDependencyPrefetchDepth bounds how many levels below a direct dependency
+// prefetchDependencies enrolls in one pass.
+const maxDependencyPrefetchDepth = 4
+
+// prefetchDependencies enrolls a self-service dependency's own dependencies
+// now, on that dependency's behalf, instead of waiting for its reconcile to go
+// Active first. Each hop of a chain such as compute → networking → ipam
+// otherwise costs a full reconcile round trip before the next level starts.
+//
+// The entitlements it creates are labelled exactly as the dependency's own
+// reconcile would label them, so ownership, delete protection, and teardown
+// don't change; that reconcile later finds them by name and makes no write.
+// A gated dependency is skipped: its dependencies wait for the provider's
+// approval, as ensureDependencies requires. So is one that is deleting or
+// not Active. Failures are only logged, since
+// the dependency's own reconcile enrolls the same entitlements and reports
+// any failure on its own DependenciesSatisfied condition.
+func (r *ServiceEntitlementReconciler) prefetchDependencies(ctx context.Context, consumerClient client.Client, svc *servicesv1alpha1.Service, entitlement *servicesv1alpha1.ServiceEntitlement, visited map[string]bool, depth int) {
+	if depth == 0 || visited[svc.Name] || len(svc.Spec.Dependencies) == 0 {
+		return
+	}
+	visited[svc.Name] = true
+	if svc.Spec.Phase != servicesv1alpha1.PhasePublished ||
+		(svc.Spec.EnablementPolicy != nil && svc.Spec.EnablementPolicy.Mode == servicesv1alpha1.EnablementModeGatedByProvider) {
+		return
+	}
+	// Stand in for the dependency's own Active gate: go on only while it is
+	// new or Active. A deleting, rejected, or pending dependency would never
+	// enroll its own dependencies, so neither does this.
+	if !entitlement.DeletionTimestamp.IsZero() ||
+		(entitlement.Status.Phase != "" && entitlement.Status.Phase != servicesv1alpha1.EntitlementPhaseActive) {
+		return
+	}
+	for _, dep := range svc.Spec.Dependencies {
+		depSvc, depEntitlement, err := r.ensureDependency(ctx, consumerClient, dep, entitlement)
+		if err != nil {
+			log.FromContext(ctx).V(1).Info("could not enroll dependency early; its parent's reconcile will retry",
+				"parent", entitlement.Name, "dependency", dep.ServiceRef.Name, "reason", err.Error())
+			continue
+		}
+		if depEntitlement != nil {
+			r.prefetchDependencies(ctx, consumerClient, depSvc, depEntitlement, visited, depth-1)
+		}
+	}
+}
+
 // ensureDependency enrolls the consumer project in a single declared
 // dependency, creating the derived ServiceEntitlement if it isn't there yet.
-func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, consumerClient client.Client, dep servicesv1alpha1.ServiceDependency, parent *servicesv1alpha1.ServiceEntitlement) error {
+//
+// When this parent holds the dependency open, it returns the dependency's
+// Service and entitlement so the caller can enroll the next level early.
+func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, consumerClient client.Client, dep servicesv1alpha1.ServiceDependency, parent *servicesv1alpha1.ServiceEntitlement) (*servicesv1alpha1.Service, *servicesv1alpha1.ServiceEntitlement, error) {
 	depSvc, err := r.resolveService(ctx, dep.ServiceRef.Name)
 	if err != nil {
-		return fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
+		return nil, nil, fmt.Errorf("failed to resolve dependency service %q: %w", dep.ServiceRef.Name, err)
 	}
 	depCanonical := depSvc.Spec.ServiceName
 
@@ -407,12 +494,12 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 		// created directly is left alone even if it happens to satisfy this
 		// dependency: it isn't ours to hold open on the parent's behalf.
 		if existing.Labels[dependencyOfLabel] == parent.Name {
-			return r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
+			return depSvc, &existing, r.stampDependencyOrigin(ctx, consumerClient, &existing, parent.Name)
 		}
-		return nil
+		return nil, nil, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
+		return nil, nil, fmt.Errorf("failed to look up dependency entitlement %q: %w", depEntitlementName, err)
 	}
 
 	// The Get returned NotFound, but an entitlement for the same dependency
@@ -422,10 +509,10 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	var existingByCanonical servicesv1alpha1.ServiceEntitlementList
 	if err := consumerClient.List(ctx, &existingByCanonical,
 		client.MatchingFields{entitlementServiceNameIndex: depCanonical}); err != nil {
-		return fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
+		return nil, nil, fmt.Errorf("failed to list entitlements while checking for duplicate dep %q: %w", depCanonical, err)
 	}
 	if len(existingByCanonical.Items) > 0 {
-		return nil
+		return nil, nil, nil
 	}
 
 	depEntitlement := &servicesv1alpha1.ServiceEntitlement{
@@ -436,6 +523,9 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 			// time is the one record of "this controller created this to
 			// satisfy that parent" that nothing else can race.
 			Labels: map[string]string{dependencyOfLabel: parent.Name},
+			// Set at create so its first reconcile needn't race other writers
+			// with a separate finalizer update.
+			Finalizers: []string{serviceEntitlementFinalizer},
 		},
 		Spec: servicesv1alpha1.ServiceEntitlementSpec{
 			ServiceRef: servicesv1alpha1.ServiceRef{Name: depSvc.Name},
@@ -443,26 +533,24 @@ func (r *ServiceEntitlementReconciler) ensureDependency(ctx context.Context, con
 	}
 	if err := consumerClient.Create(ctx, depEntitlement); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
+			return nil, nil, fmt.Errorf("failed to create dependency entitlement %q: %w", depEntitlementName, err)
 		}
 		// Lost a create race; the next pass finds it by name and stamps it.
-		return nil
+		return nil, nil, nil
 	}
 
 	// Stamp from the object the API server just returned rather than reading
 	// it back: the consumer client is cache-backed and the create hasn't
 	// reached that cache yet, so a read-back here returns NotFound.
-	return r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
+	return depSvc, depEntitlement, r.stampDependencyOrigin(ctx, consumerClient, depEntitlement, parent.Name)
 }
 
 // stampDependencyOrigin records on status that this entitlement is held open
 // by a parent, which is what delete protection and parent teardown key on.
 //
-// Patched, not updated: the entitlement's own reconcile writes the whole
-// status independently, and an optimistically-locked update loses that race
-// often enough to matter. The same derivation runs in setEntitlementStatus
-// from the label, so a status write that lands after this one restores it
-// rather than reverting it to Direct.
+// Applied under its own field manager: the dependency's own reconcile writes
+// the same two fields through applyEntitlementReadyStatus, deriving them from
+// the same label, so the two writes agree whichever lands first.
 func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context, consumerClient client.Client, dep *servicesv1alpha1.ServiceEntitlement, parentName string) error {
 	if dep.Status.Origin == servicesv1alpha1.EntitlementOriginDependency && dep.Status.DependencyOf == parentName {
 		return nil
@@ -470,7 +558,7 @@ func (r *ServiceEntitlementReconciler) stampDependencyOrigin(ctx context.Context
 	before := dep.DeepCopy()
 	dep.Status.Origin = servicesv1alpha1.EntitlementOriginDependency
 	dep.Status.DependencyOf = parentName
-	if err := consumerClient.Status().Patch(ctx, dep, client.MergeFrom(before)); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, dependencyOriginOwner, before, dep); err != nil {
 		return fmt.Errorf("failed to stamp dependency origin on %q: %w", dep.Name, err)
 	}
 	return nil
@@ -493,29 +581,33 @@ func (r *ServiceEntitlementReconciler) setDependenciesCondition(ctx context.Cont
 		cond.Reason = servicesv1alpha1.ReasonNoDependencies
 		cond.Message = "This service doesn't depend on any other service."
 	case len(failed) > 0:
+		// Project members read this condition, so an internal error is named
+		// once in general terms and logged in full, not copied here.
 		reasons := make([]string, 0, len(errs))
-		for _, err := range errs {
-			reasons = append(reasons, err.Error())
+		seen := make(map[string]struct{}, len(errs))
+		for i, err := range errs {
+			reason := customerErrorReason(ctx, err, "entitlement", parent.Name, "dependency", failed[i])
+			if _, dup := seen[reason]; dup {
+				continue
+			}
+			seen[reason] = struct{}{}
+			reasons = append(reasons, reason)
 		}
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = servicesv1alpha1.ReasonDependencyEnrollmentFailed
-		cond.Message = fmt.Sprintf("Couldn't enable %s: %s",
-			strings.Join(failed, ", "), strings.Join(reasons, "; "))
+		cond.Message = truncateMessage(fmt.Sprintf("Couldn't enable %s: %s",
+			strings.Join(failed, ", "), strings.Join(reasons, "; ")), maxLedgerMessageBytes)
 	}
 
 	before := parent.DeepCopy()
 	apimeta.SetStatusCondition(&parent.Status.Conditions, cond)
-	if conditionsEqual(before.Status.Conditions, parent.Status.Conditions, servicesv1alpha1.ConditionTypeDependenciesSatisfied) {
-		return nil
-	}
-	if err := consumerClient.Status().Patch(ctx, parent, client.MergeFrom(before),
-		client.FieldOwner(dependenciesConditionFieldManager)); err != nil {
+	if err := applyEntitlementStatus(ctx, consumerClient, dependenciesConditionOwner, before, parent); err != nil {
 		return fmt.Errorf("failed to patch DependenciesSatisfied condition: %w", err)
 	}
 	return nil
 }
 
-func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, consumerProject string, consumerClient client.Client, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
+func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, req mcreconcile.Request, consumerProject string, consumerClient client.Client, consumerReader client.Reader, entitlement *servicesv1alpha1.ServiceEntitlement) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(entitlement, serviceEntitlementFinalizer) {
@@ -542,10 +634,13 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	// provider to observe, chaining the teardown guarantee up to project deletion.
 	consumerGated := false
 	if svc.Spec.Owner.ProducerProjectRef.Name != "" {
-		providerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name))
+		providerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(svc.Spec.Owner.ProducerProjectRef.Name), req)
 		if err != nil {
-			logger.Info("provider cluster unavailable during finalize, requeuing", "err", err)
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			logger.Info("provider cluster unavailable during finalize; waiting for engagement")
+			return ctrl.Result{}, nil
 		}
 		providerClient := providerCluster.GetClient()
 
@@ -641,6 +736,14 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 		return ctrl.Result{}, fmt.Errorf("failed to prune quota grants: %w", err)
 	}
 
+	// Remove what spec.provisioning installed. The provisioning controller
+	// prunes too, but nothing orders it before this finalizer comes off, and
+	// once the entitlement is gone only garbage collection could reclaim the
+	// objects, which does not reliably happen in project control planes.
+	if err := pruneProvisioned(ctx, consumerReader, consumerClient, entitlement); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to prune provisioned resources: %w", err)
+	}
+
 	// Deprovisioning gate: hold the finalizer until the provider has confirmed
 	// teardown, which it signals by dropping its own finalizer and letting the
 	// ServiceConsumer be garbage-collected. This keeps the project's control
@@ -656,6 +759,7 @@ func (r *ServiceEntitlementReconciler) reconcileDelete(ctx context.Context, cons
 	if err := consumerClient.Update(ctx, entitlement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
+	observeServiceDisable(svc, entitlement)
 	logger.Info("finalized ServiceEntitlement", "name", entitlement.Name)
 	return ctrl.Result{}, nil
 }
@@ -712,7 +816,12 @@ func serviceConsumerName(serviceName, consumerProject string) string {
 // would overwrite it with the local cluster name).
 func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
 	r.Manager = mcMgr
+	r.wakeups = newEngagementWakeups()
+	if err := mcMgr.Add(r.wakeups); err != nil {
+		return fmt.Errorf("failed to register entitlement engagement wakeups: %w", err)
+	}
 
 	// Index ServiceEntitlement objects by the canonical service name stamped
 	// on status.serviceName. The multicluster manager propagates the index to
@@ -808,26 +917,34 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 
 	return mcbuilder.ControllerManagedBy(mcMgr).
 		Named("service-entitlement").
-		For(&servicesv1alpha1.ServiceEntitlement{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		For(&servicesv1alpha1.ServiceEntitlement{},
+			mcbuilder.WithEngageWithProviderClusters(true),
+			mcbuilder.WithPredicates(serviceEntitlementPredicate()),
+		).
+		WatchesRawSource(r.wakeups.source()).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.BillingEntitlement{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingEntitlementToServiceEntitlements),
+			billingEntitlementPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.BillingAccountBinding{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapBillingAccountBindingToServiceEntitlements),
+			billingAccountBindingPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&billingv1alpha1.Offer{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapOfferToServiceEntitlements),
+			offerPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
 			&servicesv1alpha1.ServiceConfiguration{},
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceConfigurationToServiceEntitlements),
+			serviceConfigurationPredicate(),
 		)).
 		WatchesRawSource(source.TypedKind(
 			rootMgr.GetCache(),
@@ -835,5 +952,8 @@ func (r *ServiceEntitlementReconciler) SetupWithManager(mcMgr mcmanager.Manager,
 			handler.TypedEnqueueRequestsFromMapFunc(r.mapServiceToServiceEntitlements),
 			serviceEnrollmentPredicate(),
 		)).
-		Complete(r)
+		WithOptions(controller.TypedOptions[mcreconcile.Request]{
+			MaxConcurrentReconciles: serviceEntitlementMaxConcurrentReconciles,
+		}).
+		Complete(requeueOnConflict(r))
 }

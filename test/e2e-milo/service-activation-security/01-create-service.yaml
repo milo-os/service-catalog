@@ -1,0 +1,14 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  # Intentionally differs from spec.serviceName: activation requests resolve
+  # only the canonical, fully-qualified service name.
+  name: e2e-provider-activation-record
+spec:
+  serviceName: provider-activation.e2e.datumapis.com
+  phase: Published
+  displayName: Provider activation security fixture
+  description: Verifies provider activation admission cannot be forged.
+  owner:
+    producerProjectRef:
+      name: e2e-provisioning-platform

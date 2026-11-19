@@ -6,9 +6,9 @@ vars:
   SERVICES_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
   TEST_INFRA_REPO_REF: 'v0.6.0'
-  CONTROLLER_TOOLS_VERSION: "v0.16.4"
+  CONTROLLER_TOOLS_VERSION: "v0.17.3"
   DEFAULTER_GEN_VERSION: "v0.32.3"
-  GOLANGCI_LINT_VERSION: "v2.12.2"
+  GOLANGCI_LINT_VERSION: "v2.15.0"
   # renovate: datasource=go depName=github.com/kyverno/chainsaw
   # v0.2.14 and earlier fail to build against newer Go toolchains (missing
   # testing.testDeps.ModulePath) — keep this at v0.2.15+.
@@ -24,6 +24,12 @@ includes:
   ui:
     taskfile: ./ui/Taskfile.yaml
     dir: ./ui
+
+  observability:
+    taskfile: ./observability/Taskfile.yaml
+    dir: ./observability
+    vars:
+      ROOT_DIR: "{{.USER_WORKING_DIR}}"
 
 tasks:
   default:
@@ -230,9 +236,6 @@ tasks:
         task test-infra:kubectl -- apply -f config/overlays/e2e/billing-crds.yaml
         task test-infra:kubectl -- wait kustomization/billing-crds -n flux-system --for=condition=ready --timeout=120s
 
-        echo "Installing LocationBinding CRD..."
-        task test-infra:kubectl -- apply -f config/overlays/e2e/locationbinding-crd.yaml
-
         echo "Installing resourcemanager CRDs..."
         task test-infra:kubectl -- apply -f config/overlays/e2e/resourcemanager-crds.yaml
 
@@ -247,7 +250,7 @@ tasks:
         echo "e2e environment ready! Run 'task e2e' to execute the chainsaw suite."
 
   e2e-milo:setup:
-    desc: Spin up the multi-project e2e environment — a real Milo control plane, three real Projects, and the operator wired to it (see test/e2e-milo/README.md)
+    desc: Spin up the multi-project e2e environment — a real Milo control plane, real Projects, and the operator wired to it (see test/e2e-milo/README.md)
     silent: true
     cmds:
       # Built here rather than by the script: the image is this repo's, the
@@ -275,6 +278,22 @@ tasks:
       # including the ephemeral namespace it creates per test. Without it that
       # lands in whatever cluster the developer's ambient kubeconfig points at.
       - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml test/e2e-milo/
+    silent: false
+
+  e2e-milo:timing:
+    desc: Run the concurrent-enablement timing suite REPEAT times in a row (default 5; requires 'task e2e-milo:setup' first)
+    deps:
+      - task: install-go-tool
+        vars:
+          NAME: chainsaw
+          PACKAGE: github.com/kyverno/chainsaw
+          VERSION: "{{.CHAINSAW_VERSION}}"
+    vars:
+      REPEAT: '{{.REPEAT | default "5"}}'
+    cmds:
+      # A timing budget is only worth enforcing if it holds run after run, so
+      # CI runs this suite repeatedly on top of the single pass in 'e2e-milo'.
+      - KUBECONFIG=test/e2e-milo/.kubeconfig "{{.TOOL_DIR}}/chainsaw" test --config test/e2e-milo/.chainsaw.yaml --repeat-count {{.REPEAT}} test/e2e-milo/concurrent-enablement
     silent: false
 
   e2e-milo:down:

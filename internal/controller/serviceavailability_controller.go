@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,7 +26,7 @@ const (
 	// ConditionTypeAvailable is the gate-3 condition the
 	// ServiceAvailabilityReconciler owns: True when the referenced Service
 	// is Published and the referenced Location exists and is Ready. The
-	// LocationBindingReconciler reads it as the third gate in the location
+	// LocationProjectionReconciler reads it as the third gate in the location
 	// three-gate model.
 	ConditionTypeAvailable = "Available"
 
@@ -43,12 +42,11 @@ const (
 	// referenced Location exists but its Ready condition is not True.
 	reasonLocationNotReady = "LocationNotReady"
 
-	// reasonLocationSourceUnavailable is the Available=Unknown reason when the
-	// control plane does not serve the configured location source. Nothing can
-	// be said about the location until an operator installs that group or
-	// points the operator back at one that is served, so this is deliberately
+	// reasonLocationAPIUnavailable is the Available=Unknown reason when the
+	// control plane does not serve the Location API. Nothing can be said
+	// about the location until an operator installs it, so this is deliberately
 	// not a verdict of unavailable.
-	reasonLocationSourceUnavailable = "LocationSourceUnavailable"
+	reasonLocationAPIUnavailable = "LocationAPIUnavailable"
 	// reasonServiceNotPublished ("ServiceNotPublished") is shared with the
 	// ServiceEntitlement reconciler; it is declared there.
 )
@@ -60,21 +58,17 @@ const (
 type ServiceAvailabilityReconciler struct {
 	client client.Client
 	Scheme *runtime.Scheme
-
-	// LocationGVK is the configured location source. Only this group is read.
-	LocationGVK schema.GroupVersionKind
 }
 
-// locationSourceRetryInterval is how often an availability whose location
-// source is not served re-checks. The condition already says what is wrong;
+// locationAPIRetryInterval is how often an availability whose Location API
+// is not served re-checks. The condition already says what is wrong;
 // this is what lets the object recover on its own once the group is installed.
-const locationSourceRetryInterval = time.Minute
+const locationAPIRetryInterval = time.Minute
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceavailabilities/finalizers,verbs=update
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=services,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 
 func (r *ServiceAvailabilityReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -111,8 +105,8 @@ func (r *ServiceAvailabilityReconciler) Reconcile(ctx context.Context, req recon
 	// operator has to fix, so the condition is written and then re-checked
 	// rather than requeued as a failure.
 	result := ctrl.Result{}
-	if available.Reason == reasonLocationSourceUnavailable {
-		result.RequeueAfter = locationSourceRetryInterval
+	if available.Reason == reasonLocationAPIUnavailable {
+		result.RequeueAfter = locationAPIRetryInterval
 	}
 
 	if !availabilityStatusNeedsUpdate(&sa.Status, newStatus) {
@@ -163,15 +157,15 @@ func (r *ServiceAvailabilityReconciler) desiredAvailableCondition(
 	}
 
 	// Gate 2: the referenced Location must exist and be Ready in the
-	// configured location source.
+	// locations API.
 	locName := sa.Spec.LocationRef.Name
-	loc, found, err := getLocation(ctx, r.client, r.LocationGVK, locName)
-	if errors.Is(err, errLocationSourceUnavailable) {
+	loc, found, err := getLocation(ctx, r.client, locName)
+	if errors.Is(err, errLocationAPIUnavailable) {
 		cond.Status = metav1.ConditionUnknown
-		cond.Reason = reasonLocationSourceUnavailable
+		cond.Reason = reasonLocationAPIUnavailable
 		cond.Message = fmt.Sprintf(
-			"Locations are configured to be read from %q, which this control plane does not serve, so availability at %q cannot be determined.",
-			r.LocationGVK.GroupVersion(), locName)
+			"The Location API %q is not served, so availability at %q cannot be determined.",
+			LocationGVK.GroupVersion(), locName)
 		return cond, nil
 	}
 	if err != nil {

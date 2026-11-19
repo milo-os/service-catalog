@@ -9,6 +9,7 @@ resources:
   - service.yaml
   - serviceconfiguration.yaml
   - serviceentitlement.yaml
+  - serviceactivationrequest.yaml
   - serviceconsumer.yaml
   - serviceavailability.yaml
   - serviceavailability-project.yaml

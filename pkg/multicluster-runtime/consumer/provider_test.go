@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,16 +23,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	crrecorder "sigs.k8s.io/controller-runtime/pkg/recorder"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
+	"go.miloapis.com/service-catalog/pkg/multicluster-runtime/prewarm"
 )
 
 // --- test scheme & fixtures ---------------------------------------------------
@@ -122,17 +124,17 @@ type fakeCluster struct {
 	cache  *fakeCache
 }
 
-func (c *fakeCluster) GetClient() client.Client                        { return c.client }
-func (c *fakeCluster) GetCache() cache.Cache                           { return c.cache }
-func (c *fakeCluster) GetScheme() *runtime.Scheme                      { return nil }
-func (c *fakeCluster) GetHTTPClient() *http.Client                     { return nil }
-func (c *fakeCluster) GetConfig() *rest.Config                         { return nil }
-func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer            { return c.cache }
-func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder { return nil }
-func (c *fakeCluster) GetEventRecorder(string) events.EventRecorder    { return nil }
-func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                  { return nil }
-func (c *fakeCluster) GetAPIReader() client.Reader                     { return nil }
-func (c *fakeCluster) Start(context.Context) error                     { return nil }
+func (c *fakeCluster) GetClient() client.Client                         { return c.client }
+func (c *fakeCluster) GetCache() cache.Cache                            { return c.cache }
+func (c *fakeCluster) GetScheme() *runtime.Scheme                       { return nil }
+func (c *fakeCluster) GetHTTPClient() *http.Client                      { return nil }
+func (c *fakeCluster) GetConfig() *rest.Config                          { return nil }
+func (c *fakeCluster) GetFieldIndexer() client.FieldIndexer             { return c.cache }
+func (c *fakeCluster) GetEventRecorderFor(string) record.EventRecorder  { return nil }
+func (c *fakeCluster) GetEventRecorder(string) crrecorder.EventRecorder { return nil }
+func (c *fakeCluster) GetRESTMapper() meta.RESTMapper                   { return nil }
+func (c *fakeCluster) GetAPIReader() client.Reader                      { return nil }
+func (c *fakeCluster) Start(context.Context) error                      { return nil }
 
 // fakeMCMgr satisfies multicluster.Aware. Only Engage is exercised; it records
 // the context each engagement was started with so tests can assert the
@@ -197,6 +199,7 @@ func newTestProvider(providerClient client.Client, serviceNames []string, opts .
 			return fake.NewClientBuilder().Build(), nil
 		},
 		serviceNames: sn,
+		watchedKinds: prewarm.NewWatchedKinds(),
 		clusters:     map[string]cluster.Cluster{},
 		cancelFns:    map[string]context.CancelFunc{},
 		tearingDown:  map[string]struct{}{},
@@ -641,10 +644,10 @@ func TestProjectRestConfig_Errors(t *testing.T) {
 
 // --- Phase 2: deactivation cleanup (ManagedResources + Teardown) -------------
 
-var locationBindingGVK = schema.GroupVersionKind{
-	Group:   "networking.datumapis.com",
-	Version: "v1alpha",
-	Kind:    "LocationBinding",
+var managedWidgetGVK = schema.GroupVersionKind{
+	Group:   "tests.example.com",
+	Version: "v1alpha1",
+	Kind:    "ManagedWidget",
 }
 
 // recordedDelete captures one DeleteAllOf call: the addressed GVK, namespace,
@@ -661,7 +664,7 @@ type recordedDelete struct {
 // implements client.Client by embedding the interface (nil) and overrides
 // DeleteAllOf and List (namespace enumeration) — every other method panics if
 // unexpectedly called, which is a useful guard that teardown touches nothing
-// else. LocationBinding is an external unstructured GVK absent from our scheme,
+// else. ManagedWidget is an external unstructured GVK absent from our scheme,
 // so recording the requests (rather than a real fake client) is the cleanest
 // way to assert label-scoping.
 type recordingClient struct {
@@ -767,7 +770,7 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -784,8 +787,8 @@ func TestDisengage_DeletesManagedResourcesLabelScoped(t *testing.T) {
 		t.Fatalf("expected 1 DeleteAllOf, got %d: %+v", len(rec.deletes), rec.deletes)
 	}
 	d := rec.deletes[0]
-	if d.gvk != locationBindingGVK {
-		t.Errorf("delete gvk = %v, want %v", d.gvk, locationBindingGVK)
+	if d.gvk != managedWidgetGVK {
+		t.Errorf("delete gvk = %v, want %v", d.gvk, managedWidgetGVK)
 	}
 	if d.namespace != "default" {
 		t.Errorf("delete namespace = %q, want \"default\" (per-namespace scoping required by Milo)", d.namespace)
@@ -834,7 +837,7 @@ func TestDisengage_DeletesCartesianOverServiceNames(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical, storageCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -849,7 +852,7 @@ func TestDisengage_DeletesCartesianOverServiceNames(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for _, d := range rec.deletes {
-		if d.gvk != locationBindingGVK {
+		if d.gvk != managedWidgetGVK {
 			t.Errorf("unexpected delete gvk %v", d.gvk)
 		}
 		got[d.selector] = true
@@ -870,7 +873,7 @@ func TestDisengage_TeardownErrorAbortsKeepsEngagedThenSucceeds(t *testing.T) {
 	td := &recordingTeardown{err: boom}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -918,7 +921,7 @@ func TestDisengage_DeleteErrorAbortsBeforeTeardowns(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -941,15 +944,15 @@ func TestDisengage_DeleteErrorAbortsBeforeTeardowns(t *testing.T) {
 // in a permanent retry it can never satisfy.
 func TestDisengage_ToleratesMissingType_NoMatchError(t *testing.T) {
 	rec := &recordingClient{err: &meta.NoKindMatchError{
-		GroupKind:        schema.GroupKind{Group: locationBindingGVK.Group, Kind: locationBindingGVK.Kind},
-		SearchedVersions: []string{locationBindingGVK.Version},
+		GroupKind:        schema.GroupKind{Group: managedWidgetGVK.Group, Kind: managedWidgetGVK.Kind},
+		SearchedVersions: []string{managedWidgetGVK.Version},
 	}}
 	// A Teardown is declared too: a missing managed-type CRD must NOT block the
 	// teardown hooks — they still run.
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -973,10 +976,10 @@ func TestDisengage_ToleratesMissingType_NoMatchError(t *testing.T) {
 // A NotFound from DeleteAllOf (collection already gone) is likewise tolerated.
 func TestDisengage_ToleratesMissingType_NotFound(t *testing.T) {
 	rec := &recordingClient{err: apierrors.NewNotFound(
-		schema.GroupResource{Group: locationBindingGVK.Group, Resource: "locationbindings"}, "")}
+		schema.GroupResource{Group: managedWidgetGVK.Group, Resource: "managedwidgets"}, "")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -994,7 +997,7 @@ func TestDisengage_TeardownIsIdempotent(t *testing.T) {
 	td := &recordingTeardown{}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1026,7 +1029,7 @@ func TestReconcile_TeardownErrorKeepsEngagedThenRecovers(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("boom")}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1081,7 +1084,7 @@ func TestGet_MidTeardownReportsSentinel(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("teardown stuck")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1136,7 +1139,7 @@ func TestMetrics_TeardownFailureCounter(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("stuck")}
 	p := newTestProvider(newProviderClient(t), []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1179,7 +1182,7 @@ func TestReconcile_RestartTearsDownRevokedConsumerWithoutEngaging(t *testing.T) 
 	mcMgr := newFakeMCMgr()
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(mcMgr),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 
@@ -1191,8 +1194,8 @@ func TestReconcile_RestartTearsDownRevokedConsumerWithoutEngaging(t *testing.T) 
 	if len(rec.deletes) != 1 {
 		t.Fatalf("expected 1 DeleteAllOf for the revoked project's projected resources, got %d", len(rec.deletes))
 	}
-	if rec.deletes[0].gvk != locationBindingGVK {
-		t.Errorf("delete gvk = %v, want %v", rec.deletes[0].gvk, locationBindingGVK)
+	if rec.deletes[0].gvk != managedWidgetGVK {
+		t.Errorf("delete gvk = %v, want %v", rec.deletes[0].gvk, managedWidgetGVK)
 	}
 	if want := labelServiceName + "=" + computeCanonical; rec.deletes[0].selector != want {
 		t.Errorf("delete selector = %q, want %q", rec.deletes[0].selector, want)
@@ -1216,7 +1219,7 @@ func TestReconcile_PendingOnlyProjectIsNotTornDown(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 
@@ -1241,7 +1244,7 @@ func TestReconcile_StampsTeardownFinalizerOnActiveConsumer(t *testing.T) {
 	providerClient := newProviderClient(t, newService(computeObject, computeCanonical), consumer)
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 	)
 
 	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
@@ -1290,7 +1293,7 @@ func TestReconcile_StampsFinalizerOnActiveAndDeniedConsumers(t *testing.T) {
 	)
 	p := newTestProvider(providerClient, []string{computeCanonical, storageCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 	)
 
 	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
@@ -1320,7 +1323,7 @@ func TestDisengage_RemovesTeardownFinalizerAfterTeardownSucceeds(t *testing.T) {
 	rec := &recordingClient{}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
 	engageStub(p, "proj-a")
@@ -1355,7 +1358,7 @@ func TestDisengage_KeepsTeardownFinalizerWhenTeardownFails(t *testing.T) {
 	td := &recordingTeardown{err: errors.New("teardown boom")}
 	p := newTestProvider(providerClient, []string{computeCanonical},
 		withMCMgr(newFakeMCMgr()),
-		withManagedResources(locationBindingGVK),
+		withManagedResources(managedWidgetGVK),
 		withTeardowns(td),
 		withNewClient(func(*rest.Config, client.Options) (client.Client, error) { return rec, nil }),
 	)
@@ -1549,4 +1552,168 @@ func containsString(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- engage: publish before Engage, prewarm ----------------------------------
+
+// blockingMCMgr is a multicluster.Aware whose Engage waits until release is
+// closed, like a leader whose controllers are listing the new project.
+type blockingMCMgr struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingMCMgr) Engage(context.Context, multicluster.ClusterName, cluster.Cluster) error {
+	close(m.entered)
+	<-m.release
+	return nil
+}
+
+// While the operator's controllers are still engaging a project, Get must
+// already return it, and must not wait for Engage to finish. A webhook asking
+// for the project in that window used to get "not engaged" or block on the
+// provider's lock.
+func TestEngage_GetReturnsProjectWhileControllersEngage(t *testing.T) {
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	mcMgr := &blockingMCMgr{entered: make(chan struct{}), release: make(chan struct{})}
+	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical}, withMCMgr(mcMgr))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Reconcile(context.Background(), ctrl.Request{})
+		done <- err
+	}()
+	<-mcMgr.entered
+
+	got := make(chan error, 1)
+	go func() {
+		_, err := p.Get(context.Background(), "proj-a")
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Errorf("Get during Engage = %v, want the project's cluster", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Get blocked while the project's controllers were engaging")
+	}
+
+	close(mcMgr.release)
+	if err := <-done; err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if _, err := p.Get(context.Background(), "proj-a"); err != nil {
+		t.Errorf("Get after Engage = %v, want the project's cluster", err)
+	}
+}
+
+// After a failed Engage the project must not stay visible to Get.
+func TestEngage_FailedEngageUnpublishesProject(t *testing.T) {
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	mcMgr := newFakeMCMgr()
+	mcMgr.engageErr = errors.New("engage boom")
+	p := newTestProvider(newProviderClient(t, objs...), []string{computeCanonical}, withMCMgr(mcMgr))
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err == nil {
+		t.Fatal("expected reconcile to surface the engage error")
+	}
+	if _, err := p.Get(context.Background(), "proj-a"); !errors.Is(err, multicluster.ErrClusterNotFound) {
+		t.Errorf("Get after failed Engage = %v, want ErrClusterNotFound", err)
+	}
+}
+
+// informerRecordingCache records the informers asked of it and whether each
+// call blocks until synced.
+type informerRecordingCache struct {
+	cache.Cache
+	mu      sync.Mutex
+	started []string
+}
+
+func (c *informerRecordingCache) GetInformer(_ context.Context, obj client.Object, opts ...cache.InformerGetOption) (cache.Informer, error) {
+	var o cache.InformerGetOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.started = append(c.started, fmt.Sprintf("%T blocking=%t", obj, o.BlockUntilSynced == nil || *o.BlockUntilSynced))
+	return nil, nil
+}
+
+func (c *informerRecordingCache) WaitForCacheSync(context.Context) bool { return true }
+func (c *informerRecordingCache) IndexField(context.Context, client.Object, string, client.IndexerFunc) error {
+	return nil
+}
+
+// cachedCluster is a fakeCluster whose cache is built through the cluster
+// options the provider passes, the way cluster.New builds it.
+type cachedCluster struct {
+	fakeCluster
+	cache cache.Cache
+}
+
+func (c *cachedCluster) GetCache() cache.Cache { return c.cache }
+
+// Engage must build each project's cache with prewarming, so a kind the
+// controllers watched on one project is started, without blocking, on the
+// next project before it is engaged.
+func TestEngage_PrewarmsKindsWatchedOnEarlierProjects(t *testing.T) {
+	scheme := testScheme(t)
+	objs := []client.Object{
+		newService(computeObject, computeCanonical),
+		newConsumer("c-proj-a", computeObject, "proj-a", servicesv1alpha1.ConsumerPhaseActive),
+	}
+	providerClient := newProviderClient(t, objs...)
+
+	var inner []*informerRecordingCache
+	newCluster := func(_ *rest.Config, opts ...cluster.Option) (cluster.Cluster, error) {
+		rec := &informerRecordingCache{}
+		inner = append(inner, rec)
+		o := &cluster.Options{NewCache: func(*rest.Config, cache.Options) (cache.Cache, error) { return rec, nil }}
+		for _, opt := range opts {
+			opt(o)
+		}
+		c, err := o.NewCache(&rest.Config{}, cache.Options{Scheme: scheme})
+		if err != nil {
+			return nil, err
+		}
+		return &cachedCluster{cache: c}, nil
+	}
+	p := newTestProvider(providerClient, []string{computeCanonical}, withMCMgr(newFakeMCMgr()), withNewCluster(newCluster))
+
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	first, err := p.Get(context.Background(), "proj-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// A controller watches ServiceEntitlement on the first project.
+	if _, err := first.GetCache().GetInformer(context.Background(), &servicesv1alpha1.ServiceEntitlement{}); err != nil {
+		t.Fatalf("GetInformer: %v", err)
+	}
+
+	if err := providerClient.Create(context.Background(),
+		newConsumer("c-proj-b", computeObject, "proj-b", servicesv1alpha1.ConsumerPhaseActive)); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
+	if _, err := p.Reconcile(context.Background(), ctrl.Request{}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if len(inner) != 2 {
+		t.Fatalf("built %d project caches, want 2", len(inner))
+	}
+	want := []string{"*v1alpha1.ServiceEntitlement blocking=false"}
+	if got := inner[1].started; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("informers started on proj-b before Engage = %v, want %v", got, want)
+	}
 }

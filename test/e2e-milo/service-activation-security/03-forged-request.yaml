@@ -1,0 +1,15 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceActivationRequest
+metadata:
+  name: e2e-provider-activation
+  annotations:
+    services.miloapis.com/activation-authorized: "false"
+    services.miloapis.com/activation-authorization-reason: ForgedByClient
+spec:
+  serviceRef:
+    name: provider-activation.e2e.datumapis.com
+  consumerProjectRef:
+    name: e2e-provisioning-consumer-a
+  requestMessage: Verify admission owns the authorization snapshot.
+  requestedBy:
+    username: forged@example.com

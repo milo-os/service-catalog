@@ -9,7 +9,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
@@ -393,5 +395,56 @@ func TestServiceConsumerReconciler_NoApprovalIsNoOp(t *testing.T) {
 	}
 	if got.Status.Phase != "" {
 		t.Errorf("expected empty phase on no-op reconcile, got %q", got.Status.Phase)
+	}
+}
+
+func TestServiceConsumerReconciler_DeletesConsumerOfDeletedProject(t *testing.T) {
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	sc := newServiceConsumer(consumerName, nil)
+	sc.Finalizers = []string{"services.miloapis.com/provider-teardown"}
+	sc.Status.Phase = servicesv1alpha1.ConsumerPhaseActive
+
+	providerClient := newFakeClient(sc)
+	mgr := newTestManager()
+	mgr.add(testProviderProject, providerClient)
+	root := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	r := &ServiceConsumerReconciler{Manager: mgr, Scheme: testScheme(), rootClient: root, rootAPIReader: root}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testProviderProject, consumerName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// The provider-teardown hold keeps the consumer until the provider has
+	// torn down, so it is marked for deletion rather than gone.
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	if got.DeletionTimestamp.IsZero() {
+		t.Fatal("expected the consumer of a deleted project to be marked for deletion")
+	}
+}
+
+func TestServiceConsumerReconciler_KeepsConsumerOfLiveProject(t *testing.T) {
+	consumerName := serviceConsumerName(testServiceName, testConsumerProject)
+	sc := newServiceConsumer(consumerName, nil)
+
+	providerClient := newFakeClient(sc)
+	mgr := newTestManager()
+	mgr.add(testProviderProject, providerClient)
+	project := &resourcemanagerv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: testConsumerProject}}
+	root := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(project).Build()
+	r := &ServiceConsumerReconciler{Manager: mgr, Scheme: testScheme(), rootClient: root, rootAPIReader: root}
+
+	if _, err := r.Reconcile(context.Background(), entitlementRequest(testProviderProject, consumerName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got servicesv1alpha1.ServiceConsumer
+	if err := providerClient.Get(context.Background(), types.NamespacedName{Name: consumerName}, &got); err != nil {
+		t.Fatalf("get consumer: %v", err)
+	}
+	if !got.DeletionTimestamp.IsZero() {
+		t.Fatal("expected the consumer of a live project to be kept")
 	}
 }

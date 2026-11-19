@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,19 +23,22 @@ import (
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
 )
 
-const (
-	reasonConsumerApproved = "ConsumerApproved"
-	reasonConsumerDenied   = "ConsumerDenied"
-)
-
 // ServiceConsumerReconciler runs in every engaged project cluster. Each
 // reconcile call carries the *provider* project name as req.ClusterName. The
 // reconciler reacts to provider approval decisions (spec.approval) and
 // propagates the result onto the matching ServiceEntitlement in the consumer
-// project's virtual control plane.
+// project's virtual control plane. It also deletes a ServiceConsumer whose
+// consumer Project no longer exists.
 type ServiceConsumerReconciler struct {
 	Manager mcmanager.Manager
 	Scheme  *runtime.Scheme
+	wakeups *engagementWakeups
+
+	// rootClient and rootAPIReader read Projects from the root key space. The
+	// orphan sweep is skipped when they are unset.
+	rootClient    client.Reader
+	rootAPIReader client.Reader
+	goneDeletes   *deletePacer
 }
 
 // +kubebuilder:rbac:groups=services.miloapis.com,resources=serviceconsumers,verbs=get;list;watch;create;update;patch;delete
@@ -60,6 +64,7 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	var consumer servicesv1alpha1.ServiceConsumer
 	if err := providerClient.Get(ctx, req.NamespacedName, &consumer); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.goneDeletes.forget(req)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get ServiceConsumer: %w", err)
@@ -68,7 +73,12 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	if !consumer.DeletionTimestamp.IsZero() {
 		// The entitlement reconciler is the sole creator/deleter of consumer
 		// records; nothing to do on delete here.
+		r.goneDeletes.forget(req)
 		return ctrl.Result{}, nil
+	}
+
+	if result, handled, err := r.deleteIfProjectGone(ctx, req, providerClient, &consumer); err != nil || handled {
+		return result, err
 	}
 
 	// Without an approval decision, leave the consumer status untouched. The
@@ -85,42 +95,38 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 		return ctrl.Result{}, nil
 	}
 
-	var (
-		desiredPhase     servicesv1alpha1.ConsumerPhase
-		entitlementPhase servicesv1alpha1.EntitlementPhase
-		reason           string
-		message          string
-	)
+	// This reconciler only runs for a recorded decision, and a recorded
+	// decision wins over the enablement mode (see decideEnablement), so the
+	// mode passed here doesn't change the outcome.
 	switch consumer.Spec.Approval.Decision {
-	case servicesv1alpha1.ApprovalDecisionApproved:
-		desiredPhase = servicesv1alpha1.ConsumerPhaseActive
-		entitlementPhase = servicesv1alpha1.EntitlementPhaseActive
-		reason = reasonConsumerApproved
-		message = "This request was approved; the consumer now has access to the service."
-	case servicesv1alpha1.ApprovalDecisionDenied:
-		desiredPhase = servicesv1alpha1.ConsumerPhaseDenied
-		entitlementPhase = servicesv1alpha1.EntitlementPhaseRejected
-		reason = reasonConsumerDenied
-		message = "This request was denied; the consumer does not have access to the service."
+	case servicesv1alpha1.ApprovalDecisionApproved, servicesv1alpha1.ApprovalDecisionDenied:
 	default:
 		return ctrl.Result{}, fmt.Errorf("unexpected ApprovalDecision %q", consumer.Spec.Approval.Decision)
 	}
+	decision := decideEnablement(true, consumer.Spec.Approval)
 
-	if err := r.updateConsumerStatus(ctx, providerClient, &consumer, desiredPhase, reason, message); err != nil {
+	if err := updateConsumerStatus(ctx, providerClient, &consumer, consumer.Status.ServiceName, decision); err != nil {
 		return ctrl.Result{}, err
 	}
+	return r.propagateDecision(ctx, req, &consumer, decision)
+}
 
-	// Propagate the decision back to the ServiceEntitlement in the consumer
-	// project. The entitlement reconciler will re-run on the status write and
-	// pick up the new phase.
+// propagateDecision writes the provider's decision back to the
+// ServiceEntitlement in the consumer project. The entitlement reconciler will
+// re-run on the status write and pick up the new phase.
+func (r *ServiceConsumerReconciler) propagateDecision(ctx context.Context, req mcreconcile.Request, consumer *servicesv1alpha1.ServiceConsumer, decision enablementDecision) (ctrl.Result, error) {
 	consumerProject := consumer.Spec.ConsumerProjectRef.Name
 	if consumerProject == "" {
 		return ctrl.Result{}, nil
 	}
-	consumerCluster, err := r.Manager.GetCluster(ctx, multicluster.ClusterName(consumerProject))
+	consumerCluster, ok, err := r.wakeups.cluster(ctx, r.Manager, multicluster.ClusterName(consumerProject), req)
 	if err != nil {
-		logger.Info("consumer cluster unavailable, requeuing", "consumerProject", consumerProject, "err", err)
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, err
+	}
+	if !ok {
+		// The consumer project's engagement re-enqueues this request.
+		log.FromContext(ctx).Info("consumer cluster not yet available; waiting for engagement", "consumerProject", consumerProject)
+		return ctrl.Result{}, nil
 	}
 	consumerClient := consumerCluster.GetClient()
 
@@ -149,28 +155,48 @@ func (r *ServiceConsumerReconciler) Reconcile(ctx context.Context, req mcreconci
 	}
 	entitlement := &entitlementList.Items[0]
 
-	original := entitlement.Status.DeepCopy()
-	entitlement.Status.Phase = entitlementPhase
-	entitlement.Status.ObservedGeneration = entitlement.Generation
-	if entitlementPhase == servicesv1alpha1.EntitlementPhaseActive && entitlement.Status.EntitledAt == nil {
-		now := metav1.Now()
-		entitlement.Status.EntitledAt = &now
-	}
-	apimeta.SetStatusCondition(&entitlement.Status.Conditions, metav1.Condition{
-		Type:               ConditionTypeReady,
-		Status:             readyStatusForEntitlementPhase(entitlementPhase),
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: entitlement.Generation,
-	})
-
-	if equalEntitlementStatus(original, &entitlement.Status) {
-		return ctrl.Result{}, nil
-	}
-	if err := consumerClient.Status().Update(ctx, entitlement); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to update ServiceEntitlement status: %w", err)
+	if err := applyEntitlementReadyStatus(ctx, consumerClient, entitlement,
+		decision.entitlementPhase, decision.entitlementReason, decision.entitlementMessage, want); err != nil {
+		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// deleteIfProjectGone deletes a ServiceConsumer whose consumer Project no
+// longer exists. The entitlement finalizer normally deletes the consumer
+// before its Project goes. A consumer left behind by a Project deleted
+// without that step would otherwise stay Active, and every provider would keep
+// serving the deleted Project. The delete runs the provider-teardown hold like
+// any other. The entitlement reconciler never creates a consumer for an absent
+// Project, so the consumer is not recreated.
+//
+// The deletes are paced by goneDeletes, so a backlog found at start-up reaches
+// the providers one at a time. A consumer waiting for its turn is requeued for
+// that turn rather than held, and the UID precondition keeps the delete off a
+// consumer recreated under the same name.
+func (r *ServiceConsumerReconciler) deleteIfProjectGone(ctx context.Context, req mcreconcile.Request, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer) (ctrl.Result, bool, error) {
+	consumerProject := consumer.Spec.ConsumerProjectRef.Name
+	if r.rootClient == nil || consumerProject == "" {
+		return ctrl.Result{}, false, nil
+	}
+	project, err := getConsumerProject(ctx, r.rootClient, r.rootAPIReader, consumerProject)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if project != nil {
+		r.goneDeletes.forget(req)
+		return ctrl.Result{}, false, nil
+	}
+	if wait := r.goneDeletes.wait(req); wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, true, nil
+	}
+	if err := providerClient.Delete(ctx, consumer, client.Preconditions{UID: &consumer.UID}); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, true, fmt.Errorf("failed to delete ServiceConsumer %q of deleted project %q: %w", consumer.Name, consumerProject, err)
+	}
+	r.goneDeletes.forget(req)
+	log.FromContext(ctx).Info("deleted ServiceConsumer of deleted project",
+		"serviceConsumer", consumer.Name, "consumerProject", consumerProject)
+	return ctrl.Result{}, true, nil
 }
 
 func readyStatusForEntitlementPhase(phase servicesv1alpha1.EntitlementPhase) metav1.ConditionStatus {
@@ -180,22 +206,27 @@ func readyStatusForEntitlementPhase(phase servicesv1alpha1.EntitlementPhase) met
 	return metav1.ConditionFalse
 }
 
-func (r *ServiceConsumerReconciler) updateConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, phase servicesv1alpha1.ConsumerPhase, reason, message string) error {
+// updateConsumerStatus writes the canonical service name and the decision's
+// phase and Ready condition on a ServiceConsumer. The entitlement reconciler calls it for every consumer, so
+// self-service and pending consumers carry a Ready condition too, not only
+// decided ones.
+func updateConsumerStatus(ctx context.Context, providerClient client.Client, consumer *servicesv1alpha1.ServiceConsumer, canonicalServiceName string, decision enablementDecision) error {
 	original := consumer.Status.DeepCopy()
 	consumer.Status.ObservedGeneration = consumer.Generation
-	consumer.Status.Phase = phase
-	if phase == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
+	consumer.Status.ServiceName = canonicalServiceName
+	consumer.Status.Phase = decision.consumerPhase
+	if decision.consumerPhase == servicesv1alpha1.ConsumerPhaseActive && consumer.Status.EntitledAt == nil {
 		now := metav1.Now()
 		consumer.Status.EntitledAt = &now
 	}
 	cond := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
+		Reason:             decision.consumerReason,
+		Message:            decision.consumerMessage,
 		ObservedGeneration: consumer.Generation,
 	}
-	if phase == servicesv1alpha1.ConsumerPhaseActive {
+	if decision.consumerPhase == servicesv1alpha1.ConsumerPhaseActive {
 		cond.Status = metav1.ConditionTrue
 	}
 	apimeta.SetStatusCondition(&consumer.Status.Conditions, cond)
@@ -211,11 +242,19 @@ func (r *ServiceConsumerReconciler) updateConsumerStatus(ctx context.Context, pr
 
 // SetupWithManager registers the reconciler on the multicluster manager.
 // WithEngageWithProviderClusters(true) — ServiceConsumers live in provider
-// project virtual control planes, not the root cluster.
-func (r *ServiceConsumerReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+// project virtual control planes, not the root cluster. rootMgr reads Projects.
+func (r *ServiceConsumerReconciler) SetupWithManager(mgr mcmanager.Manager, rootMgr ctrl.Manager) error {
 	r.Manager = mgr
+	r.rootClient = rootMgr.GetClient()
+	r.rootAPIReader = rootMgr.GetAPIReader()
+	r.goneDeletes = newDeletePacer(goneProjectDeleteInterval, time.Now)
+	r.wakeups = newEngagementWakeups()
+	if err := mgr.Add(r.wakeups); err != nil {
+		return fmt.Errorf("failed to register consumer engagement wakeups: %w", err)
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("service-consumer").
 		For(&servicesv1alpha1.ServiceConsumer{}, mcbuilder.WithEngageWithProviderClusters(true)).
+		WatchesRawSource(r.wakeups.source()).
 		Complete(r)
 }

@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -260,5 +262,47 @@ func TestMiloProviderEngagementIsNotAutoWired(t *testing.T) {
 	}
 	if !engagement {
 		t.Error("no always-running engagement runnable was registered on the local manager")
+	}
+}
+
+// TestElectedManagerEngagementIsLeaderGated is the inverse of
+// TestMiloProviderEngagementIsNotAutoWired: the manager hosting the mutating
+// project controllers must engage nothing on a replica that does not hold its
+// lease, or those controllers' caches and workers start on every replica.
+func TestElectedManagerEngagementIsLeaderGated(t *testing.T) {
+	hostMgr, err := ctrl.NewManager(&rest.Config{Host: "http://127.0.0.1:1"}, ctrl.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+		// The provider's controller name is process-global and the test
+		// above already registered it.
+		Controller: ctrlconfig.Controller{SkipNameValidation: ptr.To(true)},
+	})
+	if err != nil {
+		t.Fatalf("host manager: %v", err)
+	}
+
+	provider, err := miloprovider.New(hostMgr, miloprovider.Options{})
+	if err != nil {
+		t.Fatalf("milo provider: %v", err)
+	}
+
+	local := &replicaManager{leaderElection: true}
+	mcMgr, err := newLeaderGatedMulticlusterManager(local, provider)
+	if err != nil {
+		t.Fatalf("newLeaderGatedMulticlusterManager: %v", err)
+	}
+
+	if _, autoWired := mcMgr.GetProvider().(multicluster.ProviderRunnable); autoWired {
+		t.Error("provider is still a ProviderRunnable: mcManager.Start would wire its Start a second time")
+	}
+
+	runnables := local.added()
+	if len(runnables) == 0 {
+		t.Fatal("no engagement runnable was registered on the local manager")
+	}
+	for _, r := range runnables {
+		if !local.leaderGated(r) {
+			t.Errorf("runnable %T runs without the lease", r)
+		}
 	}
 }

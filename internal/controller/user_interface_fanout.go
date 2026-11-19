@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,40 +40,92 @@ type UserInterfaceFanOut struct {
 	Scheme *runtime.Scheme
 }
 
-// Reconcile applies the ConsumerPortalPlugin/ProviderPortalPlugin declared
-// by sc.Spec.UserInterface and deletes either one, owned by sc, that is no
-// longer declared — including both, if spec.userInterface itself has been
-// removed entirely. Draft configurations are skipped entirely (Cleanup still
-// runs on delete regardless of phase).
+// UserInterfaceOutcome records the result of reconciling each portal plugin
+// independently. A failure on one side never prevents the other from being
+// attempted, so callers can report each side's health accurately.
+type UserInterfaceOutcome struct {
+	Consumer error
+	Provider error
+}
+
+// Err joins the per-side failures, each labelled with the side that failed,
+// so a retry log never loses either cause. It returns nil when both sides
+// succeeded.
+func (o UserInterfaceOutcome) Err() error {
+	var sideErrs []error
+	if o.Consumer != nil {
+		sideErrs = append(sideErrs, fmt.Errorf("consumer portal plugin: %w", o.Consumer))
+	}
+	if o.Provider != nil {
+		sideErrs = append(sideErrs, fmt.Errorf("provider portal plugin: %w", o.Provider))
+	}
+	return errors.Join(sideErrs...)
+}
+
+// Reconcile applies and prunes both portal plugins and returns the joined
+// failures of either side. Use ReconcileOutcome to tell the sides apart.
 func (f *UserInterfaceFanOut) Reconcile(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) error {
+	return f.ReconcileOutcome(ctx, sc).Err()
+}
+
+// ReconcileOutcome applies the ConsumerPortalPlugin/ProviderPortalPlugin
+// declared by sc.Spec.UserInterface and deletes either one, owned by sc, that
+// is no longer declared — including both, if spec.userInterface itself has
+// been removed entirely. Each side is reconciled regardless of the other's
+// result. A side whose apply failed is not pruned, so a transient failure
+// never deletes the plugin that is already serving. Draft configurations are
+// skipped entirely (Cleanup still runs on delete regardless of phase).
+func (f *UserInterfaceFanOut) ReconcileOutcome(ctx context.Context, sc *servicesv1alpha1.ServiceConfiguration) UserInterfaceOutcome {
 	if sc.Spec.Phase == servicesv1alpha1.PhaseDraft {
-		return nil
+		return UserInterfaceOutcome{}
 	}
 
-	var desiredConsumer, desiredProvider string
-	if sc.Spec.UserInterface != nil {
-		var svc servicesv1alpha1.Service
+	userInterface := sc.Spec.UserInterface
+	consumerDeclared := userInterface != nil && userInterface.Consumer != nil
+	providerDeclared := userInterface != nil && userInterface.Provider != nil
+
+	var svc servicesv1alpha1.Service
+	var serviceErr error
+	if consumerDeclared || providerDeclared {
 		if err := f.Client.Get(ctx, client.ObjectKey{Name: sc.Spec.ServiceRef.Name}, &svc); err != nil {
-			return fmt.Errorf("resolve Service %q: %w", sc.Spec.ServiceRef.Name, err)
+			serviceErr = fmt.Errorf("resolve Service %q: %w", sc.Spec.ServiceRef.Name, err)
 		}
-		slug := encodeName(svc.Spec.ServiceName)
-		deprecated := sc.Spec.Phase == servicesv1alpha1.PhaseDeprecated
+	}
+	slug := encodeName(svc.Spec.ServiceName)
+	deprecated := sc.Spec.Phase == servicesv1alpha1.PhaseDeprecated
 
-		var err error
-		desiredConsumer, err = f.applyConsumerPlugin(ctx, sc, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
+	return UserInterfaceOutcome{
+		Consumer: f.reconcileSide(ctx, sc, "ConsumerPortalPlugin", "ConsumerPortalPluginList", consumerDeclared, serviceErr,
+			func() (string, error) {
+				return f.applyConsumerPlugin(ctx, sc, svc.Name, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
+			}),
+		Provider: f.reconcileSide(ctx, sc, "ProviderPortalPlugin", "ProviderPortalPluginList", providerDeclared, serviceErr,
+			func() (string, error) {
+				return f.applyProviderPlugin(ctx, sc, svc.Name, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
+			}),
+	}
+}
+
+func (f *UserInterfaceFanOut) reconcileSide(
+	ctx context.Context,
+	sc *servicesv1alpha1.ServiceConfiguration,
+	kind, listKind string,
+	declared bool,
+	serviceErr error,
+	apply func() (string, error),
+) error {
+	var desiredName string
+	if declared {
+		if serviceErr != nil {
+			return serviceErr
+		}
+		appliedName, err := apply()
 		if err != nil {
 			return err
 		}
-		desiredProvider, err = f.applyProviderPlugin(ctx, sc, svc.Name, svc.Spec.ServiceName, svc.Spec.DisplayName, slug, deprecated)
-		if err != nil {
-			return err
-		}
+		desiredName = appliedName
 	}
-
-	if err := f.pruneOne(ctx, sc, "ConsumerPortalPlugin", "ConsumerPortalPluginList", desiredConsumer); err != nil {
-		return err
-	}
-	return f.pruneOne(ctx, sc, "ProviderPortalPlugin", "ProviderPortalPluginList", desiredProvider)
+	return f.pruneOne(ctx, sc, kind, listKind, desiredName)
 }
 
 // Cleanup deletes any ConsumerPortalPlugin/ProviderPortalPlugin owned by sc.
@@ -99,10 +152,16 @@ func pluginAssetsMap(a servicesv1alpha1.PluginAssets) map[string]interface{} {
 // applyConsumerPlugin returns the desired object name (for pruning) when
 // sc.Spec.UserInterface.Consumer is set, or "" when it's nil — the caller
 // treats an empty desired name as "delete whatever's there."
+//
+// serviceName and serviceResourceName are the two ids a ServiceEntitlement
+// may name the Service by (its status.serviceName and spec.serviceRef.name).
+// cloud-portal unlocks a plugin whose visibility.entitlement is Required only
+// when an Active entitlement names one of the plugin's ids, and the slug
+// alone never matches either.
 func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
-	serviceName, displayName, slug string,
+	serviceResourceName, serviceName, displayName, slug string,
 	deprecated bool,
 ) (string, error) {
 	spec := sc.Spec.UserInterface.Consumer
@@ -120,9 +179,13 @@ func (f *UserInterfaceFanOut) applyConsumerPlugin(
 	pluginSpec := map[string]interface{}{
 		"slug":        slug,
 		"displayName": displayName,
-		"deprecated":  deprecated,
-		"suspend":     spec.Suspend,
-		"assets":      pluginAssetsMap(spec.Assets),
+		"serviceName": serviceName,
+		"serviceRef": map[string]interface{}{
+			"name": serviceResourceName,
+		},
+		"deprecated": deprecated,
+		"suspend":    spec.Suspend,
+		"assets":     pluginAssetsMap(spec.Assets),
 		"visibility": map[string]interface{}{
 			"entitlement": spec.Visibility.Entitlement,
 			"featureFlag": spec.Visibility.FeatureFlag,

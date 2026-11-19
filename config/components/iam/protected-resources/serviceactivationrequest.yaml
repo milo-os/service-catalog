@@ -1,0 +1,27 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: services.miloapis.com-serviceactivationrequest
+spec:
+  serviceRef:
+    name: "services.miloapis.com"
+  kind: ServiceActivationRequest
+  plural: serviceactivationrequests
+  singular: serviceactivationrequest
+  permissions:
+    - list
+    - get
+    - create
+    - update
+    - patch
+    - delete
+    - watch
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

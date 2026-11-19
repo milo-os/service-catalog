@@ -40,3 +40,12 @@ spec:
     consumer-b:
       kubeconfig: test/e2e-milo/.kubeconfig
       context: e2e-provisioning-consumer-b
+    enablement-1:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-enablement-1
+    enablement-2:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-enablement-2
+    enablement-3:
+      kubeconfig: test/e2e-milo/.kubeconfig
+      context: e2e-enablement-3

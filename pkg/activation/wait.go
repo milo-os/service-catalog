@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/watch"
 
 	servicesv1alpha1 "go.miloapis.com/service-catalog/api/v1alpha1"
@@ -27,6 +28,15 @@ const (
 	// approvalRereadInterval re-reads the object periodically during `--wait` to
 	// cover a deployed operator that predates the pending-requeue hardening.
 	approvalRereadInterval = 60 * time.Second
+
+	// rewatchMinDelay and rewatchMaxDelay bound how soon `--wait` re-reads and
+	// reopens a watch the server closed. Some API servers end a watch after
+	// its first event, so waiting a full re-read interval would turn a setup
+	// that finishes in a second into a minute's wait. The delay doubles while
+	// watches keep closing without delivering a change, so a server that
+	// can't watch at all degrades to polling rather than a hot loop.
+	rewatchMinDelay = 100 * time.Millisecond
+	rewatchMaxDelay = 5 * time.Second
 )
 
 // waitForFirstStatus watches a single entitlement for its first status write,
@@ -72,12 +82,19 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 	if err != nil {
 		return state, e, false, err
 	}
-	if isResolved(state) {
+	if isResolved(state, e) {
 		return state, e, false, nil
 	}
 
 	ticker := time.NewTicker(approvalRereadInterval)
 	defer ticker.Stop()
+	rewatchDelay := rewatchMinDelay
+	// seen is the last resourceVersion observed. A reopened watch replays the
+	// current object as ADDED, so only a newer version counts as progress.
+	seen := ""
+	if e != nil {
+		seen = e.ResourceVersion
+	}
 
 	for {
 		w, werr := ec.Watch(ctx, name, "")
@@ -102,7 +119,7 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 				st, ent, gerr := getAndClassify(ctx, ec, name)
 				if gerr == nil {
 					state, e = st, ent
-					if isResolved(state) {
+					if isResolved(state, e) {
 						if w != nil {
 							w.Stop()
 						}
@@ -112,11 +129,9 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 
 			case ev, ok := <-events:
 				if !ok {
-					// Watch closed (or was never established); re-establish after
-					// the next tick to avoid a hot loop when watch is unsupported.
-					if w != nil {
-						w.Stop()
-					}
+					// The server closed the watch. Re-read so a change made
+					// while no watch was open isn't missed, then reopen it.
+					w.Stop()
 					reestablish = true
 					continue
 				}
@@ -124,30 +139,55 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 				if !matched {
 					continue
 				}
+				if ent.ResourceVersion != seen {
+					seen = ent.ResourceVersion
+					rewatchDelay = rewatchMinDelay
+				}
 				state, e = Classify(Observation{Entitlement: ent}), ent
-				if isResolved(state) {
+				if isResolved(state, e) {
 					w.Stop()
 					return state, e, false, nil
 				}
 			}
 		}
 
-		if werr != nil {
-			// No watch available: wait out one re-read interval before retrying so
-			// the loop degrades to polling rather than spinning.
+		if werr == nil {
 			select {
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return state, e, true, nil
 				}
 				return state, e, false, ctx.Err()
-			case <-ticker.C:
-				st, ent, gerr := getAndClassify(ctx, ec, name)
-				if gerr == nil {
-					state, e = st, ent
-					if isResolved(state) {
-						return state, e, false, nil
-					}
+			case <-time.After(rewatchDelay):
+			}
+			rewatchDelay = min(2*rewatchDelay, rewatchMaxDelay)
+			st, ent, gerr := getAndClassify(ctx, ec, name)
+			if gerr == nil {
+				state, e = st, ent
+				if ent != nil {
+					seen = ent.ResourceVersion
+				}
+				if isResolved(state, e) {
+					return state, e, false, nil
+				}
+			}
+			continue
+		}
+
+		// No watch available: wait out one re-read interval before retrying so
+		// the loop degrades to polling rather than spinning.
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return state, e, true, nil
+			}
+			return state, e, false, ctx.Err()
+		case <-ticker.C:
+			st, ent, gerr := getAndClassify(ctx, ec, name)
+			if gerr == nil {
+				state, e = st, ent
+				if isResolved(state, e) {
+					return state, e, false, nil
 				}
 			}
 		}
@@ -156,8 +196,12 @@ func waitUntilResolved(ctx context.Context, ec EntitlementClient, name string) (
 
 // isResolved reports whether a state will not change without user or provider
 // action — the terminal outcomes plus Active.
-func isResolved(s State) bool {
-	return s == StateActive || s.Terminal()
+func isResolved(s State, entitlement *servicesv1alpha1.ServiceEntitlement) bool {
+	if s.Terminal() {
+		return true
+	}
+	return s == StateActive && entitlement != nil &&
+		apimeta.IsStatusConditionTrue(entitlement.Status.Conditions, servicesv1alpha1.ConditionTypeSetupComplete)
 }
 
 // entitlementFromEvent extracts a matching entitlement from a watch event,

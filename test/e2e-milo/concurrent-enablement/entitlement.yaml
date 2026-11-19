@@ -1,0 +1,9 @@
+# Applied by measure-setup.sh into each project's control plane, not by a
+# chainsaw apply: the timer has to start immediately before the create.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceEntitlement
+metadata:
+  name: e2e-concurrent-enablement
+spec:
+  serviceRef:
+    name: e2e-concurrent-enablement

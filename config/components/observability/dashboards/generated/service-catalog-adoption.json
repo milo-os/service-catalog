@@ -1,0 +1,1253 @@
+{
+   "description": "Which services projects use, how that changes over time, and how well each service activates.",
+   "editable": true,
+   "graphTooltip": 1,
+   "links": [
+      {
+         "icon": "dashboard",
+         "includeVars": false,
+         "keepTime": true,
+         "targetBlank": false,
+         "title": "Service Catalog Setup",
+         "tooltip": "Operator view: slow and stalled setups and why",
+         "type": "link",
+         "url": "/d/service-catalog-setup"
+      }
+   ],
+   "panels": [
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "title": "Who uses which services?",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Active ServiceEntitlements across all projects, including ones a service pulled in as a dependency. A project with three services counts three times; projects are deliberately not a metric label.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "Not reported",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 1
+         },
+         "id": 2,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(service_catalog_service_entitlements{service=~\"$service\",phase=\"Active\"})",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Active entitlements",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Catalog services with at least one Active entitlement.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "Not reported",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 1
+         },
+         "id": 3,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "count(sum by (service) (service_catalog_service_entitlements{service=~\"$service\",phase=\"Active\"}) > 0)",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Services in use",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entitlements for gated services that are waiting on the provider to approve or deny them.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "Not reported",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "orange",
+                        "value": 10
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 1
+         },
+         "id": 4,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(service_catalog_service_entitlements{service=~\"$service\",phase=\"PendingApproval\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Awaiting provider approval",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entitlements that finished setup for the first time in the selected range.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 1
+         },
+         "id": 5,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(service_catalog_service_activations_total{service=~\"$service\",outcome=\"succeeded\"}[$__range]))",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Activated in range",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entitlements a project removed in the selected range. Dependencies removed along with their parent are excluded.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "text",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 1
+         },
+         "id": 6,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(service_catalog_service_disables_total{service=~\"$service\",origin=\"Direct\"}[$__range]))",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Disabled in range",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entitlements that moved to Rejected in the selected range: a provider denial, or a request for a service that is not published.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "No observations",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 1
+         },
+         "id": 7,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(service_catalog_service_activations_total{service=~\"$service\",outcome=\"rejected\"}[$__range]))",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Rejected in range",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Current entitlements per service, split into ones a project asked for directly and ones another service pulled in as a dependency, plus enables, disables, and rejections over the selected range. \"unknown\" collects requests for names that do not match a catalog Service.",
+         "fieldConfig": {
+            "defaults": {
+               "noValue": "No services in use"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "Activated|Disabled|Rejected"
+                  },
+                  "properties": [
+                     {
+                        "id": "decimals",
+                        "value": 0
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 5
+         },
+         "id": 8,
+         "options": {
+            "sortBy": [
+               {
+                  "desc": true,
+                  "displayName": "Active (direct)"
+               }
+            ]
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_entitlements{service=~\"$service\",phase=\"Active\",origin=\"Direct\"})",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "direct"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_entitlements{service=~\"$service\",phase=\"Active\",origin=\"Dependency\"})",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "dependency"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_entitlements{service=~\"$service\",phase=\"PendingApproval\"})",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "pending"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_activations_total{service=~\"$service\",outcome=\"succeeded\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "activated"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_disables_total{service=~\"$service\",origin=\"Direct\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "disabled"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_activations_total{service=~\"$service\",outcome=\"rejected\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "rejected"
+            }
+         ],
+         "title": "Adoption by service",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true
+                  },
+                  "indexByName": {
+                     "Value #activated": 4,
+                     "Value #dependency": 2,
+                     "Value #direct": 1,
+                     "Value #disabled": 5,
+                     "Value #pending": 3,
+                     "Value #rejected": 6,
+                     "service": 0
+                  },
+                  "renameByName": {
+                     "Value #activated": "Activated",
+                     "Value #dependency": "Active (dependency)",
+                     "Value #direct": "Active (direct)",
+                     "Value #disabled": "Disabled",
+                     "Value #pending": "Awaiting approval",
+                     "Value #rejected": "Rejected",
+                     "service": "Service"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Adoption over time. A dip right after a controller start is the snapshot refilling as projects reconnect, not churn; compare with Disables per hour.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "normal"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 14
+         },
+         "id": 9,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_entitlements{service=~\"$service\",phase=\"Active\"})",
+               "legendFormat": "{{service}}"
+            }
+         ],
+         "title": "Active entitlements by service",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "New activations above the line and disables below it, over a rolling hour. Net growth is the difference.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 14
+         },
+         "id": 10,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_activations_total{service=~\"$service\",outcome=\"succeeded\"}[1h]))",
+               "legendFormat": "{{service}} activated"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "-sum by (service) (increase(service_catalog_service_disables_total{service=~\"$service\",origin=\"Direct\"}[1h]))",
+               "legendFormat": "{{service}} disabled"
+            }
+         ],
+         "title": "Activations and disables per hour",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 22
+         },
+         "id": 11,
+         "title": "How well does each service activate?",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of activations in the selected range that finished within one second of the request, the project objective.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "No completed setups",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 0.5
+                     },
+                     {
+                        "color": "green",
+                        "value": 0.90000000000000002
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 23
+         },
+         "id": 12,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum(increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\",le=\"1\"}[$__range])) / sum(increase(service_catalog_service_setup_duration_seconds_count{service=~\"$service\",clock=\"user\"}[$__range]))",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Activations under 1s",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Request to first successful setup, 95th percentile over the selected range.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "No completed setups",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 10
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 23
+         },
+         "id": 13,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\"}[$__range])))",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Activation p95",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entitlements whose first setup has not finished yet, including ones waiting on provider approval.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "Not reported",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "yellow",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 23
+         },
+         "id": 14,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(service_catalog_service_setup_inflight{service=~\"$service\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
+               "legendFormat": ""
+            }
+         ],
+         "title": "In progress",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Setups more than an hour past authorization. The Service Catalog Setup dashboard breaks these down by blocking stage.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "noValue": "Not reported",
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 23
+         },
+         "id": 15,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            },
+            "textMode": "auto"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "(sum(service_catalog_service_setup_stalled{service=~\"$service\"})) or ((max(service_catalog_setup_observer_healthy) == 1) * 0)",
+               "legendFormat": ""
+            }
+         ],
+         "title": "Stalled (>1h)",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Per service: how many activations finished and how long they took over the selected range, how many are still in progress, and how many are stuck. User time runs from the request; platform time runs from authorization, so it excludes waiting for provider approval.",
+         "fieldConfig": {
+            "defaults": {
+               "noValue": "No services in use"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "Completed"
+                  },
+                  "properties": [
+                     {
+                        "id": "decimals",
+                        "value": 0
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "Under 1s"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "percentunit"
+                     },
+                     {
+                        "id": "decimals",
+                        "value": 0
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "p50|p95|Platform p95"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "s"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 27
+         },
+         "id": 16,
+         "options": {
+            "sortBy": [
+               {
+                  "desc": true,
+                  "displayName": "Completed"
+               }
+            ]
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_setup_duration_seconds_count{service=~\"$service\",clock=\"user\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "completed"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\",le=\"1\"}[$__range])) / sum by (service) (increase(service_catalog_service_setup_duration_seconds_count{service=~\"$service\",clock=\"user\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "under1s"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.5, sum by (le, service) (increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\"}[$__range])))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, service) (increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\"}[$__range])))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "p95"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, service) (increase(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"platform\"}[$__range])))",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "platform"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_setup_inflight{service=~\"$service\"})",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "inflight"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service) (service_catalog_service_setup_stalled{service=~\"$service\"})",
+               "format": "table",
+               "instant": true,
+               "legendFormat": "",
+               "refId": "stalled"
+            }
+         ],
+         "title": "Activation by service",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true
+                  },
+                  "indexByName": {
+                     "Value #completed": 1,
+                     "Value #inflight": 6,
+                     "Value #p50": 3,
+                     "Value #p95": 4,
+                     "Value #platform": 5,
+                     "Value #stalled": 7,
+                     "Value #under1s": 2,
+                     "service": 0
+                  },
+                  "renameByName": {
+                     "Value #completed": "Completed",
+                     "Value #inflight": "In progress",
+                     "Value #p50": "p50",
+                     "Value #p95": "p95",
+                     "Value #platform": "Platform p95",
+                     "Value #stalled": "Stalled",
+                     "Value #under1s": "Under 1s",
+                     "service": "Service"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Request to first successful setup over time. Gaps are periods with no completions for that service.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "none"
+                  }
+               },
+               "noValue": "No observations in range",
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 36
+         },
+         "id": 17,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le, service) (rate(service_catalog_service_setup_duration_seconds_bucket{service=~\"$service\",clock=\"user\"}[$__rate_interval])))",
+               "legendFormat": "{{service}}"
+            }
+         ],
+         "title": "Activation p95 by service",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Unfinished first setups, by service and the first stage that has not completed. Authorization includes waiting on provider approval.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 25,
+                  "lineInterpolation": "smooth",
+                  "lineWidth": 2,
+                  "showPoints": "never",
+                  "stacking": {
+                     "group": "A",
+                     "mode": "normal"
+                  }
+               },
+               "noValue": "Nothing in progress",
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 36
+         },
+         "id": 18,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "right",
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "expr": "sum by (service, blocking_stage) (service_catalog_service_setup_inflight{service=~\"$service\"})",
+               "legendFormat": "{{service}} at {{blocking_stage}}"
+            }
+         ],
+         "title": "In-progress setups by service and stage",
+         "type": "timeseries"
+      }
+   ],
+   "refresh": "1m",
+   "schemaVersion": 39,
+   "tags": [
+      "milo",
+      "service-catalog",
+      "adoption",
+      "product"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": true,
+            "label": "Service",
+            "multi": true,
+            "name": "service",
+            "query": "label_values(service_catalog_service_entitlements, service)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-7d",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Service Catalog Adoption",
+   "uid": "service-catalog-adoption"
+}

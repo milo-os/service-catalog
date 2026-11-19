@@ -165,6 +165,31 @@ func metricKindToAggregation(kind servicesv1alpha1.MetricKind) billingv1alpha1.M
 	return billingv1alpha1.MeterAggregationSum
 }
 
+// meterPhase is the phase a metric's MeterDefinition carries: the later of
+// the configuration's phase and the metric's own, so a single metric can be
+// deprecated or retired while the rest of the configuration stays
+// published, and retiring the whole configuration retires every metric.
+func meterPhase(configPhase, metricPhase servicesv1alpha1.Phase) servicesv1alpha1.Phase {
+	if phaseRank(metricPhase) > phaseRank(configPhase) {
+		return metricPhase
+	}
+	return configPhase
+}
+
+func phaseRank(p servicesv1alpha1.Phase) int {
+	switch p {
+	case servicesv1alpha1.PhaseDraft:
+		return 0
+	case servicesv1alpha1.PhasePublished:
+		return 1
+	case servicesv1alpha1.PhaseDeprecated:
+		return 2
+	case servicesv1alpha1.PhaseRetired:
+		return 3
+	}
+	return -1
+}
+
 func (f *BillingFanOut) applyMeterDefinitions(
 	ctx context.Context,
 	sc *servicesv1alpha1.ServiceConfiguration,
@@ -191,7 +216,7 @@ func (f *BillingFanOut) applyMeterDefinitions(
 			WithOwnerReferences(controllerRef(sc)).
 			WithSpec(billingapply.MeterDefinitionSpec().
 				WithMeterName(metric.Name).
-				WithPhase(billingv1alpha1.Phase(sc.Spec.Phase)).
+				WithPhase(billingv1alpha1.Phase(meterPhase(sc.Spec.Phase, metric.Phase))).
 				WithDisplayName(metric.DisplayName).
 				WithDescription(metric.Description).
 				WithMeasurement(billingapply.MeterMeasurement().
