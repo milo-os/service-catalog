@@ -4,6 +4,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
@@ -73,6 +74,10 @@ const (
 	// than Milo's single-manager case, so the guard is retained.
 	mcMgrUnboundRequeue = 2 * time.Second
 
+	// teardownFinalizerConflictRequeue allows the manager cache to observe the
+	// winning write before the provider recomputes the consumer set.
+	teardownFinalizerConflictRequeue = time.Second
+
 	// cacheSyncTimeout bounds WaitForCacheSync for a single engagement so one
 	// slow or unreachable consumer project cannot head-of-line-block other
 	// engagements under MaxConcurrentReconciles: 1.
@@ -82,6 +87,8 @@ const (
 	// provider Project's Ready condition.
 	readinessPollInterval = 5 * time.Second
 )
+
+var errTeardownFinalizerConflict = errors.New("service consumer changed while adding teardown finalizer")
 
 // projectGVK is the resourcemanager Project type, read as unstructured for the
 // readiness gate (mirrors how the catalog reads Location unstructured).
@@ -300,6 +307,9 @@ func (p *Provider) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, 
 	// teardown for the project succeeds. A no-op for providers that declare no
 	// cleanup, so their consumers are never gated.
 	if err := p.ensureTeardownFinalizers(ctx, byProject); err != nil {
+		if errors.Is(err, errTeardownFinalizerConflict) {
+			return ctrl.Result{RequeueAfter: teardownFinalizerConflictRequeue}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -462,6 +472,9 @@ func (p *Provider) ensureTeardownFinalizers(ctx context.Context, byProject map[s
 			}
 			controllerutil.AddFinalizer(sc, providerTeardownFinalizer)
 			if err := p.providerClient.Update(ctx, sc); err != nil {
+				if apierrors.IsConflict(err) {
+					return fmt.Errorf("%w: %v", errTeardownFinalizerConflict, err)
+				}
 				return fmt.Errorf("failed to add teardown finalizer to ServiceConsumer %q: %w", sc.Name, err)
 			}
 		}
