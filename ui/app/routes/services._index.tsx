@@ -1,6 +1,6 @@
-import { json } from "@remix-run/node";
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { Link, useLoaderData } from "@remix-run/react";
+import { data } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
+import { Link, useLoaderData } from "react-router";
 import { useMemo, useState } from "react";
 import { Badge } from "@datum-cloud/datum-ui/badge";
 import { Button } from "@datum-cloud/datum-ui/button";
@@ -52,7 +52,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     ]);
 
     if (servicesResult.status === "rejected") {
-      return json({
+      return data({
         services: [],
         configsByService: {},
         configsError: true,
@@ -74,13 +74,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
     }
 
-    return json({
+    return data({
       services,
       configsByService,
       configsError,
     } satisfies LoaderData);
   } catch (e) {
-    return json({
+    return data({
       services: [],
       configsByService: {},
       configsError: true,

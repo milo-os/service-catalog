@@ -1,7 +1,7 @@
 /**
  * Shared validation utilities for wizard forms (create-service and
  * create-configuration wizards). Pure functions — safe to import from
- * either client components or Remix action handlers.
+ * either client components or route action handlers.
  */
 
 export interface MrtDraft {

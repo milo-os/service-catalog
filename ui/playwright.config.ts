@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * Playwright configuration for Milo Service Catalog UI E2E tests.
  *
- * The Remix dev server proxies the Kubernetes API server, so the tests need
+ * The React Router dev server proxies the Kubernetes API server, so the tests need
  * a kubeconfig with read access to `services.miloapis.com/v1alpha1` resources.
  * Start the dev server first with `task ui:dev` (or let Playwright spawn it
  * via the `webServer` config below — `reuseExistingServer: true` will pick

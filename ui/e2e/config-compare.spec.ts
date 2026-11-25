@@ -54,7 +54,7 @@ test.describe('/services/:name/configurations/compare — Compare screen', () =>
     page,
   }) => {
     // Pre-flight: confirm both seed configs exist. Both list endpoints flow
-    // through the same Remix proxy as the UI, so a 404 on either means the
+    // through the same UI proxy as the UI, so a 404 on either means the
     // seed data hasn't caught up to this test yet — skip rather than fail.
     const probe = await page.request.get(
       '/apis/services.miloapis.com/v1alpha1/serviceconfigurations'
