@@ -188,6 +188,7 @@ overrides:
   vite@<6.4.4: ^6.4.4
   esbuild: ^0.28.0
   semver@6: ^6.3.2
+  chokidar@4: 4.0.1
 
 importers:
 
@@ -1841,8 +1842,8 @@ packages:
   caniuse-lite@1.0.30001819:
     resolution: {integrity: sha512-LFUqIIAwpzsIuevnKnsR9qnStBcgzPShTX61lBwN9uFkkf8o8zLiebEjbW8AYtZiF+1YKDWfdt/pWDtMuG8Xwg==}
 
-  chokidar@4.0.3:
-    resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
+  chokidar@4.0.1:
+    resolution: {integrity: sha512-n8enUVCED/KVRQlab1hr3MVpcVMvxtZjmEa956u+4YijlmQED223XMSYj2tLuKvr4jcCTzNNMpQDUer72MMmzA==}
     engines: {node: '>= 14.16.0'}
 
   class-variance-authority@0.7.1:
@@ -3683,7 +3684,7 @@ snapshots:
       '@remix-run/node-fetch-server': 0.13.3
       arg: 5.0.2
       babel-dead-code-elimination: 1.0.12(supports-color@7.2.0)
-      chokidar: 4.0.3
+      chokidar: 4.0.1
       dedent: 1.7.2
       es-module-lexer: 1.7.0
       exit-hook: 2.2.1
@@ -4093,7 +4094,7 @@ snapshots:
 
   caniuse-lite@1.0.30001819: {}
 
-  chokidar@4.0.3:
+  chokidar@4.0.1:
     dependencies:
       readdirp: 4.1.2
 

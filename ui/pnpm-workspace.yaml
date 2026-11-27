@@ -12,13 +12,6 @@ minimumReleaseAgeExclude:
 # it, such as a release pushed with a stolen token for a package that normally
 # publishes from CI.
 trustPolicy: no-downgrade
-# Each version below was published without provenance after earlier releases
-# of the same package had it. Exempt by exact version, so the next release of
-# each package is checked again.
-trustPolicyExclude:
-  # Through @react-router/dev, which declares chokidar ^4. 4.0.3 is the
-  # latest 4.x and no 4.x release has provenance.
-  - chokidar@4.0.3
 
 # Only scripts a local install needs: esbuild checks its platform binary. The
 # image installs with --ignore-scripts.
@@ -34,3 +27,6 @@ overrides:
   # Through @babel/core. 6.3.1 has no provenance and trustPolicy rejects it;
   # 6.3.2 publishes from CI.
   semver@6: ^6.3.2
+  # Through @react-router/dev (^4). 4.0.2 and 4.0.3 dropped the provenance
+  # 4.0.0 and 4.0.1 have, so stay on 4.0.1.
+  chokidar@4: 4.0.1
