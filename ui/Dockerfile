@@ -1,31 +1,32 @@
-FROM node:26.13.1-alpine3.24 AS builder
-
-RUN npm install -g pnpm@12.15.0
-
-ENV CI=true
+FROM node:26.13.1-alpine3.24 AS base
 
 WORKDIR /app
 
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
+FROM base AS builder
+
+ENV CI=true
+
+# Install dependencies first so this layer stays cached until the lockfile
+# changes. Node 26 ships no corepack, so install the pnpm that package.json's
+# packageManager pins; it stays in this stage only. The split drops a
+# `+sha512.` suffix, which npm can't parse.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN npm install -g "$(node -p 'require("./package.json").packageManager.split("+")[0]')" --no-audit --no-fund && \
+    pnpm install --frozen-lockfile --prod=false --ignore-scripts
+
 COPY tsconfig.json vite.config.ts react-router.config.ts tailwind.config.js postcss.config.js ./
 COPY app/ ./app/
 
-RUN pnpm install --frozen-lockfile=false
-RUN pnpm run build
+RUN pnpm run build && \
+    pnpm prune --prod --ignore-scripts
 
-FROM node:26.13.1-alpine3.24 AS runtime
+FROM base AS runtime
 
 RUN apk add --no-cache --upgrade 'ca-certificates>=20261020-r0'
 RUN ! grep -q MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG /etc/ssl/certs/ca-certificates.crt
 
-RUN npm install -g pnpm@12.15.0
-
-WORKDIR /app
-
-COPY --from=builder /app/package.json /app/pnpm-workspace.yaml ./
-COPY --from=builder /app/pnpm-lock.yaml* ./
-RUN pnpm install --prod --frozen-lockfile=false
-
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/build ./build
 
 EXPOSE 3000
